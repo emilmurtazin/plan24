@@ -1,0 +1,75 @@
+# Plan 24 для App Platform Timeweb Cloud (тип приложения «Docker Compose»; файл обязан лежать в корне репозитория).
+# Условия платформы, которые здесь соблюдены (docs: timeweb.cloud/docs/apps/deploying-with-docker-compose):
+#   • проксируется на домен ТОЛЬКО первый сервис — поэтому web первый;  • хост-порты 80/443 запрещены;
+#   • запрещены volumes, name, external, extends, include, privileged и др. — их здесь нет (проверяет deploy/timeweb/check-apps-compose.py).
+# TLS и домен даёт платформа (Caddy не нужен). Секреты — в «Переменных» приложения в панели, не в репозитории.
+x-app: &app
+  build: {context: ., dockerfile: deploy/Dockerfile}
+  restart: unless-stopped
+
+services:
+  web:                                  # ПЕРВЫЙ сервис: платформа направляет на него домен
+    <<: *app
+    command: ["web"]
+    ports: ["8000:8000"]                # Dockerfile тоже делает EXPOSE 8000
+    environment:
+      PLAN24_ENV: prod
+      PLAN24_DB_URL: ${PLAN24_DB_URL:?}
+      PLAN24_SECRET: ${PLAN24_SECRET:?}
+      PLAN24_BASE_URL: ${PLAN24_BASE_URL:?}
+      PLAN24_WORKERS: ${PLAN24_WORKERS:-2}
+      PLAN24_DB_POOL: ${PLAN24_DB_POOL:-5}
+      PLAN24_DB_OVERFLOW: ${PLAN24_DB_OVERFLOW:-5}
+      PLAN24_SMTP_HOST: ${PLAN24_SMTP_HOST:-}
+      PLAN24_SMTP_PORT: ${PLAN24_SMTP_PORT:-587}
+      PLAN24_SMTP_USER: ${PLAN24_SMTP_USER:-}
+      PLAN24_SMTP_PASSWORD: ${PLAN24_SMTP_PASSWORD:-}
+      PLAN24_SMTP_SECURITY: ${PLAN24_SMTP_SECURITY:-starttls}
+      PLAN24_MAIL_FROM: ${PLAN24_MAIL_FROM:-Plan 24 <noreply@localhost>}
+      PLAN24_TG_TOKEN: ${PLAN24_TG_TOKEN:-}
+      PLAN24_TG_SECRET: ${PLAN24_TG_SECRET:-}
+      PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  migrate:                              # при каждом деплое до запуска приложения; единственный сервис, получающий пароль владельца БД
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      PLAN24_DB_MIGRATE_URL: ${PLAN24_DB_MIGRATE_URL:?}
+
+  scheduler:                            # утренние задания и вечерние напоминания
+    <<: *app
+    command: ["scheduler"]
+    environment:
+      PLAN24_ENV: prod
+      PLAN24_DB_URL: ${PLAN24_DB_URL:?}
+      PLAN24_SECRET: ${PLAN24_SECRET:?}
+      PLAN24_TG_TOKEN: ${PLAN24_TG_TOKEN:-}
+      PLAN24_TG_SECRET: ${PLAN24_TG_SECRET:-}
+      PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}
+      PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
+      PLAN24_DB_POOL: "2"
+      PLAN24_DB_OVERFLOW: "2"
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  tg:                                   # Telegram-бот; по умолчанию выключен (PLAN24_TG_MODE=off) и просто простаивает
+    <<: *app
+    command: ["tg"]
+    environment:
+      PLAN24_ENV: prod
+      PLAN24_DB_URL: ${PLAN24_DB_URL:?}
+      PLAN24_SECRET: ${PLAN24_SECRET:?}
+      PLAN24_BASE_URL: ${PLAN24_BASE_URL:?}
+      PLAN24_TG_MODE: ${PLAN24_TG_MODE:-off}
+      PLAN24_TG_TOKEN: ${PLAN24_TG_TOKEN:-}
+      PLAN24_TG_SECRET: ${PLAN24_TG_SECRET:-}
+      PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
+      PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}
+      PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
+      PLAN24_DB_POOL: "2"
+      PLAN24_DB_OVERFLOW: "2"
+    depends_on:
+      migrate: {condition: service_completed_successfully}

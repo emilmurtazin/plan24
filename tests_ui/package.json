@@ -1,0 +1,1 @@
+{ "name": "plan24-ui-smoke", "private": true, "version": "1.0.0", "scripts": { "test": "sh run.sh" }, "devDependencies": { "jsdom": "^26.0.0" } }

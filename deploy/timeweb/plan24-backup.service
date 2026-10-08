@@ -1,0 +1,7 @@
+[Unit]
+Description=Plan 24: резервная копия БД
+[Service]
+Type=oneshot
+User=plan24
+EnvironmentFile=/opt/plan24/deploy/timeweb/backup.env
+ExecStart=/bin/sh /opt/plan24/deploy/timeweb/backup-to-s3.sh

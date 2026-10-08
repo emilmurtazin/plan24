@@ -1,0 +1,8 @@
+{$PLAN24_DOMAIN} {
+    encode gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+    reverse_proxy web:8000
+}

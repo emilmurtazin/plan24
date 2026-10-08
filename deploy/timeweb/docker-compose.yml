@@ -1,0 +1,65 @@
+# Plan 24 на облачном сервере Timeweb Cloud + управляемый PostgreSQL (DBaaS). Подробно: deploy/timeweb/README.md
+# Запуск (на сервере, в каталоге /opt/plan24/deploy/timeweb):
+#   cp .env.example .env && nano .env
+#   docker compose run --rm migrate          # миграции (от владельца БД)
+#   docker compose up -d                     # caddy + web + scheduler
+#   docker compose --profile telegram-poll up -d tg-poll    # бот в режиме опроса (если вебхук недоступен)
+# НЕ ПРОВЕРЯЛОСЬ в среде разработки (нет Docker): проверены скрипты, миграции, роли и логика приложения по отдельности.
+name: plan24
+x-app: &app
+  build: {context: ../.., dockerfile: deploy/Dockerfile}
+  image: plan24:local
+  restart: unless-stopped
+  env_file: .env
+  environment: &appenv
+    PLAN24_ENV: prod
+    PLAN24_DB_URL: ${PLAN24_DB_URL:?}
+  networks: [internal]
+
+services:
+  migrate:                          # одноразово при каждом обновлении, ДО запуска новой версии; от владельца БД (gen_user)
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      PLAN24_DB_MIGRATE_URL: ${PLAN24_DB_MIGRATE_URL:?}
+    volumes: ["./certs:/certs:ro"]
+
+  web:
+    <<: *app
+    command: ["web"]
+    environment:
+      <<: *appenv
+      PLAN24_FORWARDED_ALLOW_IPS: "*"   # к web достучаться может только caddy из внутренней сети; нужен для настоящего IP клиента (лимиты входа)
+    volumes: ["./certs:/certs:ro"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+
+  scheduler:                        # утренние задания и вечерние напоминания (один экземпляр)
+    <<: *app
+    command: ["scheduler"]
+    volumes: ["./certs:/certs:ro"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+
+  tg-poll:                          # бот в режиме опроса: не нужен входящий вебхук, запросы идут через PLAN24_TG_API_BASE / PLAN24_TG_PROXY
+    <<: *app
+    command: ["tg-poll"]
+    profiles: ["telegram-poll"]
+    volumes: ["./certs:/certs:ro"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+
+  caddy:                            # TLS (Let's Encrypt) и обратный прокси; единственный сервис с открытыми портами
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      PLAN24_DOMAIN: ${PLAN24_DOMAIN:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [web]
+    networks: [internal]
+
+volumes:
+  caddy_data:
+networks:
+  internal:

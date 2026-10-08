@@ -1,0 +1,8 @@
+[Unit]
+Description=Plan 24: ежедневная резервная копия
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=900
+Persistent=true
+[Install]
+WantedBy=timers.target

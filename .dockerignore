@@ -1,0 +1,14 @@
+.git
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.pytest_cache
+**/.hypothesis
+backend/data
+backend/tests
+tests_ui
+reference
+docs
+*.sqlite3*
+**/.env
+deploy/timeweb/.env

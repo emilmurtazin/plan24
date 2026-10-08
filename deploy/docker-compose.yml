@@ -1,0 +1,59 @@
+# Боевой стенд: PostgreSQL + миграции + веб (2 процесса) + планировщик напоминаний.
+# Запуск:  cp .env.example .env  (заполнить секреты) ; docker compose up -d
+# TLS и публичный адрес — обратный прокси перед сервисом web (пример: Caddyfile). НЕ ПРОВЕРЯЛОСЬ в среде разработки (нет Docker).
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      PLAN24_OWNER_PASSWORD: ${PLAN24_OWNER_PASSWORD:?}
+      PLAN24_APP_PASSWORD: ${PLAN24_APP_PASSWORD:?}
+      PLAN24_ADMIN_PASSWORD: ${PLAN24_ADMIN_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-roles.sql:/plan24/init-roles.sql:ro
+      - ./postgres/docker-init.sh:/docker-entrypoint-initdb.d/10-plan24.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d plan24"]
+      interval: 5s
+      retries: 20
+    networks: [internal]          # наружу порт БД не публикуется
+
+  migrate:                         # одноразово при каждом обновлении, до запуска новой версии веб
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    command: ["migrate"]
+    environment:
+      PLAN24_DB_MIGRATE_URL: postgresql+psycopg://plan24_owner:${PLAN24_OWNER_PASSWORD}@db/plan24
+    depends_on: {db: {condition: service_healthy}}
+    networks: [internal]
+    restart: "no"
+
+  web:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PLAN24_ENV: prod
+      PLAN24_DB_URL: postgresql+psycopg://plan24_app:${PLAN24_APP_PASSWORD}@db/plan24
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:8000:8000"]   # только на localhost: наружу — через обратный прокси с TLS
+    networks: [internal]
+
+  scheduler:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    command: ["scheduler"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PLAN24_ENV: prod
+      PLAN24_DB_URL: postgresql+psycopg://plan24_app:${PLAN24_APP_PASSWORD}@db/plan24
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    networks: [internal]
+
+volumes:
+  pgdata:
+networks:
+  internal:

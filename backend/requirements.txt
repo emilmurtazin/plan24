@@ -1,0 +1,4 @@
+-r requirements-prod.txt
+pytest>=8
+hypothesis>=6.100
+aiosmtpd>=1.4
