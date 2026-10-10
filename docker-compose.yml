@@ -38,6 +38,7 @@ services:
     command: ["migrate"]
     environment:
       PLAN24_DB_MIGRATE_URL: ${PLAN24_DB_MIGRATE_URL:?}
+      PLAN24_DB_URL: ${PLAN24_DB_URL:?}            # только для проверки перед миграциями: войдёт ли приложение под своей ролью
 
   scheduler:                            # утренние задания и вечерние напоминания
     <<: *app

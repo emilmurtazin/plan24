@@ -3,7 +3,9 @@
 set -e
 case "$1" in
   migrate)      # выполняется владельцем схемы (PLAN24_DB_MIGRATE_URL), НЕ ролью приложения
-    exec python -m alembic -c alembic.ini upgrade head ;;
+    # preflight даёт понятный КОД ВЫХОДА при проблемах с БД (на App Platform в логе деплоя виден только он); коды — в plan24/preflight.py
+    python -m plan24.preflight || exit $?
+    python -m alembic -c alembic.ini upgrade head || { echo "[migrate] миграции завершились ошибкой (код 20)"; exit 20; } ;;
   web)
     exec python -m uvicorn plan24.app:app --host 0.0.0.0 --port 8000 --workers "${PLAN24_WORKERS:-2}" \
          --proxy-headers --forwarded-allow-ips="${PLAN24_FORWARDED_ALLOW_IPS:-127.0.0.1}" --no-server-header ;;
