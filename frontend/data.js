@@ -2,11 +2,11 @@
 'use strict';
 
 async function loadRefs() {
-  const [projects, products, workers, centers, orders, reasons] = await Promise.all(
-    ['/projects', '/products', '/workers', '/work-centers', '/order-lines', '/fact-reasons'].map(listAll));
+  const [projects, products, workers, centers, orders, reasons, routings] = await Promise.all(
+    ['/projects', '/products', '/workers', '/work-centers', '/order-lines', '/fact-reasons', '/routings'].map(listAll));
   const by = a => Object.fromEntries(a.map(x => [x.id, x]));
   const tg = await GET('/telegram/status').catch(() => ({ configured: false, links: [] }));
-  return { projects, products, workers, centers, orders, reasons, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
+  return { projects, products, workers, centers, orders, reasons, routings, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
     P: by(projects), PR: by(products), W: by(workers), C: by(centers) };
 }
 const opts = (arr, label = x => x.name) => arr.map(x => ({ v: x.id, l: label(x) }));
@@ -17,11 +17,11 @@ const table = (cols, rows, actions) => `<table><tr>${cols.map(c => `<th class="$
 async function crudTab(box, cfg, reload) {
   const refs = await loadRefs(), rows = await listAll(cfg.path);
   const acts = r => `${cfg.extra ? cfg.extra(r) : ''}<button class="small secondary" data-e="${r.id}">Изменить</button> <button class="small danger" data-d="${r.id}">Удалить</button>`;
-  box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(cfg.title)}</h2>${cfg.noAdd ? '' : `<button data-add>+ ${esc(cfg.add)}</button>`}</div>${cfg.hint ? `<p class="muted">${esc(cfg.hint(refs, rows))}</p>` : ''}<div class="card scroll">${table(cfg.cols(refs), rows, acts)}</div>`;
+  box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(cfg.title)}</h2>${cfg.headerExtra || ''}${cfg.noAdd ? '' : `<button data-add>+ ${esc(cfg.add)}</button>`}</div>${cfg.hint ? `<p class="muted">${esc(cfg.hint(refs, rows))}</p>` : ''}<div class="card scroll">${table(cfg.cols(refs), rows, acts)}</div>`;
   const open = (row) => {
     const fields = (row && cfg.editFields ? cfg.editFields(refs) : cfg.fields(refs));
     formModal({
-      title: row ? cfg.editTitle || 'Изменить' : cfg.add, fields, values: row || cfg.defaults || {},
+      title: row ? cfg.editTitle || 'Изменить' : cfg.add, fields, values: row || cfg.defaults || {}, onOpen: cfg.wire ? form => cfg.wire(form, refs, row) : undefined,
       onSubmit: async (vals, m) => {
         if (row) await PATCH(`${cfg.path}/${row.id}`, { ...vals, version: row.version }); else await POST(cfg.path, vals);
         m.close(); toast('Сохранено'); reload();
@@ -41,19 +41,37 @@ const nameField = { name: 'name', label: 'Название', required: true };
 const TABS = {
   orders: {
     label: 'Заказы', cfg: {
-      title: 'Позиции заказов', add: 'Добавить позицию', path: '/order-lines', defaults: { qty: 1, priority: 1, status: 'planned' },
-      hint: (r) => r.products.length && r.projects.length ? 'Позиция = изделие в нужном количестве к сроку. Маршрут берётся текущий; уже созданные позиции остаются на своей версии маршрута.' : 'Сначала добавьте проект и изделие с операциями (вкладки «Проекты» и «Изделия и маршруты»).',
-      cols: r => [{ label: '№', get: x => x.ext_id || '#' + x.id }, { label: 'Проект', get: x => r.P[x.project_id]?.name }, { label: 'Изделие', get: x => r.PR[x.product_id]?.name },
+      title: 'Заказы (позиции)', add: 'Добавить позицию', path: '/order-lines', defaults: { qty: 1, priority: 1, status: 'planned' },
+      hint: (r) => r.products.length && r.projects.length ? 'Позиция = изделие в нужном количестве к сроку. Можно выбрать версию изделия; если не выбрать — берётся текущая. Уже созданные позиции остаются на своей версии.' : 'Сначала добавьте проект (вкладка «Проекты») и изделие с операциями («Каталог изделий»).',
+      cols: r => [{ label: '№', get: x => x.ext_id || '#' + x.id }, { label: 'Проект', get: x => r.P[x.project_id]?.name }, { label: 'Заказчик', get: x => x.customer || r.P[x.project_id]?.customer || '—' },
+      { label: 'Изделие', get: x => r.PR[x.product_id]?.name }, { label: 'Версия', get: x => { const v = r.routings.find(q => q.id === x.routing_id); return v ? 'v' + v.version_no : '—'; } },
       { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', get: x => ORDER_ST[x.status] }],
       fields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true },
       { name: 'product_id', label: 'Изделие', type: 'select', options: opts(r.products), required: true, num: true },
+      { name: 'routing_id', label: 'Версия изделия', type: 'select', options: [], num: true, blank: 'Текущая версия' },
+      { name: 'customer', label: 'Заказчик', help: 'Подставляется из проекта, можно изменить' },
       { name: 'ext_id', label: 'Номер позиции (необязательно)' }, { name: 'qty', label: 'Количество', type: 'number', required: true, min: 0, step: 'any' },
       { name: 'due_date', label: 'Срок', type: 'date' }, { name: 'priority', label: 'Приоритет (1 — самый важный)', type: 'number', required: true, min: 1, step: 1 },
       { name: 'status', label: 'Статус', type: 'select', required: true, options: Object.entries(ORDER_ST).map(([v, l]) => ({ v, l })) }],
-      editFields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true }, { name: 'ext_id', label: 'Номер позиции' },
+      editFields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true },
+      { name: 'routing_id', label: 'Версия изделия', type: 'select', options: [], num: true, required: true, help: 'После смены версии пересчитайте план' },
+      { name: 'customer', label: 'Заказчик' }, { name: 'ext_id', label: 'Номер позиции' },
       { name: 'qty', label: 'Количество', type: 'number', required: true, min: 0, step: 'any' }, { name: 'due_date', label: 'Срок', type: 'date' },
       { name: 'priority', label: 'Приоритет', type: 'number', required: true, min: 1, step: 1 },
       { name: 'status', label: 'Статус', type: 'select', required: true, options: Object.entries(ORDER_ST).map(([v, l]) => ({ v, l })) }],
+      // версии зависят от выбранного изделия; заказчик по умолчанию берётся из проекта
+      wire: (form, r, row) => {
+        const prod = form.elements.product_id, ver = form.elements.routing_id, proj = form.elements.project_id, cust = form.elements.customer;
+        const fillVersions = (pid, sel) => {
+          const list = r.routings.filter(q => q.product_id === +pid).sort((x, y) => y.version_no - x.version_no);
+          ver.innerHTML = (row ? '' : '<option value="">Текущая версия</option>') + list.map(q => `<option value="${q.id}" ${String(q.id) === String(sel) ? 'selected' : ''}>v${q.version_no}${q.is_current ? ' · текущая' : ''} (операций: ${q.operations})</option>`).join('');
+        };
+        fillVersions(row ? row.product_id : prod?.value, row ? row.routing_id : '');
+        if (prod) prod.onchange = () => fillVersions(prod.value, '');
+        let last = r.P[proj.value]?.customer || '';
+        if (!row && cust && !cust.value) cust.value = last;
+        proj.addEventListener('change', () => { const c = r.P[proj.value]?.customer || ''; if (!cust.value || cust.value === last) cust.value = c; last = c; });
+      }
     }
   },
   projects: {
@@ -63,18 +81,18 @@ const TABS = {
     }
   },
   products: {
-    label: 'Изделия и маршруты', cfg: {
-      title: 'Изделия и маршруты', add: 'Добавить изделие', path: '/products', cols: () => [{ label: 'Изделие', get: x => x.name }, { label: 'Ед.', get: x => x.unit }],
-      hint: () => 'У каждого изделия есть маршрут — список операций с нормами. Откройте «Маршрут», чтобы добавить операции.',
+    label: 'Каталог изделий', cfg: {
+      title: 'Изделия', add: 'Добавить изделие', path: '/products', cols: () => [{ label: 'Изделие', get: x => x.name }, { label: 'Ед.', get: x => x.unit }],
+      hint: () => 'У каждого изделия есть версии маршрута — списки операций с нормами. Откройте «Версии и операции», чтобы добавить или изменить операции.',
       fields: () => [nameField, { name: 'unit', label: 'Единица', required: true }], defaults: { unit: 'шт' },
-      extra: r => `<button class="small" data-rt="${r.id}">Маршрут</button> `,
+      extra: r => `<button class="small" data-rt="${r.id}">Версии и операции</button> `,
       after: (box, refs) => $$('[data-rt]', box).forEach(b => b.onclick = () => openRouting(refs.PR[b.dataset.rt]))
     }
   },
   workers: {
-    label: 'Исполнители', cfg: {
-      title: 'Исполнители', add: 'Добавить исполнителя', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available' },
-      hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем).',
+    label: 'Работники', cfg: {
+      title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available' },
+      hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
       cols: r => [{ label: 'Имя', get: x => x.name }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
       { label: 'Квалиф.', cls: 'num', get: x => num(x.skill) }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
@@ -86,10 +104,17 @@ const TABS = {
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }
   },
-  centers: { label: 'Участки', cfg: { title: 'Участки', add: 'Добавить участок', path: '/work-centers', cols: () => [{ label: 'Название', get: x => x.name }], fields: () => [nameField] } },
+  centers: {
+    label: 'Участки', cfg: {
+      title: 'Участки', add: 'Добавить участок', path: '/work-centers', cols: () => [{ label: 'Название', get: x => x.name }], fields: () => [nameField],
+      headerExtra: '<button class="secondary" data-settings>Настройки</button>',
+      hint: () => 'Кнопка «Настройки» — параметры планировщика (жёсткость приоритета, рабочие дни, заморозка плана и др.).',
+      after: (box, refs, rows, reload) => { $('[data-settings]', box).onclick = () => SCREENS.settings(box, reload); }
+    }
+  },
   holidays: {
     label: 'Календарь', cfg: {
-      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Настройках». Здесь — дополнительные нерабочие даты.',
+      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Организация → Участки → Настройки». Здесь — дополнительные нерабочие даты.',
       cols: () => [{ label: 'Дата', get: x => fmtDY(x.holiday_date) }, { label: 'Название', get: x => x.name }],
       fields: () => [{ name: 'holiday_date', label: 'Дата', type: 'date', required: true }, { name: 'name', label: 'Название' }], editFields: () => [{ name: 'name', label: 'Название' }]
     }
@@ -97,13 +122,46 @@ const TABS = {
   reasons: { label: 'Причины отклонений', cfg: { title: 'Причины отклонений от плана', add: 'Добавить причину', path: '/fact-reasons', cols: () => [{ label: 'Причина', get: x => x.name }], fields: () => [nameField] } },
 };
 
-SCREENS.data = async (v, tab) => {
+/* Группа вкладок: шапка + переключатель + контейнер. Вкладка — либо CRUD-таблица из TABS, либо свой экран (custom). */
+function tabsScreen(v, { title, tabs, tab, key, self }) {
   S.nav++;
-  tab = tab || S.dataTab || 'orders'; S.dataTab = tab;
-  v.innerHTML = `<h1>Данные</h1><nav class="tabs" style="margin-bottom:14px;border:1px solid var(--line)">${Object.entries(TABS).map(([k, t]) => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(t.label)}</button>`).join('')}</nav><div id="dt"></div>`;
-  $$('[data-t]', v).forEach(b => b.onclick = () => SCREENS.data(v, b.dataset.t));
-  const box = $('#dt', v), reload = () => crudTab(box, TABS[tab].cfg, reload).catch(e => { if (!(e instanceof Stale)) box.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; });
+  const ids = Object.keys(tabs); tab = ids.includes(tab) ? tab : (ids.includes(S[key]) ? S[key] : ids[0]); S[key] = tab;
+  v.innerHTML = `<h1>${esc(title)}</h1><nav class="tabs" style="margin-bottom:14px;border:1px solid var(--line)">${ids.map(k => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(tabs[k].label)}</button>`).join('')}</nav><div id="dt"></div>`;
+  $$('[data-t]', v).forEach(b => b.onclick = () => self(v, b.dataset.t));
+  const box = $('#dt', v), t = tabs[tab];
+  const fail = e => { if (!(e instanceof Stale)) box.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; };
+  const reload = () => (t.custom ? t.custom(box, reload) : crudTab(box, t.cfg, reload)).catch(fail);
   reload();
+}
+
+/* Проекты и Заказы */
+SCREENS.data = (v, tab) => tabsScreen(v, { title: 'Проекты и Заказы', tabs: { projects: TABS.projects, orders: TABS.orders }, tab, key: 'dataTab', self: SCREENS.data });
+
+/* Каталог изделий: изделия, версии, операции (создают и редактируют владелец, руководитель, технолог) */
+SCREENS.catalog = async v => {
+  S.nav++;
+  v.innerHTML = '<h1>Каталог изделий</h1><div id="dt"></div>';
+  const box = $('#dt', v), reload = () => crudTab(box, TABS.products.cfg, reload).catch(e => { if (!(e instanceof Stale)) box.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; });
+  reload();
+};
+
+/* Организация: сведения, участки (+ настройки), работники, календарь, пользователи, журнал */
+const ORG_TABS = {
+  info: { label: 'Об организации', custom: async box => {
+    const t = S.me.tenant || {}, [centers, workers] = await Promise.all([listAll('/work-centers'), listAll('/workers')]);
+    const users = S.me.role === 'owner' ? await GET('/users') : null;
+    box.innerHTML = `<h2>Об организации</h2><div class="card" style="max-width:640px"><table>
+      <tr><th>Название</th><td>${esc(t.name)}</td></tr><tr><th>Часовой пояс</th><td>${esc(t.timezone)}</td></tr>
+      <tr><th>Участков</th><td>${centers.length}</td></tr><tr><th>Работников</th><td>${workers.length}</td></tr>${users ? `<tr><th>Пользователей</th><td>${users.length}</td></tr>` : ''}
+      <tr><th>Вы вошли как</th><td>${esc(S.me.name)} · ${ROLE_RU[S.me.role]}</td></tr></table></div>`;
+  } },
+  centers: TABS.centers, workers: TABS.workers, holidays: TABS.holidays, reasons: TABS.reasons,
+  users: { label: 'Пользователи', owner: true, custom: box => SCREENS.users(box) },
+  audit: { label: 'Журнал', custom: box => SCREENS.audit(box) },
+};
+SCREENS.org = (v, tab) => {
+  const tabs = Object.fromEntries(Object.entries(ORG_TABS).filter(([, t]) => !t.owner || S.me.role === 'owner'));
+  return tabsScreen(v, { title: 'Организация', tabs, tab, key: 'orgTab', self: SCREENS.org });
 };
 
 /* ---------- маршрут изделия: версии и операции ---------- */
@@ -158,7 +216,7 @@ async function openAbsences(w) {
 }
 
 /* ---------- настройки планировщика ---------- */
-SCREENS.settings = async v => {
+SCREENS.settings = async (v, back) => {
   const s = await GET('/settings'), days = new Set(s.work_weekdays.split(',').map(Number)), WDN = [['1', 'Пн'], ['2', 'Вт'], ['3', 'Ср'], ['4', 'Чт'], ['5', 'Пт'], ['6', 'Сб'], ['0', 'Вс']];
   const F = [
     { name: 'priority_strictness', label: 'Жёсткость приоритета по умолчанию, %', type: 'number', min: 0, max: 100, step: 10, help: '100 — следующий приоритет ждёт окончания предыдущего; 0 — приоритет влияет только на очерёдность.' },
@@ -170,10 +228,11 @@ SCREENS.settings = async v => {
     { name: 'shift_hours', label: 'Длительность смены, ч', type: 'number', min: 1, max: 24, step: 0.5, help: 'Только для отображения.' },
     { name: 'fact_confirmation', label: 'Факт сборщика подтверждает бригадир', type: 'checkbox', help: 'Пока не подтверждён, факт виден как «ждёт подтверждения», но в расчёт идёт.' },
     { name: 'fix_group_start', label: 'Не начинать следующую операцию раньше окончания предыдущей у опаздывающих заказов', type: 'checkbox', help: 'Исправляет особенность прежнего скрипта (D-04). По умолчанию выключено — как в скрипте.' }];
-  v.innerHTML = `<h1>Настройки планировщика</h1><div class="card" style="max-width:640px"><form id="sf" novalidate>${F.map(f => fieldHtml(f, s[f.name])).join('')}
+  v.innerHTML = `<div class="row" style="margin-bottom:10px">${back ? '<button class="secondary" id="sb">← К участкам</button>' : ''}<h2 class="grow" style="margin:0">Настройки планировщика</h2></div><div class="card" style="max-width:640px"><form id="sf" novalidate>${F.map(f => fieldHtml(f, s[f.name])).join('')}
     <label class="f">Жёсткость по уровням приоритета (например «2:60; 3:30»)<input name="lv" value="${esc(Object.entries(s.strictness_by_level || {}).map(([k, x]) => k + ':' + x).join('; '))}"></label>
     <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Рабочие дни недели</legend><div class="row">${WDN.map(([k, l]) => `<label class="chk"><input type="checkbox" name="wd" value="${k}" ${days.has(+k) ? 'checked' : ''}> ${l}</label>`).join('')}</div></fieldset>
     <div class="err" id="se" role="alert"></div><button type="submit">Сохранить</button></form></div>`;
+  if (back) $('#sb').onclick = back;
   $('#sf').onsubmit = async e => {
     e.preventDefault(); const form = e.target, body = readForm(form, F);
     body.strictness_by_level = {}; let bad = false;
@@ -197,9 +256,9 @@ SCREENS.users = async v => {
     ...(isNew ? [{ name: 'send_invite', label: 'Отправить приглашение по e-mail', type: 'checkbox', help: 'Человек сам задаст пароль по ссылке из письма (действует 7 суток). Тогда пароль ниже не нужен.' },
       { name: 'password', label: 'Или задайте временный пароль (не короче 8)', type: 'password' }] : [{ name: 'is_active', label: 'Доступ разрешён', type: 'checkbox' }, { name: 'password', label: 'Новый пароль (если нужно сбросить)', type: 'password' }])];
   const rowName = u => u.work_center_id ? ' · ' + (centers.find(c => c.id === u.work_center_id)?.name || '') : (u.worker_id ? ' · ' + (workers.find(w => w.id === u.worker_id)?.name || '') : '');
-  v.innerHTML = `<div class="row" style="margin-bottom:10px"><h1 class="grow" style="margin:0">Пользователи</h1><button id="add">+ Добавить</button></div>
+  v.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Пользователи</h2><button id="add">+ Добавить</button></div>
     <div class="card scroll">${table([{ label: 'Имя', get: u => u.name }, { label: 'E-mail', get: u => u.email }, { label: 'Роль', get: u => ROLE_RU[u.role] + rowName(u) }, { label: 'Доступ', html: u => u.is_active ? '<span class="ok">разрешён</span>' : '<span class="err">закрыт</span>' }], users, u => `<button class="small secondary" data-e="${u.id}">Изменить</button>${u.id !== S.me.id ? ` <button class="small secondary" data-inv="${u.id}">Пригласить снова</button>` : ''}${u.role === 'foreman' ? ` <button class="small" data-tgu="${u.id}">Telegram</button>` : ''}`)}</div>
-    <p class="muted">Права: владелец — всё, включая пользователей; руководитель — данные, настройки и планирование; бригадир — свой участок и факт; сборщик — только свои задания и факт; наблюдатель — только просмотр отчётов.</p>`;
+    <p class="muted">Права: владелец — всё, включая пользователей; руководитель — данные, настройки и планирование; технолог — создаёт и редактирует каталог изделий, остальное смотрит; бригадир — свой участок и факт; сборщик — только свои задания и факт; наблюдатель — только просмотр отчётов.</p>`;
   $('#add').onclick = () => formModal({ title: 'Новый пользователь', fields: fields(true), values: { role: 'viewer' }, onSubmit: async (vals, m) => { await POST('/users', vals); m.close(); toast(vals.send_invite ? 'Приглашение отправлено' : 'Пользователь создан'); SCREENS.users(v); } });
   $$('[data-inv]', v).forEach(b => b.onclick = async () => { try { await POST(`/users/${b.dataset.inv}/invite`); toast('Приглашение отправлено'); } catch (e) { toast(errText(e), true); } });
   $$('[data-tgu]', v).forEach(b => b.onclick = () => openTelegram('user', +b.dataset.tgu, users.find(x => x.id == b.dataset.tgu).name));
@@ -213,7 +272,7 @@ SCREENS.audit = async v => {
   let before = 0, all = [];
   const draw = async () => {
     const r = await GET('/audit?limit=100' + (before ? '&before=' + before : '')); all = all.concat(r.items); before = r.next_before;
-    v.innerHTML = `<h1>Журнал изменений</h1><div class="card scroll">${table([{ label: 'Когда', get: a => fmtDT(a.at) }, { label: 'Кто', get: a => a.user || '—' }, { label: 'Что', get: a => (ENT[a.entity] || a.entity) + ' ' + (a.entity_id ?? '') }, { label: 'Действие', get: a => ACT[a.action] || a.action },
+    v.innerHTML = `<h2>Журнал изменений</h2><div class="card scroll">${table([{ label: 'Когда', get: a => fmtDT(a.at) }, { label: 'Кто', get: a => a.user || '—' }, { label: 'Что', get: a => (ENT[a.entity] || a.entity) + ' ' + (a.entity_id ?? '') }, { label: 'Действие', get: a => ACT[a.action] || a.action },
     { label: 'Детали', html: a => `<small class="muted">${esc(JSON.stringify(a.changes)).slice(0, 160)}</small>` }], all)}</div>${before ? '<button class="secondary" id="more">Показать ещё</button>' : ''}`;
     if ($('#more')) $('#more').onclick = draw;
   };

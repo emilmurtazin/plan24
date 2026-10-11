@@ -28,7 +28,8 @@ class RunIn(BaseModel):
 
 
 def _scope(db, user: User, b: RunIn) -> Optional[int]:
-    """Область перепланирования. Бригадир — строго свой участок; руководитель — вся организация или выбранный участок."""
+    """Область перепланирования — всегда участок. Бригадир — только свой; руководитель выбирает участок.
+    Единственное исключение: активного плана ещё нет — первый расчёт строится сразу по всем участкам."""
     if user.role == "foreman":
         if user.work_center_id is None:
             raise HTTPException(403, "Бригадиру не назначен участок")
@@ -38,7 +39,10 @@ def _scope(db, user: User, b: RunIn) -> Optional[int]:
     if b.work_center_id is not None:
         get_or_404(db, WorkCenter, b.work_center_id, user)
         return b.work_center_id
-    return None
+    has_plan = db.scalar(select(Plan.id).where(Plan.tenant_id == user.tenant_id, Plan.status == "active"))
+    if has_plan:
+        raise HTTPException(422, "Выберите участок: перепланирование выполняется по участкам")
+    return None          # первый расчёт организации
 
 
 def _overrides(b: RunIn, scope: Optional[int] = None) -> dict:

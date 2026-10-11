@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..db import DB
-from ..deps import ALL, MANAGERS, READERS, STAFF, get_or_404, require, scoped
+from ..deps import ALL, CATALOG, MANAGERS, READERS, STAFF, get_or_404, require, scoped
 from ..models import (AuditLog, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
                       Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine)
 from .crud import make_crud, row
@@ -122,7 +122,7 @@ def _after_product(db, user, obj):
     db.add(Routing(tenant_id=user.tenant_id, product_id=obj.id, version_no=1, is_current=True))   # маршрут v1
 
 
-make_crud(router, "/products", Product, ProductIn, ProductPatch, "product", after_create=_after_product)
+make_crud(router, "/products", Product, ProductIn, ProductPatch, "product", after_create=_after_product, write_roles=CATALOG)
 
 
 def routing_out(r: Routing, used: bool) -> dict:
@@ -142,8 +142,16 @@ def product_routings(pid: int, user: User = Depends(require(*READERS)), db: Sess
     return [routing_out(r, _routing_used(db, user, r.id)) for r in rs]
 
 
+@router.get("/routings")
+def all_routings(user: User = Depends(require(*READERS)), db: Session = DB):
+    """Все версии маршрутов организации (кратко) — для выбора версии изделия в заказе."""
+    rs = db.scalars(scoped(Routing, user).order_by(Routing.product_id, Routing.version_no.desc()))
+    return {"items": [{"id": r.id, "product_id": r.product_id, "version_no": r.version_no,
+                       "is_current": r.is_current, "operations": len(r.operations)} for r in rs]}
+
+
 @router.post("/products/{pid}/routings", status_code=201)
-def new_routing_version(pid: int, copy: bool = True, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def new_routing_version(pid: int, copy: bool = True, user: User = Depends(require(*CATALOG)), db: Session = DB):
     """Новая версия маршрута; существующие позиции остаются на своей версии (BR-7)."""
     get_or_404(db, Product, pid, user)
     prev = db.scalar(scoped(Routing, user).where(Routing.product_id == pid, Routing.is_current.is_(True)))
@@ -192,7 +200,7 @@ _IMMUTABLE = "Маршрут используется в позициях зак
 
 
 @router.post("/routings/{rid}/operations", status_code=201)
-def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
     r = get_or_404(db, Routing, rid, user)
     if _routing_used(db, user, rid):
         raise HTTPException(409, _IMMUTABLE)
@@ -205,7 +213,7 @@ def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*MAN
 
 
 @router.patch("/operations/{oid}")
-def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require(*CATALOG)), db: Session = DB):
     o = get_or_404(db, Operation, oid, user)
     data = body.model_dump(exclude_unset=True)
     ver = data.pop("version", None)
@@ -226,7 +234,7 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
 
 
 @router.delete("/operations/{oid}", status_code=204)
-def delete_operation(oid: int, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def delete_operation(oid: int, user: User = Depends(require(*CATALOG)), db: Session = DB):
     o = get_or_404(db, Operation, oid, user)
     if _routing_used(db, user, o.routing_id):
         raise HTTPException(409, _IMMUTABLE)
@@ -243,6 +251,7 @@ class OrderLineIn(BaseModel):
     product_id: int
     routing_id: Optional[int] = None
     ext_id: Optional[str] = Field(None, max_length=64)
+    customer: str = Field("", max_length=160)
     qty: float = Field(gt=0, le=10_000_000)
     due_date: Optional[date] = None
     priority: int = Field(1, ge=1, le=99)
@@ -253,6 +262,7 @@ class OrderLinePatch(BaseModel):
     project_id: Optional[int] = None
     routing_id: Optional[int] = None
     ext_id: Optional[str] = Field(None, max_length=64)
+    customer: Optional[str] = Field(None, max_length=160)
     qty: Optional[float] = Field(None, gt=0, le=10_000_000)
     due_date: Optional[date] = None
     priority: Optional[int] = Field(None, ge=1, le=99)
@@ -288,6 +298,9 @@ def _ol_before_create(db, user, data):
 
 
 def _ol_before_update(db, user, obj, data):
+    for k in ("routing_id", "customer"):          # пустое значение не стирает обязательное поле
+        if k in data and data[k] is None:
+            data.pop(k)
     if "ext_id" in data:
         data["ext_id"] = (data["ext_id"] or "").strip() or None
         _ext_free(db, user, data["ext_id"], obj.id)

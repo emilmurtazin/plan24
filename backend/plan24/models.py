@@ -22,7 +22,7 @@ class Base(DeclarativeBase):
     pass
 
 
-ROLES = ("owner", "manager", "foreman", "worker", "viewer")
+ROLES = ("owner", "manager", "technologist", "foreman", "worker", "viewer")
 
 
 # ---------------------------------------------------------------- ядро
@@ -211,6 +211,7 @@ class OrderLine(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     routing_id: Mapped[int] = mapped_column(ForeignKey("routings.id"))     # фиксирует версию маршрута
     ext_id: Mapped[Optional[str]] = mapped_column(String(64))
+    customer: Mapped[str] = mapped_column(String(160), default="", server_default="")   # заказчик позиции
     qty: Mapped[float] = mapped_column(Float)
     due_date: Mapped[Optional[date]] = mapped_column(Date)
     priority: Mapped[int] = mapped_column(Integer, default=1)

@@ -135,6 +135,18 @@ class Org:
         self.users[role] = {"Authorization": "Bearer " + lg.json()["access_token"]}
         return r.json()
 
+    def replan_all(self, json=None, role="owner"):
+        """Перепланирование «всей организации» после отмены этой возможности: первый расчёт — целиком,
+        дальше — участок за участком. Возвращает ответ последнего расчёта."""
+        json = dict(json or {})
+        if self.get("/plans/active", role).json()["plan"] is None:
+            return self.post("/plans/replan", role, json=json)
+        r = None
+        for wc in self.get("/work-centers", role).json()["items"]:
+            r = self.post("/plans/replan", role, json={**json, "work_center_id": wc["id"]})
+            assert r.status_code == 201, r.text
+        return r
+
     def seed(self, kind="furniture"):
         r = self.post("/demo/load", params={"kind": kind})
         assert r.status_code == 201, r.text
@@ -161,5 +173,6 @@ def full_org(env):
     o.add_user("foreman", "f@a.ru", work_center_id=wcs[0]["id"])
     o.add_user("worker", "w@a.ru", worker_id=w1["id"])
     o.add_user("viewer", "v@a.ru")
+    o.add_user("technologist", "t@a.ru")
     o.wcs, o.workers, o.w1 = wcs, workers, w1
     return o

@@ -3,8 +3,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const MANAGERS = ['owner', 'manager'], STAFF = ['owner', 'manager', 'foreman'], READERS = ['owner', 'manager', 'foreman', 'viewer'];
-const ROLE_RU = { owner: 'Владелец', manager: 'Руководитель', foreman: 'Бригадир', worker: 'Сборщик', viewer: 'Наблюдатель' };
+const MANAGERS = ['owner', 'manager'], STAFF = ['owner', 'manager', 'foreman'], READERS = ['owner', 'manager', 'technologist', 'foreman', 'viewer'], CATALOG = ['owner', 'manager', 'technologist'];
+const ROLE_RU = { owner: 'Владелец', manager: 'Руководитель', technologist: 'Технолог', foreman: 'Бригадир', worker: 'Сборщик', viewer: 'Наблюдатель' };
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 const fmtD = iso => iso ? iso.slice(8, 10) + '.' + iso.slice(5, 7) : '';
 const fmtDY = iso => iso ? fmtD(iso) + '.' + iso.slice(0, 4) : '—';
@@ -117,14 +117,13 @@ function renderTokenPage(kind, token) {
 
 /* ---------------- оболочка ---------------- */
 const NAV = [
-  { id: 'home', label: 'Обзор', roles: READERS },
+  { id: 'home', label: 'Дашборд', roles: READERS },
   { id: 'day', label: 'План на день', roles: STAFF, alt: { worker: 'Мои задания' } },
   { id: 'status', label: 'Статус заказов', roles: READERS },
   { id: 'load', label: 'Загрузка', roles: READERS },
-  { id: 'data', label: 'Данные', roles: MANAGERS },
-  { id: 'settings', label: 'Настройки', roles: MANAGERS },
-  { id: 'users', label: 'Пользователи', roles: ['owner'] },
-  { id: 'audit', label: 'Журнал', roles: MANAGERS },
+  { id: 'catalog', label: 'Каталог изделий', roles: CATALOG },
+  { id: 'data', label: 'Проекты и Заказы', roles: MANAGERS },
+  { id: 'org', label: 'Организация', roles: MANAGERS },
 ];
 function navFor(role) { return NAV.filter(n => n.roles.includes(role) || (n.alt && n.alt[role])).map(n => ({ ...n, label: (n.alt && n.alt[role]) || n.label })); }
 function start() {
@@ -136,7 +135,7 @@ function start() {
   $('#lo').onclick = () => logout();
   if ($('#rv')) $('#rv').onclick = async () => { try { const r = await POST('/auth/resend-verification'); toast(r.already_verified ? 'E-mail уже подтверждён' : 'Письмо отправлено'); } catch (e) { toast(errText(e), true); } };
   $$('nav.tabs button').forEach(b => b.onclick = () => show(b.dataset.s));
-  show(['worker', 'foreman'].includes(me.role) ? 'day' : 'home');
+  show(['worker', 'foreman'].includes(me.role) ? 'day' : me.role === 'technologist' ? 'catalog' : 'home');
 }
 const SCREENS = {};
 async function show(id) {
@@ -158,7 +157,7 @@ function modal(html, wide) {
 function fieldHtml(f, v) {
   const val = v == null ? '' : v, req = f.required ? 'required' : '';
   let inp;
-  if (f.type === 'select') inp = `<select name="${f.name}" ${req}>${f.optional !== false && !f.required ? '<option value="">—</option>' : ''}${f.options.map(o => `<option value="${esc(o.v)}" ${String(o.v) === String(val) ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select>`;
+  if (f.type === 'select') inp = `<select name="${f.name}" ${req}>${f.optional !== false && !f.required ? `<option value="">${esc(f.blank || '—')}</option>` : ''}${f.options.map(o => `<option value="${esc(o.v)}" ${String(o.v) === String(val) ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select>`;
   else if (f.type === 'checkbox') return `<label class="chk"><input type="checkbox" name="${f.name}" ${v ? 'checked' : ''}> <span>${esc(f.label)}</span></label>${f.help ? `<div class="muted" style="margin:-4px 0 8px 28px;font-size:14px">${esc(f.help)}</div>` : ''}`;
   else inp = `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(val)}" ${req} ${f.step ? `step="${f.step}"` : ''} ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.type === 'password' ? 'autocomplete="new-password"' : ''}>`;
   return `<label class="f">${esc(f.label)}${f.required ? ' *' : ''}${inp}${f.help ? `<span style="font-size:13px">${esc(f.help)}</span>` : ''}</label>`;
@@ -174,7 +173,7 @@ function readForm(form, fields) {
   }
   return o;
 }
-function formModal({ title, fields, values = {}, submit = 'Сохранить', onSubmit, extra = '' }) {
+function formModal({ title, fields, values = {}, submit = 'Сохранить', onSubmit, extra = '', onOpen }) {
   const m = modal(`<h2>${esc(title)}</h2><form novalidate>${fields.map(f => fieldHtml(f, values[f.name])).join('')}${extra}
     <div class="err" data-err role="alert"></div><div class="row"><button type="submit">${esc(submit)}</button><button type="button" class="secondary" data-x>Отмена</button></div></form>`);
   const form = $('form', m.el); $('[data-x]', m.el).onclick = m.close;
@@ -185,6 +184,7 @@ function formModal({ title, fields, values = {}, submit = 'Сохранить', 
     try { await onSubmit(readForm(form, fields), m); }
     catch (x) { er.textContent = errText(x); btn.disabled = false; }
   };
+  if (onOpen) onOpen(form);
   return m;
 }
 const confirmBox = (text) => new Promise(res => {
@@ -192,7 +192,7 @@ const confirmBox = (text) => new Promise(res => {
   $('[data-y]', m.el).onclick = () => { m.close(); res(true); }; $('[data-n]', m.el).onclick = () => { m.close(); res(false); };
 });
 
-/* ---------------- Обзор ---------------- */
+/* ---------------- Дашборд ---------------- */
 const ST = { 'Готово': ['b-done', '✔'], 'В работе': ['b-work', '▶'], 'Риск опоздания': ['b-risk', '⚠'], 'Нет плана': ['b-none', '…'], 'Нет операций': ['b-noop', '—'] };
 const stBadge = s => { const x = ST[s] || ['b-noop', '?']; return `<span class="badge ${x[0]}"><span aria-hidden="true">${x[1]}</span>${esc(s)}</span>`; };
 
@@ -204,15 +204,15 @@ SCREENS.home = async v => {
     let kinds = []; if (can) kinds = (await GET('/demo/kinds')).kinds;
     const KR = { furniture: 'Мебельный цех', windows: 'Окна и витражи', metal: 'Металлоконструкции', panels: 'Сборка щитов', sewing: 'Швейный цех' };
     v.innerHTML = `<h1>Начнём</h1><div class="card"><p>Чтобы получить план, нужны четыре вещи:</p><ol class="steps">
-      <li><b>Изделия и операции</b> — что делаете, из каких операций, какая норма за день.</li><li><b>Исполнители</b> — кто работает, производительность и квалификация.</li>
-      <li><b>Заказы</b> — сколько изделий, к какому сроку, какой приоритет.</li><li>Нажмите <b>«Построить план»</b> — получите задания по дням.</li></ol>
+      <li><b>Каталог изделий</b> — что делаете, из каких операций, какая норма за день.</li><li><b>Организация → Работники</b> — кто работает, производительность и квалификация.</li>
+      <li><b>Проекты и Заказы</b> — сколько изделий, к какому сроку, какой приоритет.</li><li>Нажмите <b>«Построить план»</b> — получите задания по дням.</li></ol>
       ${can ? `<div class="row"><button id="goData">Заполнить данные</button><span class="muted">или посмотреть на примере:</span>
       <select id="dk" aria-label="Пример">${kinds.map(k => `<option value="${k}">${KR[k] || k}</option>`).join('')}</select><button class="secondary" id="demo">Загрузить пример</button></div>` : '<p class="muted">Данные добавляет руководитель.</p>'}</div>`;
-    if (can) { $('#goData').onclick = () => show('data'); $('#demo').onclick = async () => { try { await POST('/demo/load?kind=' + $('#dk').value); toast('Пример загружен'); S.plan = undefined; await POST('/plans/replan'); show('home'); } catch (e) { toast(errText(e), true); } }; }
+    if (can) { $('#goData').onclick = () => show('catalog'); $('#demo').onclick = async () => { try { await POST('/demo/load?kind=' + $('#dk').value); toast('Пример загружен'); S.plan = undefined; await POST('/plans/replan'); show('home'); } catch (e) { toast(errText(e), true); } }; }
     return;
   }
   const plan = pl.plan;
-  let h = `<div class="row" style="margin-bottom:12px"><h1 class="grow" style="margin:0">Обзор</h1>${staff ? '<button id="rp">Перепланировать</button>' : ''}</div>`;
+  let h = `<div class="row" style="margin-bottom:12px"><h1 class="grow" style="margin:0">Дашборд</h1>${staff ? '<button id="rp">Перепланировать</button>' : ''}</div>`;
   if (!plan) h += `<div class="banner info">План ещё не построен.${staff ? ' Нажмите «Перепланировать».' : ''}</div>`;
   else {
     if (plan.stale) h += `<div class="banner warn"><span><b>Данные изменились после расчёта.</b> План может не учитывать новый факт, заказы или людей.</span>${staff ? '<button id="rp2" class="small">Пересчитать</button>' : ''}</div>`;
@@ -292,18 +292,21 @@ SCREENS.load = async v => {
 /* ---------------- Перепланирование ---------------- */
 async function openReplan() {
   const foreman = S.me.role === 'foreman';
-  const [st, centers] = await Promise.all([GET('/settings').catch(() => ({ priority_strictness: 100 })), listAll('/work-centers')]);
+  const [st, centers, act] = await Promise.all([GET('/settings').catch(() => ({ priority_strictness: 100 })), listAll('/work-centers'), GET('/plans/active')]);
+  const first = !act.plan;              // активного плана нет — первый расчёт идёт сразу по всем участкам; дальше только по участкам
   const hist = MANAGERS.includes(S.me.role) ? (await GET('/plans')).items : [];
   const myCenter = centers.find(c => c.id === S.me.work_center_id);
   const scopeHtml = foreman
     ? `<p class="banner info">Вы перепланируете <b>свой участок${myCenter ? ' «' + esc(myCenter.name) + '»' : ''}</b>. Задания других участков не меняются.</p>`
-    : (centers.length ? `<label class="f">Что перепланировать<select id="scope"><option value="">Вся организация</option>${centers.map(c => `<option value="${c.id}">Только участок «${esc(c.name)}»</option>`).join('')}</select></label>` : '');
+    : first ? `<p class="banner info">Плана ещё нет. Первый расчёт строится сразу <b>по всем участкам</b>; дальше план пересчитывается по одному участку.</p>`
+    : (centers.length ? `<label class="f">Участок<select id="scope">${centers.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select><span style="font-size:13px">Перепланирование выполняется по участкам. Задания других участков не меняются.</span></label>`
+      : `<p class="banner warn">Перепланирование выполняется по участкам, а участков нет. Добавьте их в разделе «Организация → Участки».</p>`);
   const m = modal(`<h2>Перепланирование</h2>${scopeHtml}
     <label class="f"><b>Жёсткость приоритета: <span id="sv">${num(st.priority_strictness)}</span>%</b><input class="slider" id="sl" type="range" min="0" max="100" step="10" value="${st.priority_strictness}"></label>
     <p class="muted" style="margin-top:-6px">100% — следующий приоритет начинается, когда закончен предыдущий. 0% — приоритет задаёт только очерёдность доступа к людям. Значение влияет на этот запуск; постоянное — в «Настройках».</p>
     <div class="row"><button class="secondary" id="cmp">Сравнить варианты</button><button id="run">Построить план</button><button class="secondary" data-x>Закрыть</button></div>
     <div id="cr" class="scroll" style="margin-top:12px"></div>
-    ${hist.length ? `<h3>История планов</h3><div class="scroll"><table>${hist.slice(0, 8).map(p => `<tr><td>${fmtDT(p.created_at)}</td><td>${num(p.params.strictness)}%</td><td>${p.params.scope_center_id ? 'участок' : 'вся организация'}</td><td>${p.status === 'active' ? '<span class="badge b-done">активный</span>' : `<button class="small secondary" data-act="${p.id}">Вернуть этот</button>`}</td></tr>`).join('')}</table></div>` : ''}`, true);
+    ${hist.length ? `<h3>История планов</h3><div class="scroll"><table>${hist.slice(0, 8).map(p => `<tr><td>${fmtDT(p.created_at)}</td><td>${num(p.params.strictness)}%</td><td>${p.params.scope_center_id ? esc(centers.find(c => c.id === p.params.scope_center_id)?.name || 'участок') : 'первый расчёт, все участки'}</td><td>${p.status === 'active' ? '<span class="badge b-done">активный</span>' : `<button class="small secondary" data-act="${p.id}">Вернуть этот</button>`}</td></tr>`).join('')}</table></div>` : ''}`, true);
   const sl = $('#sl', m.el); sl.oninput = () => $('#sv', m.el).textContent = sl.value; $('[data-x]', m.el).onclick = m.close;
   const scopeBody = () => { const el = $('#scope', m.el); return el && el.value ? { work_center_id: +el.value } : {}; };
   const run = async s => { try { await POST('/plans/replan', { strictness: +s, ...scopeBody() }); REASONS = null; m.close(); toast('План построен'); show(S.screen); } catch (e) { toast(errText(e), true); } };

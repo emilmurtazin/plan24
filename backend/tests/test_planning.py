@@ -43,7 +43,7 @@ def test_db_plan_equals_reference_plan(env, name):
     seed_dataset(s, s.get(User, o.data["user"]["id"]), ds, 0)
     s.commit(); s.close()
     env.state["today"] = today
-    assert o.post("/plans/replan").status_code == 201
+    assert o.replan_all().status_code == 201
     ref = plan_rows_script_format(run_ref(build_input(ds, today)))
     mine = db_rows(o.data["user"]["tenant"]["id"])
     assert ref, "эталонный план пуст — тест бессмысленен"
@@ -54,8 +54,8 @@ def test_db_plan_equals_reference_plan(env, name):
 
 def test_replan_keeps_single_active_and_archives_previous(full_org):
     o = full_org
-    p1 = o.post("/plans/replan").json()
-    p2 = o.post("/plans/replan", json={"strictness": 0}).json()
+    p1 = o.post("/plans/replan").json()                       # первый расчёт — по всей организации
+    p2 = o.post("/plans/replan", json={"strictness": 0, "work_center_id": o.wcs[0]["id"]}).json()
     hist = o.get("/plans").json()["items"]
     assert [p["status"] for p in hist] == ["active", "archived"] and hist[0]["id"] == p2["id"]
     assert o.get("/plans/active").json()["plan"]["id"] == p2["id"]
@@ -65,12 +65,12 @@ def test_replan_keeps_single_active_and_archives_previous(full_org):
 def test_stale_flag_tracks_input_changes(full_org):
     o = full_org
     assert o.get("/plans/active").json() == {"plan": None}
-    o.post("/plans/replan")
+    o.replan_all()
     assert o.get("/plans/active").json()["plan"]["stale"] is False
     prj, pid = o.ids("/projects")[0], o.ids("/products")[0]
     o.post("/order-lines", json={"project_id": prj, "product_id": pid, "qty": 3})
     assert o.get("/plans/active").json()["plan"]["stale"] is True            # данные изменились после расчёта
-    o.post("/plans/replan")
+    o.replan_all()
     assert o.get("/plans/active").json()["plan"]["stale"] is False
     env_today = o.c.state
     env_today["today"] = TODAY + timedelta(days=3)                            # наступил другой день
@@ -79,15 +79,15 @@ def test_stale_flag_tracks_input_changes(full_org):
 
 def test_stale_with_per_run_override_is_not_permanently_stale(full_org):
     o = full_org
-    o.post("/plans/replan", json={"strictness": 30})
+    o.replan_all(json={"strictness": 30})
     assert o.get("/plans/active").json()["plan"]["stale"] is False           # настройка запуска учитывается
 
 
 def test_rollback_to_archived_plan(full_org):
     o = full_org
-    p1 = o.post("/plans/replan", json={"strictness": 100}).json()["id"]
+    p1 = o.replan_all(json={"strictness": 100}).json()["id"]
     day1 = o.get("/reports/day").json()
-    o.post("/plans/replan", json={"strictness": 0})
+    o.replan_all(json={"strictness": 0})
     assert o.post(f"/plans/{p1}/activate").status_code == 200
     assert o.get("/plans/active").json()["plan"]["id"] == p1
     assert o.get("/reports/day").json()["workers"] == day1["workers"]
@@ -96,9 +96,9 @@ def test_rollback_to_archived_plan(full_org):
 
 def test_compare_does_not_change_anything(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     before = (o.get("/plans").json(), o.get("/settings").json(), db_rows(o.data["user"]["tenant"]["id"]))
-    cmp = o.post("/plans/compare").json()
+    cmp = o.post("/plans/compare", json={"work_center_id": o.wcs[0]["id"]}).json()
     after = (o.get("/plans").json(), o.get("/settings").json(), db_rows(o.data["user"]["tenant"]["id"]))
     assert before == after
     v = {x["label"]: x for x in cmp["variants"]}
@@ -108,12 +108,12 @@ def test_compare_does_not_change_anything(full_org):
 
 def test_frozen_days_survive_replan(full_org):
     o = full_org
-    o.post("/plans/replan", json={"strictness": 100})
+    o.replan_all(json={"strictness": 100})
     d0 = o.get("/reports/day").json()
     days = d0["days"]
     d1 = o.get("/reports/day", params={"day": days[1]}).json()
     assert d0["workers"] and d1["workers"]
-    o.post("/plans/replan", json={"strictness": 0})                           # другой режим расчёта
+    o.replan_all(json={"strictness": 0})                           # другой режим расчёта
     key = lambda r: {(w["worker_id"], t["order_line_id"], t["operation_id"]): t for w in r["workers"] for t in w["tasks"] if t["plan_qty"]}
     for day, before in ((days[0], d0), (days[1], d1)):
         was, now = key(before), key(o.get("/reports/day", params={"day": day}).json())
@@ -127,8 +127,8 @@ def test_frozen_days_survive_replan(full_org):
 def test_freeze_days_zero_disables_freezing(full_org):
     o = full_org
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
-    o.post("/plans/replan")
+    o.replan_all()
+    o.replan_all()
     assert not any(t["frozen"] for w in o.get("/reports/day").json()["workers"] for t in w["tasks"])
 
 
@@ -151,7 +151,7 @@ def total_planned(o, order_line_id, operation_id):
 
 def test_fact_reduces_remaining_plan(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     _, w, t = first_task(o)
     before = total_planned(o, t["order_line_id"], t["operation_id"])
     q = t["plan_qty"]
@@ -159,7 +159,7 @@ def test_fact_reduces_remaining_plan(full_org):
                                "operation_id": t["operation_id"], "worker_id": w["worker_id"], "qty": q})
     assert r.status_code == 200
     assert o.get("/plans/active").json()["plan"]["stale"] is True
-    o.post("/plans/replan")
+    o.replan_all()
     assert total_planned(o, t["order_line_id"], t["operation_id"]) == before - q     # сделанное из плана вычтено
     st = {r["order_line_id"]: r for r in o.get("/reports/status").json()["rows"]}[t["order_line_id"]]
     assert st["done_ops"] >= q and st["left_ops"] == st["required_ops"] - st["done_ops"]
@@ -169,7 +169,7 @@ def test_loaded_worker_gets_no_new_tasks_today(full_org):
     """BR-12: исполнитель, уже выработавший ≥ порога дневной нормы сегодня, новых заданий на сегодня не получает."""
     o = full_org
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
+    o.replan_all()
     _, w, t = first_task(o)
     op = next(x for r in o.get(f"/products/{o.get(f'/order-lines/{t['order_line_id']}').json()['product_id']}/routings").json()
               for x in r["operations"] if x["id"] == t["operation_id"])
@@ -177,7 +177,7 @@ def test_loaded_worker_gets_no_new_tasks_today(full_org):
     big = op["norm_per_day"] * perf * 0.9                                     # 90% дневной нормы
     o.post("/facts", json={"fact_date": TODAY.isoformat(), "order_line_id": t["order_line_id"],
                            "operation_id": t["operation_id"], "worker_id": w["worker_id"], "qty": big})
-    o.post("/plans/replan")
+    o.replan_all()
     day = o.get("/reports/day").json()
     mine = next((x for x in day["workers"] if x["worker_id"] == w["worker_id"]), None)
     assert mine is not None and all(tt["plan_qty"] == 0 for tt in mine["tasks"])
@@ -187,10 +187,10 @@ def test_loaded_worker_gets_no_new_tasks_today(full_org):
 def test_absence_is_respected(full_org):
     o = full_org
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
+    o.replan_all()
     _, w, _ = first_task(o)
     o.post("/absences", json={"worker_id": w["worker_id"], "date_from": TODAY.isoformat(), "date_to": (TODAY + timedelta(days=6)).isoformat(), "reason": "отпуск"})
-    o.post("/plans/replan")
+    o.replan_all()
     for d in o.get("/reports/day").json()["days"][:5]:
         day = o.get("/reports/day", params={"day": d}).json()
         assert all(x["worker_id"] != w["worker_id"] for x in day["workers"]), d
@@ -198,12 +198,12 @@ def test_absence_is_respected(full_org):
 
 def test_unavailable_worker_and_cancelled_order_are_not_planned(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     _, w, t = first_task(o)
     o.patch(f"/workers/{w['worker_id']}", json={"status": "unavailable"})
     o.patch(f"/order-lines/{t['order_line_id']}", json={"status": "cancelled"})
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
+    o.replan_all()
     st = {r["order_line_id"] for r in o.get("/reports/status").json()["rows"]}
     assert t["order_line_id"] not in st
     for d in o.get("/reports/day").json()["days"][:6]:
@@ -218,7 +218,7 @@ def test_access_restriction_limits_candidates(full_org):
     for w in others:                                 # все исполнители допущены только к одной позиции
         o.put(f"/workers/{w}/access", json={"order_line_ids": [ol] if w == only else [o.ids("/order-lines")[1]]})
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
+    o.replan_all()
     s = session()
     try:
         pid = s.scalar(select(Plan.id).where(Plan.status == "active"))
@@ -231,7 +231,7 @@ def test_access_restriction_limits_candidates(full_org):
 def test_plan_warnings_visible_to_staff_not_to_worker(full_org):
     o = full_org
     o.patch("/settings", json={"max_workers_per_op": 1})
-    p = o.post("/plans/replan").json()
+    p = o.replan_all().json()
     assert "warnings" in p
     assert "warnings" not in o.get("/plans/active", "worker").json()["plan"]
     assert "warnings" in o.get("/plans/active", "foreman").json()["plan"]

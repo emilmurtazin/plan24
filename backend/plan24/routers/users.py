@@ -16,7 +16,7 @@ from ..db import DB
 from ..deps import get_or_404, require, scoped, tenant_of
 from ..models import ROLES, User, WorkCenter, Worker
 
-ROLE_RU = {"owner": "владелец", "manager": "руководитель", "foreman": "бригадир", "worker": "сборщик", "viewer": "наблюдатель"}
+ROLE_RU = {"owner": "владелец", "manager": "руководитель", "technologist": "технолог", "foreman": "бригадир", "worker": "сборщик", "viewer": "наблюдатель"}
 router = APIRouter(prefix="/users", tags=["users"])
 
 

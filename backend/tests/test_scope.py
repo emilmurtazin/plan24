@@ -28,7 +28,7 @@ def by_center(rows, center):
 def test_foreman_replan_leaves_other_centers_untouched(full_org):
     o = full_org
     o.patch("/settings", json={"freeze_days": 0})                    # чтобы заморозка не маскировала результат
-    p1 = o.post("/plans/replan").json()
+    p1 = o.replan_all().json()
     before = items(o)
     mine, other = o.wcs[0]["id"], o.wcs[1]["id"]
     # у исполнителя своего участка появилось отсутствие — это должно перестроить только его участок
@@ -48,7 +48,7 @@ def test_scoped_replan_keeps_total_work_per_operation(full_org):
     """Работа не теряется и не дублируется: сумма по (позиция, операция) та же, что и до перепланирования участка."""
     o = full_org
     o.patch("/settings", json={"freeze_days": 0})
-    o.post("/plans/replan")
+    o.replan_all()
     total = lambda rows: Counter({k: sum(q for (a, b, _, _, q, _) in rows if (a, b) == k) for k in {(x[1], x[2]) for x in rows}})
     before = total(items(o))
     # заготавливаем изменения участка: исполнитель недоступен на день
@@ -66,7 +66,7 @@ def test_scoped_replan_keeps_total_work_per_operation(full_org):
 
 def test_new_order_goes_only_to_the_foremans_workers(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     prj, prod = o.ids("/projects")[0], o.ids("/products")[0]
     new = o.post("/order-lines", json={"project_id": prj, "product_id": prod, "qty": 6, "ext_id": "NEW-1", "priority": 1}).json()
     o.post("/plans/replan", "foreman", json={})
@@ -74,33 +74,33 @@ def test_new_order_goes_only_to_the_foremans_workers(full_org):
     rows = [r for r in items(o) if r[1] == new["id"]]
     assert rows, "новая позиция не запланирована на участок бригадира"
     assert {c for *_, c in rows} == {mine}
-    # другой участок для неё ничего не получил (проверено выше); полный перерасчёт руководителем не падает
-    assert o.post("/plans/replan").status_code == 201
+    # другой участок для неё ничего не получил (проверено выше); перерасчёт руководителем по участку не падает
+    assert o.replan_all().status_code == 201
 
 
 def test_foreman_cannot_target_another_center_or_replan_without_base_plan(full_org):
     o = full_org
     r = o.post("/plans/replan", "foreman", json={})
     assert r.status_code == 409 and "общий план" in r.json()["title"]       # общего плана ещё нет
-    o.post("/plans/replan")
+    o.replan_all()
     assert o.post("/plans/replan", "foreman", json={"work_center_id": o.wcs[1]["id"]}).status_code == 403
     assert o.post("/plans/compare", "foreman", json={"work_center_id": o.wcs[1]["id"]}).status_code == 403
     assert o.post("/plans/replan", "foreman", json={"work_center_id": o.wcs[0]["id"]}).status_code == 201   # свой — можно
 
 
-def test_manager_can_replan_one_center_or_everything(full_org):
+def test_manager_replans_by_center_only(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     r = o.post("/plans/replan", "manager", json={"work_center_id": o.wcs[1]["id"]})
     assert r.status_code == 201 and r.json()["params"]["scope_center_id"] == o.wcs[1]["id"]
     assert o.post("/plans/replan", "manager", json={"work_center_id": 999999}).status_code == 404
-    full = o.post("/plans/replan", "manager", json={}).json()
-    assert full["params"]["scope_center_id"] is None
+    # «вся организация» после первого расчёта недоступна
+    assert o.post("/plans/replan", "manager", json={}).status_code == 422
 
 
 def test_scoped_plan_is_not_stale_and_compare_is_scoped_and_pure(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     o.post("/plans/replan", "foreman", json={"strictness": 40})
     assert o.get("/plans/active").json()["plan"]["stale"] is False
     plans_before, rows_before = o.get("/plans").json(), items(o)
@@ -111,7 +111,7 @@ def test_scoped_plan_is_not_stale_and_compare_is_scoped_and_pure(full_org):
 
 def test_other_centers_frozen_flags_and_reasons_are_preserved(full_org):
     o = full_org
-    o.post("/plans/replan")
+    o.replan_all()
     s = dbm.admin_session()
     try:
         wc = {x.id: x.work_center_id for x in s.scalars(select(Worker))}

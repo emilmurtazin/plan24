@@ -1,9 +1,10 @@
 """Матрица прав (ТЗ раздел 9, «Права доступа»): каждый эндпоинт × каждая роль."""
 import pytest
 
-ROLES = ["owner", "manager", "foreman", "worker", "viewer"]
-O, M, F, W, V = ROLES
-MANAGERS, STAFF, READERS, ALL = {O, M}, {O, M, F}, {O, M, F, V}, set(ROLES)
+ROLES = ["owner", "manager", "technologist", "foreman", "worker", "viewer"]
+O, M, T, F, W, V = ROLES
+MANAGERS, STAFF, READERS, ALL = {O, M}, {O, M, F}, {O, M, T, F, V}, set(ROLES)
+CATALOG = {O, M, T}          # каталог изделий: создание и редактирование
 
 # (метод, путь, тело, кому разрешено). Для разрешённых допустим любой статус, кроме 401/403
 # (например 404 на несуществующий id или 409/422 по бизнес-правилам) — проверяется именно граница прав.
@@ -29,15 +30,16 @@ CASES = [
     ("DELETE", "/projects/999999", None, MANAGERS),
     ("POST", "/work-centers", {"name": "WC-perm"}, MANAGERS),
     ("POST", "/workers", {"name": "W-perm"}, MANAGERS),
-    ("POST", "/products", {"name": "Prod-perm"}, MANAGERS),
+    ("POST", "/products", {"name": "Prod-perm"}, CATALOG),
+    ("GET", "/routings", None, READERS),
     ("POST", "/order-lines", {"project_id": 999999, "product_id": 999999, "qty": 1}, MANAGERS),
     ("POST", "/holidays", {"holiday_date": "2026-12-31"}, MANAGERS),
     ("POST", "/absences", {"worker_id": 999999, "date_from": "2026-10-05", "date_to": "2026-10-05"}, MANAGERS),
     ("PUT", "/workers/999999/access", {"order_line_ids": []}, MANAGERS),
-    ("POST", "/products/999999/routings", None, MANAGERS),
-    ("POST", "/routings/999999/operations", {"name": "x", "norm_per_day": 1}, MANAGERS),
-    ("PATCH", "/operations/999999", {"hold_qty": 1}, MANAGERS),
-    ("DELETE", "/operations/999999", None, MANAGERS),
+    ("POST", "/products/999999/routings", None, CATALOG),
+    ("POST", "/routings/999999/operations", {"name": "x", "norm_per_day": 1}, CATALOG),
+    ("PATCH", "/operations/999999", {"hold_qty": 1}, CATALOG),
+    ("DELETE", "/operations/999999", None, CATALOG),
     ("PATCH", "/settings", {"max_workers_per_op": 4}, MANAGERS),
     ("GET", "/audit", None, MANAGERS),
     ("GET", "/telegram/status", None, MANAGERS),

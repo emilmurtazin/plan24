@@ -12,10 +12,11 @@ from .db import DB
 from .models import Tenant, User
 from .security import decode_access
 
-ALL = ("owner", "manager", "foreman", "worker", "viewer")
+ALL = ("owner", "manager", "technologist", "foreman", "worker", "viewer")
 MANAGERS = ("owner", "manager")
 STAFF = ("owner", "manager", "foreman")
-READERS = ("owner", "manager", "foreman", "viewer")
+READERS = ("owner", "manager", "technologist", "foreman", "viewer")
+CATALOG = ("owner", "manager", "technologist")        # создание и редактирование каталога изделий
 
 
 def current_user(request: Request, db: Session = DB) -> User:

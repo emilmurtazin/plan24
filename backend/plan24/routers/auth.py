@@ -22,8 +22,9 @@ log = logging.getLogger("plan24.mail")
 _DUMMY = security.hash_password("dummy-password-for-timing")
 
 PERMISSIONS = {   # что может роль — для интерфейса (серверная проверка всё равно выполняется в каждом эндпоинте)
-    "owner": ["refs.write", "plan.run", "settings.write", "fact.any", "users", "audit", "reports"],
-    "manager": ["refs.write", "plan.run", "settings.write", "fact.any", "audit", "reports"],
+    "owner": ["refs.write", "catalog.write", "plan.run", "settings.write", "fact.any", "users", "audit", "reports"],
+    "manager": ["refs.write", "catalog.write", "plan.run", "settings.write", "fact.any", "audit", "reports"],
+    "technologist": ["catalog.write", "reports"],
     "foreman": ["plan.run", "fact.center", "reports"],
     "worker": ["fact.own"],
     "viewer": ["reports"],

@@ -59,6 +59,8 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   step('ссылка из письма подтверждает e-mail');
   const nav = $$('nav.tabs > button').map(b => b.textContent);
   console.log('   меню владельца:', nav.join(' | '));
+  for (const x of ['Дашборд', 'Каталог изделий', 'Проекты и Заказы', 'Организация']) if (!nav.includes(x)) throw new Error('нет вкладки ' + x);
+  for (const x of ['Обзор', 'Данные', 'Настройки', 'Пользователи', 'Журнал']) if (nav.includes(x)) throw new Error('лишняя вкладка в меню: ' + x);
 
   // --- пустое состояние и демо ---
   await until(() => byText('h1', 'Начнём'), 'онбординг'); step('пустая организация → онбординг');
@@ -82,11 +84,14 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   step('повторный ввод заменяет значение: ' + $('#toast').textContent);
 
   // --- обзор показывает «данные изменились» ---
-  click(byText('nav.tabs button', 'Обзор'));
+  click(byText('nav.tabs button', 'Дашборд'));
   await until(() => $('#view .banner.warn'), 'баннер устаревшего плана');
   step('после факта обзор предупреждает: «' + $('#view .banner.warn').textContent.replace(/\s+/g, ' ').slice(0, 70) + '…»');
   click($('#rp2'));
   await until(() => $('#cmp'), 'окно перепланирования');
+  if (/Вся организация/.test($('.modal').textContent)) throw new Error('«Вся организация» должна быть исключена');
+  if (!$('.modal #scope') || [...$('.modal #scope').options].some(o => o.value === '')) throw new Error('перепланирование — только по участкам');
+  step('перепланирование: выбор только из участков, «Вся организация» нет');
   click($('#cmp'));
   await until(() => $$('.cmp tr').length >= 5, 'таблица сравнения');
   step('сравнение вариантов: ' + $$('.cmp tr').slice(1).map(r => r.cells[0].textContent + '→' + r.cells[2].textContent + ' в риске').join('; '));
@@ -96,7 +101,7 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
 
   // --- статус и загрузка ---
   // регрессия: переключение раздела сразу после перерисовки не должно затираться запоздавшим ответом прежнего экрана
-  click(byText('nav.tabs button', 'Обзор')); click(byText('nav.tabs button', 'Загрузка')); click(byText('nav.tabs button', 'Обзор')); click(byText('nav.tabs button', 'Статус заказов'));
+  click(byText('nav.tabs button', 'Дашборд')); click(byText('nav.tabs button', 'Загрузка')); click(byText('nav.tabs button', 'Дашборд')); click(byText('nav.tabs button', 'Статус заказов'));
   await sleep(1200);
   if (!$('#tb')) throw new Error('запоздавший ответ перерисовал не тот раздел: ' + $('#view').textContent.slice(0, 80));
   step('быстрое переключение разделов: остаётся последний выбранный');
@@ -111,21 +116,25 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $$('.heat tr').length > 2, 'тепловая карта'); step('загрузка: исполнителей ' + ($$('.heat tr').length - 1));
 
   // --- данные ---
-  click(byText('nav.tabs button', 'Данные'));
+  click(byText('nav.tabs button', 'Проекты и Заказы'));
+  await until(() => $('#dt'), 'проекты'); click(byText('#view nav button', 'Заказы'));
   await until(() => $$('#dt tr').length > 3, 'заказы'); step('данные/заказы: ' + ($$('#dt tr').length - 1) + ' позиций');
   click(byText('#dt button', 'Добавить позицию'));
   await until(() => $('.modal form'), 'форма позиции');
   const pf = $('.modal form'); setv(pf.elements.qty, '-3'); pf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await sleep(300); step('невалидная форма не уходит на сервер (' + ($('.modal [data-err]').textContent || 'браузерная валидация') + ')');
+  const hasCust = !!pf.elements.customer && !!pf.elements.routing_id; if (!hasCust) throw new Error('в форме заказа нет заказчика или версии изделия');
+  if (pf.elements.routing_id.options.length < 2) throw new Error('версии изделия не подставились');
+  step('форма заказа: есть «Заказчик» и выбор версии изделия (' + pf.elements.routing_id.options.length + ' вар.)');
   click(byText('.modal button', 'Отмена'));
-  click(byText('#view nav button', 'Изделия и маршруты'));
+  click(byText('nav.tabs button', 'Каталог изделий'));
   await until(() => $('[data-rt]'), 'кнопка маршрута'); click($('[data-rt]'));
   await until(() => $('.modal table'), 'маршрут'); 
   step('маршрут: ' + ($('.modal .muted').textContent.slice(0, 80)) + '…');
   click(byText('.modal button', 'Новая версия'));
   await until(() => /v2/.test($('.modal h2').parentElement.textContent), 'версия 2'); step('создана версия маршрута v2, операций: ' + ($$('.modal table tr').length - 1));
   click(byText('.modal button', 'Закрыть'));
-  click(byText('#view nav button', 'Исполнители'));
+  click(byText('nav.tabs button', 'Организация')); await until(() => $('#view nav button'), 'организация'); click(byText('#view nav button', 'Работники'));
   await until(() => $('[data-ac]'), 'исполнители'); click($('[data-ac]'));
   await until(() => $('.modal input[type=checkbox]'), 'допуски'); step('допуски: позиций для выбора ' + $$('.modal input[type=checkbox]').length);
   click(byText('.modal button', 'Отмена'));
@@ -136,13 +145,14 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   click(byText('.modal button', 'Закрыть'));
 
   // --- настройки ---
-  click(byText('nav.tabs button', 'Настройки'));
+  click(byText('#view nav button', 'Участки'));
+  await until(() => $('[data-settings]'), 'кнопка «Настройки» в участках'); click($('[data-settings]'));
   await until(() => $('#sf'), 'настройки'); 
   setv($('#sf').elements.priority_strictness, '60'); $('#sf').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await until(() => /Настройки сохранены/.test($('#toast').textContent), 'сохранение настроек'); step('настройки сохранены');
 
   // --- пользователи: создаём бригадира ---
-  click(byText('nav.tabs button', 'Пользователи'));
+  click(byText('#view nav button', 'Пользователи'));
   await until(() => $('#add'), 'пользователи'); click($('#add'));
   await until(() => $('.modal form'), 'форма пользователя');
   const U = $('.modal form'), UE = U.elements; setv(UE.email, 'foreman@smoke.ru'); setv(UE.name, 'Борис Бригадир'); setv(UE.role, 'foreman');
@@ -166,13 +176,13 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
     $('#af').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
     await until(() => $('header.top'), 'оболочка приглашённого');
     const m = $$('nav.tabs > button').map(b => b.textContent).join(' | ');
-    if (/Данные|Пользователи|Настройки/.test(m)) throw new Error('наблюдатель видит лишнее: ' + m);
+    if (/Проекты и Заказы|Организация|Каталог/.test(m)) throw new Error('наблюдатель видит лишнее: ' + m);
     if ($('#vb')) throw new Error('приглашённый должен быть уже подтверждён');
     console.log('   меню наблюдателя:', m);
   });
   step('приглашение: ссылка из письма → свой пароль → вход, роль «наблюдатель», e-mail подтверждён');
 
-  click(byText('nav.tabs button', 'Журнал'));
+  click(byText('nav.tabs button', 'Организация')); await until(() => byText('#view nav button', 'Журнал'), 'вкладки организации'); click(byText('#view nav button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 
   // --- выход и вход бригадиром ---
@@ -183,7 +193,7 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $('header.top'), 'оболочка бригадира');
   const nav2 = $$('nav.tabs > button').map(b => b.textContent);
   console.log('   меню бригадира:', nav2.join(' | '));
-  if (nav2.includes('Данные') || nav2.includes('Пользователи') || nav2.includes('Настройки')) throw new Error('бригадир видит лишние разделы');
+  if (['Проекты и Заказы', 'Организация', 'Каталог изделий'].some(x => nav2.includes(x))) throw new Error('бригадир видит лишние разделы');
   await until(() => $$('.wcard').length, 'план бригадира');
   const names = $$('.wcard h3').map(h => h.textContent);
   step('бригадир: сразу «План на день», видит ' + names.length + ' исполнителей своего участка (меньше, чем у владельца: ' + cards + ')');
