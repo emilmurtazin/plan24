@@ -127,6 +127,26 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   if (pf.elements.routing_id.options.length < 2) throw new Error('версии изделия не подставились');
   step('форма заказа: есть «Заказчик» и выбор версии изделия (' + pf.elements.routing_id.options.length + ' вар.)');
   click(byText('.modal button', 'Отмена'));
+  // --- распределение операций по участкам: нераспределённая операция — ошибка ---
+  if (!/Операции по участкам/.test($('#dt').textContent)) throw new Error('в заказах нет колонки «Операции по участкам»');
+  const replanFirstCenter = async () => { click(byText('nav.tabs button', 'Дашборд')); await until(() => $('#rp2') || $('#rp'), 'кнопка пересчёта'); click($('#rp2') || $('#rp')); await until(() => $('#scope'), 'окно пересчёта'); click(byText('button', 'Построить план')); await until(() => !$('.modal'), 'закрытие окна пересчёта'); await sleep(300); };
+  click($('[data-dist]')); await until(() => $('.modal tr[data-op]'), 'окно распределения');
+  const nOps = $$('.modal tr[data-op]').length;
+  click($('#dqc')); if (!/Распределено: 0 из/.test($('#dsum').textContent)) throw new Error('«Снять все» не сработало');
+  click($('#dqa')); if (!new RegExp(`Распределено: ${nOps} из ${nOps}`).test($('#dsum').textContent)) throw new Error('«Назначить всем операциям» не сработало: ' + $('#dsum').textContent);
+  click($('.modal tr[data-op] input:checked'));            // одну операцию оставляем без участка
+  if (!new RegExp(`Распределено: ${nOps - 1} из ${nOps}`).test($('#dsum').textContent)) throw new Error('счётчик не обновился: ' + $('#dsum').textContent);
+  click($('#ds')); await until(() => !$('.modal'), 'закрытие окна распределения'); await until(() => /не распределено/.test($('#dt').textContent), 'ошибка в таблице заказов');
+  step('распределение: одна операция без участка → в таблице заказов «не распределено»');
+  await replanFirstCenter();
+  await until(() => $('#view .banner.err'), 'красная ошибка на дашборде');
+  if (!/не распределены по участкам/.test($('#view .banner.err').textContent)) throw new Error('текст ошибки: ' + $('#view .banner.err').textContent);
+  step('дашборд: «' + $('#view .banner.err').textContent.replace(/\s+/g, ' ').slice(0, 85) + '…»');
+  click($('#goDist')); await until(() => $('[data-dist]'), 'переход к заказам по кнопке «Распределить»');
+  click($('[data-dist]')); await until(() => $('.modal tr[data-op]'), 'окно распределения 2'); click($('#dqa')); click($('#ds')); await until(() => !$('.modal'), 'закрытие');
+  await replanFirstCenter(); await until(() => !$('#view .banner.err'), 'ошибка исчезла после распределения');
+  step('после распределения и пересчёта ошибка пропала');
+  click(byText('nav.tabs button', 'Проекты и Заказы')); await until(() => $('#dt'), 'проекты и заказы'); click(byText('#view nav button', 'Заказы')); await until(() => $$('#dt tr').length > 3, 'заказы');
   click(byText('nav.tabs button', 'Каталог изделий'));
   await until(() => $('[data-rt]'), 'кнопка маршрута'); click($('[data-rt]'));
   await until(() => $('.modal table'), 'маршрут'); 

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import reports_service
+from .. import distribution, reports_service
 from ..db import DB
 from ..deps import READERS, STAFF, ALL, get_today, require, scoped
 from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, Worker)
@@ -19,6 +19,14 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 def _active(db, user) -> Optional[Plan]:
     return db.scalar(select(Plan).where(Plan.tenant_id == user.tenant_id, Plan.status == "active"))
+
+
+def _own_rows(db, user, rows: list) -> list:
+    """Бригадир видит позиции, у которых есть операции его участка (остальные участки — не его дело)."""
+    if user.role != "foreman":
+        return rows
+    mine = distribution.order_ids_of_center(db, user, user.work_center_id)
+    return [r for r in rows if r.get("order_line_id") in mine]
 
 
 def _visible_workers(db, user, workers: list) -> list:
@@ -41,7 +49,7 @@ def status(user: User = Depends(require(*READERS)), db: Session = DB):
     p = _active(db, user)
     if not p:
         return {"plan_id": None, "rows": []}
-    return {"plan_id": p.id, "created_at": p.created_at.isoformat(), "rows": p.summary.get("status", [])}
+    return {"plan_id": p.id, "created_at": p.created_at.isoformat(), "rows": _own_rows(db, user, p.summary.get("status", []))}
 
 
 @router.get("/load")
@@ -61,7 +69,7 @@ def dashboard(user: User = Depends(require(*READERS)), db: Session = DB, today: 
     p = _active(db, user)
     if not p:
         return {"plan_id": None}
-    rows = p.summary.get("status", [])
+    rows = _own_rows(db, user, p.summary.get("status", []))
     by: dict = defaultdict(int)
     for r in rows:
         by[r["status"]] += 1

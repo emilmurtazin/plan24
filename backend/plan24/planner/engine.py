@@ -48,6 +48,11 @@ def _allowed(w: _W, order: OrderLine) -> bool:
     return order.allowed_workers is None or (w.name in order.allowed_workers)
 
 
+def _op_allowed(w: _W, order: OrderLine, op) -> bool:
+    """Операция выполняется только работниками назначенных ей участков (если распределение задано)."""
+    return order.op_workers is None or (w.name in order.op_workers.get(op.name, ()))
+
+
 def allocate_fact(fact_by_pio: dict, batches_by_pi: dict, ops_by_product: dict) -> dict:
     """Факт по связке проект—изделие—операция раскладывается по партиям в порядке сроков (v3.4).
 
@@ -305,7 +310,7 @@ def plan(inp: PlanInput) -> PlanResult:
                 blocked = min(hold, ready_items)
                 available_items = max(0, ready_items - blocked)
 
-                candidates = [w for w in workers if w.skill >= op.min_skill and _allowed(w, order)]
+                candidates = [w for w in workers if w.skill >= op.min_skill and _allowed(w, order) and _op_allowed(w, order, op)]
                 sched_pool = [w for w in candidates if w.name not in inp.fixed_workers] if inp.fixed_workers else candidates
 
                 already_ops = 0
@@ -346,7 +351,14 @@ def plan(inp: PlanInput) -> PlanResult:
                         order_max_day = d
 
                 if remaining_ops > 0:
-                    if not sched_pool:
+                    if order.op_workers is not None and op.name not in order.op_workers:
+                        warnings.append(PlanWarning(
+                            "NOT_DISTRIBUTED",
+                            f"{order.product} (ID {order.id}) / {op.name}: операция не распределена по участкам",
+                            order.id, op.name))
+                    elif not sched_pool and candidates and order.op_workers is not None:
+                        pass        # участок операции сейчас не пересчитывается (частичное перепланирование)
+                    elif not sched_pool:
                         warnings.append(PlanWarning(
                             "NO_WORKERS",
                             f"{order.product} (ID {order.id}) / {op.name}: нет подходящих сборщиков",

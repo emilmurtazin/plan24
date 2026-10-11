@@ -241,6 +241,16 @@ class WorkerOrderLine(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
 
 
+class OrderLineOperation(Base):
+    """Распределение операций позиции заказа по участкам: операция выполняется работниками назначенных участков.
+    У операции может быть несколько участков. Нет строк = операция не распределена (ошибка планирования)."""
+    __tablename__ = "order_line_operations"
+    order_line_id: Mapped[int] = mapped_column(ForeignKey("order_lines.id"), primary_key=True)
+    operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id"), primary_key=True)
+    work_center_id: Mapped[int] = mapped_column(ForeignKey("work_centers.id"), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+
 # ---------------------------------------------------------------- факт, планы, аудит
 class Fact(Base):
     __tablename__ = "facts"

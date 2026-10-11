@@ -11,8 +11,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import (Fact, Holiday, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Product, Project,
-                     Routing, User, Worker, WorkerAbsence, WorkerOrderLine, utcnow)
+from .models import (Fact, Holiday, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
+                    Product, Project, Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine, utcnow)
 from .planner import (FactRow, Operation as POp, OrderLine as POrder, PlanConfig, PlanInput, Worker as PWorker,
                       build_work_calendar, plan as run_planner, reports)
 
@@ -79,6 +79,11 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         p = products[o.product_id]
         return p.name if len(versions_used[o.product_id]) == 1 else f"{p.name} (v{routings[o.routing_id].version_no})"
 
+    # распределение операций по участкам; если в организации нет участков — функция не используется (без ограничений)
+    has_centers = db.scalar(select(WorkCenter.id).where(WorkCenter.tenant_id == tenant_id).limit(1)) is not None
+    assigned: dict = defaultdict(lambda: defaultdict(set))          # order_line_id -> operation_id -> {work_center_id}
+    for a in db.scalars(q(OrderLineOperation)):
+        assigned[a.order_line_id][a.operation_id].add(a.work_center_id)
     ctx = Ctx(worker_by_name={w.name: w for w in workers_all})
     pproducts, porders = {}, []
     for o in orders:
@@ -96,9 +101,13 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         for op in routings[o.routing_id].operations:
             ctx.op_id[(key, op.name)] = op.id
         names = frozenset(w.name for w in avail if (not links[w.id]) or (o.id in links[w.id]))
+        op_workers = None
+        if has_centers:
+            op_workers = {op.name: frozenset(w.name for w in avail if w.work_center_id in assigned[o.id][op.id])
+                          for op in routings[o.routing_id].operations if assigned[o.id].get(op.id)}
         porders.append(POrder(id=key, project=projects[o.project_id].name, product=pk, qty=o.qty, due=o.due_date,
                               priority=float(o.priority),
-                              allowed_workers=None if len(names) == len(avail) else names))
+                              allowed_workers=None if len(names) == len(avail) else names, op_workers=op_workers))
     prod_key_of = {ctx.key_by_order_id[o.id]: pkey(o) for o in orders}
 
     pworkers = tuple(PWorker(id=w.id, name=w.name, perf=w.perf, skill=w.skill, absent_days=frozenset(absent[w.id]))
@@ -225,6 +234,11 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
                          for n in lm["workers"] if n in ctx.worker_by_name}
     warnings = [{"code": w.code, "text": w.text, "order_line_id": ctx.order_by_key[w.order_id].id if w.order_id in ctx.order_by_key else None,
                  "operation": w.operation} for w in res.warnings]
+    if any(o.op_workers is not None for o in inp.order_lines):     # распределение по участкам включено
+        for w in ctx.worker_by_name.values():
+            if w.status == "available" and w.work_center_id is None:
+                warnings.append({"code": "WORKER_NO_SECTION", "order_line_id": None, "operation": None,
+                                 "text": f"{w.name}: не закреплён за участком, поэтому в план не попадает"})
     prev = db.scalar(select(Plan).where(Plan.tenant_id == user.tenant_id, Plan.status == "active"))
     old_flags: dict = {}
     if prev and inp.fixed_workers:

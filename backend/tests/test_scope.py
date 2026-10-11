@@ -69,6 +69,11 @@ def test_new_order_goes_only_to_the_foremans_workers(full_org):
     o.replan_all()
     prj, prod = o.ids("/projects")[0], o.ids("/products")[0]
     new = o.post("/order-lines", json={"project_id": prj, "product_id": prod, "qty": 6, "ext_id": "NEW-1", "priority": 1}).json()
+    # новая позиция не распределена по участкам — это ошибка; распределяем все операции на участки
+    ops = o.get(f"/order-lines/{new['id']}/operations").json()["items"]
+    assert ops and not any(i["distributed"] for i in ops)
+    o.put(f"/order-lines/{new['id']}/operations", json={"assignments": [
+        {"operation_id": i["operation_id"], "work_center_ids": [c["id"] for c in o.wcs]} for i in ops]})
     o.post("/plans/replan", "foreman", json={})
     mine = o.wcs[0]["id"]
     rows = [r for r in items(o) if r[1] == new["id"]]

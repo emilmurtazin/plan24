@@ -192,6 +192,8 @@ const confirmBox = (text) => new Promise(res => {
   $('[data-y]', m.el).onclick = () => { m.close(); res(true); }; $('[data-n]', m.el).onclick = () => { m.close(); res(false); };
 });
 
+const WARN_RU = { NOT_DISTRIBUTED: 'Не распределено по участкам', NO_WORKERS: 'Нет подходящих работников', HORIZON_EXCEEDED: 'Не влезает в горизонт', PRIORITY_HORIZON: 'Горизонт для приоритета', NO_OPERATIONS: 'Нет операций', DATA_INVALID: 'Некорректные данные', WORKER_NO_SECTION: 'Работник без участка' };
+
 /* ---------------- Дашборд ---------------- */
 const ST = { 'Готово': ['b-done', '✔'], 'В работе': ['b-work', '▶'], 'Риск опоздания': ['b-risk', '⚠'], 'Нет плана': ['b-none', '…'], 'Нет операций': ['b-noop', '—'] };
 const stBadge = s => { const x = ST[s] || ['b-noop', '?']; return `<span class="badge ${x[0]}"><span aria-hidden="true">${x[1]}</span>${esc(s)}</span>`; };
@@ -216,16 +218,19 @@ SCREENS.home = async v => {
   if (!plan) h += `<div class="banner info">План ещё не построен.${staff ? ' Нажмите «Перепланировать».' : ''}</div>`;
   else {
     if (plan.stale) h += `<div class="banner warn"><span><b>Данные изменились после расчёта.</b> План может не учитывать новый факт, заказы или людей.</span>${staff ? '<button id="rp2" class="small">Пересчитать</button>' : ''}</div>`;
+    const nd = (plan.warnings || []).filter(w => w.code === 'NOT_DISTRIBUTED'), ndOrders = new Set(nd.map(w => w.order_line_id)).size;
+    if (nd.length) h += `<div class="banner err" role="alert"><span><b>Ошибка: операции не распределены по участкам (${nd.length} в ${ndOrders} поз.).</b> Такие операции не попадают в план, а следующие за ними не планируются, пока их не распределят.</span>${MANAGERS.includes(S.me.role) ? '<button id="goDist" class="small">Распределить</button>' : ''}</div>`;
     const d = await GET('/reports/dashboard'), by = d.by_status || {};
     h += `<div class="cards3"><div class="kpi"><b class="${by['Риск опоздания'] ? 'err' : ''}">${by['Риск опоздания'] || 0}</b>позиций в риске</div><div class="kpi"><b>${by['В работе'] || 0}</b>в работе</div>
       <div class="kpi"><b class="ok">${by['Готово'] || 0}</b>готово</div><div class="kpi"><b>${num(d.week_peak_load)}</b>пик загрузки на неделе</div></div>`;
     if (d.risk.length) h += `<div class="card"><h2>Риск опоздания</h2><div class="scroll"><table><tr><th>Заказ</th><th>Изделие</th><th>Проект</th><th>Срок</th><th>Прогноз</th></tr>${d.risk.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.product)}</td><td>${esc(r.project)}</td><td>${fmtDY(r.due)}</td><td class="err">${esc(r.forecast_text)}</td></tr>`).join('')}</table></div></div>`;
     if (d.loaded_today.length) h += `<div class="card"><b>Уже загружены сегодня</b> и не получают новых заданий: ${d.loaded_today.map(esc).join(', ')}</div>`;
     h += `<p class="muted">План от ${fmtDT(plan.created_at)}${plan.params.scope_center_id ? ' (последним пересчитан участок)' : ''} · строк плана: ${plan.items} · строгость приоритета ${num(plan.params.strictness)}%</p>`;
-    if (plan.warnings && plan.warnings.length) h += `<div class="card"><h2>Предупреждения (${plan.warnings.length})</h2><div class="scroll"><table>${plan.warnings.slice(0, 30).map(w => `<tr><td class="warn">${esc(w.code)}</td><td>${esc(w.text)}</td></tr>`).join('')}</table></div></div>`;
+    if (plan.warnings && plan.warnings.length) h += `<div class="card"><h2>Предупреждения (${plan.warnings.length})</h2><div class="scroll"><table>${plan.warnings.slice(0, 30).map(w => `<tr><td class="${w.code === 'NOT_DISTRIBUTED' ? 'err' : 'warn'}">${esc(WARN_RU[w.code] || w.code)}</td><td>${esc(w.text)}</td></tr>`).join('')}</table></div></div>`;
   }
   v.innerHTML = h;
   for (const id of ['rp', 'rp2']) if ($('#' + id)) $('#' + id).onclick = openReplan;
+  if ($('#goDist')) $('#goDist').onclick = () => { S.dataTab = 'orders'; show('data'); };
 };
 
 /* ---------------- План на день + факт ---------------- */

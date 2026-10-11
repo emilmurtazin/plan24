@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, planning
+from .. import audit, distribution, planning
 from .. import db as dbm
 from ..db import DB
 from ..deps import ALL, MANAGERS, READERS, STAFF, get_or_404, get_today, require, scoped
@@ -75,7 +75,12 @@ def _meta(db, user, p: Plan, today: date, with_warnings: bool) -> dict:
            "stale": planning.input_hash(inp) != p.input_hash,       # данные изменились после расчёта
            "work_days": p.summary.get("work_days", [])[:1] + p.summary.get("work_days", [])[-1:]}
     if with_warnings:
-        out["warnings"] = p.warnings
+        ws = p.warnings
+        if user.role == "foreman":            # бригадир видит предупреждения только по позициям со своими операциями
+            mine = distribution.order_ids_of_center(db, user, user.work_center_id)
+            ws = [w for w in ws if w.get("order_line_id") is None or w["order_line_id"] in mine]
+            out["warnings_count"] = len(ws)
+        out["warnings"] = ws
     return out
 
 

@@ -11,7 +11,7 @@ from .. import audit
 from ..compat import norm_id
 from ..db import DB
 from ..deps import MANAGERS, get_today, require
-from ..models import (Holiday, Operation, OrderLine, Product, Project, Routing, User, WorkCenter, Worker,
+from ..models import (Holiday, Operation, OrderLine, OrderLineOperation, Product, Project, Routing, User, WorkCenter, Worker,
                       WorkerOrderLine)
 from ..synthetic import make_datasets
 
@@ -58,6 +58,9 @@ def seed_dataset(db: Session, user: User, ds: dict, shift_days: int = 0, setting
         ol = OrderLine(tenant_id=t, project_id=projects[o["project"]].id, product_id=p.id, routing_id=r.id,
                        ext_id=str(o["id"]), qty=o["qty"], due_date=sh(o["due"]), priority=int(o["priority"]))
         db.add(ol); db.flush(); lines[norm_id(o["id"])] = ol
+        for op_ in db.scalars(select(Operation).where(Operation.routing_id == r.id)):   # демо: операции на все участки
+            for c in centers:
+                db.add(OrderLineOperation(tenant_id=t, order_line_id=ol.id, operation_id=op_.id, work_center_id=c.id))
     for w in ds["workers"]:
         for oid in [norm_id(x) for x in str(w.get("projects") or "").split(",") if norm_id(x)]:
             if oid in lines:

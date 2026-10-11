@@ -36,6 +36,9 @@ class OrderLine:
     priority: float = 999
     # допуск к позициям (BR-9): None = любой исполнитель; frozenset() = никому не разрешено
     allowed_workers: Optional[frozenset] = None
+    # Распределение операций по участкам: название операции -> исполнители назначенных участков.
+    # None = ограничения нет (поведение исходного скрипта); операции, которой нет в словаре, не распределены.
+    op_workers: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ class PlanInput:
 
 @dataclass(frozen=True)
 class PlanWarning:
-    code: str            # NO_OPERATIONS, NO_WORKERS, HORIZON_EXCEEDED, PRIORITY_HORIZON, DATA_INVALID
+    code: str            # NO_OPERATIONS, NO_WORKERS, NOT_DISTRIBUTED, HORIZON_EXCEEDED, PRIORITY_HORIZON, DATA_INVALID
     text: str
     order_id: Optional[str] = None
     operation: Optional[str] = None

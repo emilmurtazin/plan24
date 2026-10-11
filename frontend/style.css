@@ -28,7 +28,7 @@ th{font-weight:600;font-size:14px;color:var(--muted);white-space:nowrap}td.num,t
 .badge{display:inline-flex;gap:6px;align-items:center;padding:2px 10px;border-radius:99px;font-size:14px;font-weight:600;white-space:nowrap}
 .b-done{background:var(--green-soft);color:var(--green)}.b-work{background:var(--blue-soft);color:var(--blue)}.b-risk{background:var(--red-soft);color:var(--red)}.b-none{background:var(--amber-soft);color:var(--amber)}.b-noop{background:var(--grey-soft);color:var(--muted)}
 .banner{padding:10px 14px;border-radius:var(--r);margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.banner.warn{background:var(--amber-soft);color:var(--ink);border:1px solid var(--amber)}.banner.info{background:var(--blue-soft);border:1px solid var(--blue)}
+.banner.err{background:var(--red-soft);color:var(--ink);border:1px solid var(--red)}.banner.warn{background:var(--amber-soft);color:var(--ink);border:1px solid var(--amber)}.banner.info{background:var(--blue-soft);border:1px solid var(--blue)}
 .days{display:flex;gap:6px;overflow-x:auto;margin-bottom:12px}
 .days button{background:var(--card);color:var(--ink);border:1px solid var(--line);min-width:62px;flex-direction:column;line-height:1.2;padding:6px 10px;gap:0}
 .days button[aria-pressed=true]{background:var(--ink);color:var(--card);border-color:var(--ink)}

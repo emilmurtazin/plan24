@@ -6,8 +6,9 @@ async function loadRefs() {
     ['/projects', '/products', '/workers', '/work-centers', '/order-lines', '/fact-reasons', '/routings'].map(listAll));
   const by = a => Object.fromEntries(a.map(x => [x.id, x]));
   const tg = await GET('/telegram/status').catch(() => ({ configured: false, links: [] }));
+  const dist = Object.fromEntries(((await GET('/order-distribution').catch(() => ({ items: [] }))).items || []).map(x => [x.order_line_id, x]));
   const quals = (await GET('/settings').catch(() => ({ qualifications: [] }))).qualifications || [];
-  return { quals, projects, products, workers, centers, orders, reasons, routings, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
+  return { dist, quals, projects, products, workers, centers, orders, reasons, routings, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
     P: by(projects), PR: by(products), W: by(workers), C: by(centers) };
 }
 /* Уровень квалификации: название из настроек организации, иначе число */
@@ -50,7 +51,10 @@ const TABS = {
       hint: (r) => r.products.length && r.projects.length ? 'Позиция = изделие в нужном количестве к сроку. Можно выбрать версию изделия; если не выбрать — берётся текущая. Уже созданные позиции остаются на своей версии.' : 'Сначала добавьте проект (вкладка «Проекты») и изделие с операциями («Каталог изделий»).',
       cols: r => [{ label: '№', get: x => x.ext_id || '#' + x.id }, { label: 'Проект', get: x => r.P[x.project_id]?.name }, { label: 'Заказчик', get: x => x.customer || r.P[x.project_id]?.customer || '—' },
       { label: 'Изделие', get: x => r.PR[x.product_id]?.name }, { label: 'Версия', get: x => { const v = r.routings.find(q => q.id === x.routing_id); return v ? verLabel(v) : '—'; } },
-      { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', get: x => ORDER_ST[x.status] }],
+      { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', get: x => ORDER_ST[x.status] },
+      ...(r.centers.length ? [{ label: 'Операции по участкам', html: x => { const q = r.dist[x.id] || { total: 0, distributed: 0 }; return q.distributed >= q.total && q.total ? `<span class="ok">${q.distributed} из ${q.total}</span>` : `<span class="err"><b>${q.distributed} из ${q.total}</b> · не распределено</span>`; } }] : [])],
+      extra: x => `<button class="small" data-dist="${x.id}">По участкам</button> `,
+      after: (box, refs, rows, reload) => $$('[data-dist]', box).forEach(b => b.onclick = () => openDistribution(rows.find(x => x.id == b.dataset.dist), refs, reload)),
       fields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true },
       { name: 'product_id', label: 'Изделие', type: 'select', options: opts(r.products), required: true, num: true },
       { name: 'routing_id', label: 'Версия изделия', type: 'select', options: [], num: true, blank: 'Текущая версия' },
@@ -230,6 +234,34 @@ async function openRouting(product, selId, onClose) {
   const oa = $('[data-oa]', m.el); if (oa) oa.onclick = () => edit(null);
   $$('[data-oe]', m.el).forEach(b => b.onclick = () => edit(cur.operations.find(o => o.id == b.dataset.oe)));
   $$('[data-od]', m.el).forEach(b => b.onclick = async () => { if (await confirmBox('Удалить операцию?')) { try { await DEL(`/operations/${b.dataset.od}`); again(); } catch (e) { toast(errText(e), true); } } });
+}
+
+/* ---------- распределение операций позиции заказа по участкам ---------- */
+async function openDistribution(order, refs, onClose) {
+  const v = await GET(`/order-lines/${order.id}/operations`);
+  const title = `${order.ext_id || '#' + order.id} · ${refs.PR[order.product_id]?.name || ''}`;
+  if (!v.centers.length) { toast('В организации нет участков. Добавьте их в разделе «Организация → Участки»', true); return; }
+  const m = modal(`<h2>Операции по участкам</h2><p class="muted" style="margin-top:0">${esc(title)} · версия ${esc(verLabel(refs.routings.find(q => q.id === v.routing_id) || { version_no: '?' }))}</p>
+    <p class="muted">Отметьте участки, где выполняется каждая операция. Участок видит только свои операции. <b>Операция без участка — ошибка:</b> она не попадает в план, и следующие за ней операции тоже не планируются.</p>
+    <div class="row" style="margin-bottom:8px"><label class="f" style="margin:0">Быстро: все операции на участок<select id="dq">${v.centers.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label><button class="small secondary" id="dqa">Назначить всем операциям</button><button class="small secondary" id="dqc">Снять все</button></div>
+    <div class="scroll"><table><tr><th>Порядок</th><th>Операция</th><th>Норма/день</th>${v.centers.map(c => `<th>${esc(c.name)}</th>`).join('')}<th></th></tr>
+    ${v.items.map(i => `<tr data-op="${i.operation_id}"><td class="num">${num(i.sequence)}</td><td>${esc(i.name)}</td><td class="num">${num(i.norm_per_day)}</td>${v.centers.map(c => `<td><input type="checkbox" data-c="${c.id}" aria-label="${esc(i.name)}: ${esc(c.name)}" ${i.work_center_ids.includes(c.id) ? 'checked' : ''}></td>`).join('')}<td data-st></td></tr>`).join('')}</table></div>
+    <div class="err" id="de" role="alert"></div>
+    <div class="row" style="margin-top:12px"><button id="ds">Сохранить распределение</button><button class="secondary" id="dx">Закрыть</button><span class="muted" id="dsum"></span></div>`, true);
+  const rows = () => $$('tr[data-op]', m.el);
+  const refresh = () => { let ok = 0; rows().forEach(tr => { const n = $$('input:checked', tr).length; if (n) ok++; $('[data-st]', tr).innerHTML = n ? '' : '<span class="err">не распределено</span>'; }); $('#dsum', m.el).textContent = `Распределено: ${ok} из ${v.items.length}`; };
+  m.el.addEventListener('change', refresh); refresh();
+  $('#dqa', m.el).onclick = () => { const id = $('#dq', m.el).value; rows().forEach(tr => $$('input', tr).forEach(i => { i.checked = i.dataset.c === id; })); refresh(); };
+  $('#dqc', m.el).onclick = () => { $$('input', m.el).forEach(i => { i.checked = false; }); refresh(); };
+  $('#dx', m.el).onclick = () => m.close();
+  $('#ds', m.el).onclick = async () => {
+    try {
+      const assignments = rows().map(tr => ({ operation_id: +tr.dataset.op, work_center_ids: $$('input:checked', tr).map(i => +i.dataset.c) }));
+      const r = await PUT(`/order-lines/${order.id}/operations`, { assignments });
+      toast(r.distributed === r.total ? 'Распределение сохранено' : `Сохранено. Не распределено операций: ${r.total - r.distributed}`, r.distributed !== r.total);
+      m.close(); if (onClose) onClose();
+    } catch (e) { $('#de', m.el).textContent = errText(e); }
+  };
 }
 
 /* ---------- допуски и отпуска исполнителя ---------- */

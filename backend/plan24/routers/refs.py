@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, distribution
 from ..db import DB
 from ..deps import ALL, CATALOG, MANAGERS, READERS, STAFF, get_or_404, require, scoped
-from ..models import (MAX_QUAL_LEVELS, AuditLog, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
+from ..models import (MAX_QUAL_LEVELS, AuditLog, OrderLineOperation, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
                       Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine)
 from .crud import make_crud, row
 
@@ -346,17 +346,75 @@ def _ol_before_update(db, user, obj, data):
         r = get_or_404(db, Routing, data["routing_id"], user)
         if r.product_id != obj.product_id:
             raise HTTPException(422, "Маршрут относится к другому изделию")
+        if r.id != obj.routing_id:           # другая версия — другие операции: распределение начинается заново
+            distribution.clear(db, user, obj.id)
+            distribution.auto_assign(db, user, obj.id, r.id)
     return data
 
 
+def _ol_after_create(db, user, obj):
+    distribution.auto_assign(db, user, obj.id, obj.routing_id)
+
+
 def _ol_before_delete(db, user, obj):
+    distribution.clear(db, user, obj.id)
     db.execute(delete(WorkerOrderLine).where(WorkerOrderLine.order_line_id == obj.id,
                                              WorkerOrderLine.tenant_id == user.tenant_id))
 
 
+class DistributionItem(BaseModel):
+    operation_id: int
+    work_center_ids: list[int] = Field(max_length=200)
+
+
+class DistributionIn(BaseModel):
+    assignments: list[DistributionItem] = Field(max_length=500)
+
+
+@router.get("/order-lines/{oid}/operations")
+def order_line_operations(oid: int, user: User = Depends(require(*READERS)), db: Session = DB):
+    """Операции позиции заказа и их участки. Бригадир видит только операции своего участка."""
+    return distribution.view(db, user, get_or_404(db, OrderLine, oid, user))
+
+
+@router.put("/order-lines/{oid}/operations")
+def distribute_order_line(oid: int, body: DistributionIn, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+    """Задать участки операций позиции. Перечисленные операции получают ровно указанный набор участков
+    (пустой список — операция снова не распределена); не перечисленные не меняются."""
+    ol = get_or_404(db, OrderLine, oid, user)
+    ops = {o.id: o for o in db.scalars(select(Operation).where(Operation.routing_id == ol.routing_id))}
+    centers = {c.id: c for c in distribution.centers_of(db, user)}
+    changes = {}
+    for it in body.assignments:
+        if it.operation_id not in ops:
+            raise HTTPException(422, "Операция не относится к маршруту позиции")
+        want = set(it.work_center_ids)
+        if want - set(centers):
+            raise HTTPException(422, "Участок не найден")
+        have = set(db.scalars(select(OrderLineOperation.work_center_id).where(
+            OrderLineOperation.order_line_id == ol.id, OrderLineOperation.operation_id == it.operation_id)))
+        if have == want:
+            continue
+        db.execute(delete(OrderLineOperation).where(OrderLineOperation.order_line_id == ol.id,
+                                                    OrderLineOperation.operation_id == it.operation_id))
+        for cid in sorted(want):
+            db.add(OrderLineOperation(tenant_id=user.tenant_id, order_line_id=ol.id, operation_id=it.operation_id, work_center_id=cid))
+        changes[ops[it.operation_id].name] = [sorted(centers[c].name for c in have if c in centers), sorted(centers[c].name for c in want)]
+    if changes:
+        db.flush()
+        audit.log(db, user, "order_line", ol.id, "distribute", changes)
+    return distribution.view(db, user, ol)
+
+
+@router.get("/order-distribution")
+def order_distribution(user: User = Depends(require(*MANAGERS)), db: Session = DB):
+    """Сколько операций каждой позиции распределено по участкам."""
+    return {"items": distribution.summary(db, user)}
+
+
 make_crud(router, "/order-lines", OrderLine, OrderLineIn, OrderLinePatch, "order_line",
           fk={"project_id": Project, "product_id": Product}, before_create=_ol_before_create,
-          before_update=_ol_before_update, before_delete=_ol_before_delete)
+          before_update=_ol_before_update, before_delete=_ol_before_delete, after_create=_ol_after_create)
 
 
 # ------------------------------------------------------------------ допуски исполнителей к позициям (BR-9)
