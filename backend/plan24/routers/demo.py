@@ -75,6 +75,10 @@ def seed_dataset(db: Session, user: User, ds: dict, shift_days: int = 0, setting
         if "maxWorkers" in cfg:
             st.max_workers_per_op = int(cfg["maxWorkers"])
         st.freeze_days = 0 if cfg.get("_no_freeze") else st.freeze_days
+        top = max([float(w["skill"]) for w in ds["workers"]] + [float(o["skill"]) for o in ds["ops"]] + [1])
+        if len(st.qualifications or []) < top:          # уровни квалификации должны покрывать загруженные данные
+            from ..models import default_quals
+            st.qualifications = default_quals(int(-(-top // 1)))
     db.flush()
     return {"orders": len(lines), "workers": len(workers), "products": len(products)}
 

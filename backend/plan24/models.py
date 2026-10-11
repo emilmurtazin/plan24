@@ -22,6 +22,14 @@ class Base(DeclarativeBase):
     pass
 
 
+MAX_QUAL_LEVELS = 10
+
+
+def default_quals(n: int = 3) -> list:
+    """Названия уровней квалификации по умолчанию: «Уровень 1» … «Уровень n»."""
+    return [f"Уровень {i}" for i in range(1, n + 1)]
+
+
 ROLES = ("owner", "manager", "technologist", "foreman", "worker", "viewer")
 
 
@@ -140,6 +148,7 @@ class PlannerSettings(Base):
     shift_hours: Mapped[float] = mapped_column(Float, default=8)           # только для отображения
     fix_group_start: Mapped[bool] = mapped_column(Boolean, default=False)  # D-04: выкл. по умолчанию
     fact_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)  # FR-22a
+    qualifications: Mapped[list] = mapped_column(JSON, default=default_quals)   # названия уровней квалификации; число уровней = длина списка
     updated_by: Mapped[Optional[int]] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -170,6 +179,7 @@ class Routing(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     version_no: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String(120), default="", server_default="")     # название версии (необязательное)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     operations: Mapped[list["Operation"]] = relationship(order_by="Operation.sequence, Operation.id")

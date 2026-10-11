@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..db import DB
 from ..deps import ALL, CATALOG, MANAGERS, READERS, STAFF, get_or_404, require, scoped
-from ..models import (AuditLog, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
+from ..models import (MAX_QUAL_LEVELS, AuditLog, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
                       Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine)
 from .crud import make_crud, row
 
@@ -66,8 +66,16 @@ class WorkerPatch(BaseModel):
     version: Optional[int] = None
 
 
+def _worker_level_create(db, user, data):
+    check_level(db, user, data.get("skill"), "Квалификация работника")
+
+
+def _worker_level_update(db, user, obj, data):
+    check_level(db, user, data.get("skill"), "Квалификация работника")
+
+
 make_crud(router, "/workers", Worker, WorkerIn, WorkerPatch, "worker", fk={"work_center_id": WorkCenter},
-          read_roles=READERS)
+          read_roles=READERS, before_create=_worker_level_create, before_update=_worker_level_update)
 
 
 class AbsenceIn(BaseModel):
@@ -126,7 +134,7 @@ make_crud(router, "/products", Product, ProductIn, ProductPatch, "product", afte
 
 
 def routing_out(r: Routing, used: bool) -> dict:
-    return {"id": r.id, "product_id": r.product_id, "version_no": r.version_no, "is_current": r.is_current,
+    return {"id": r.id, "product_id": r.product_id, "version_no": r.version_no, "name": r.name, "is_current": r.is_current,
             "used": used, "operations": [row(o) for o in r.operations]}
 
 
@@ -146,19 +154,34 @@ def product_routings(pid: int, user: User = Depends(require(*READERS)), db: Sess
 def all_routings(user: User = Depends(require(*READERS)), db: Session = DB):
     """Все версии маршрутов организации (кратко) — для выбора версии изделия в заказе."""
     rs = db.scalars(scoped(Routing, user).order_by(Routing.product_id, Routing.version_no.desc()))
-    return {"items": [{"id": r.id, "product_id": r.product_id, "version_no": r.version_no,
+    return {"items": [{"id": r.id, "product_id": r.product_id, "version_no": r.version_no, "name": r.name,
                        "is_current": r.is_current, "operations": len(r.operations)} for r in rs]}
 
 
+class RoutingPatch(BaseModel):
+    name: str = Field(max_length=120)
+
+
+@router.patch("/routings/{rid}")
+def rename_routing(rid: int, body: RoutingPatch, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Переименовать версию. Структуру версии это не меняет, поэтому можно и для используемой в заказах."""
+    r = get_or_404(db, Routing, rid, user)
+    name = body.name.strip()
+    if r.name != name:
+        audit.log(db, user, "routing", r.id, "update", {"name": [r.name, name]})
+        r.name = name
+    return routing_out(r, _routing_used(db, user, r.id))
+
+
 @router.post("/products/{pid}/routings", status_code=201)
-def new_routing_version(pid: int, copy: bool = True, user: User = Depends(require(*CATALOG)), db: Session = DB):
+def new_routing_version(pid: int, copy: bool = True, name: str = "", user: User = Depends(require(*CATALOG)), db: Session = DB):
     """Новая версия маршрута; существующие позиции остаются на своей версии (BR-7)."""
     get_or_404(db, Product, pid, user)
     prev = db.scalar(scoped(Routing, user).where(Routing.product_id == pid, Routing.is_current.is_(True)))
     last = db.scalar(select(func.max(Routing.version_no)).where(Routing.tenant_id == user.tenant_id, Routing.product_id == pid)) or 0
     if prev:
         prev.is_current = False
-    r = Routing(tenant_id=user.tenant_id, product_id=pid, version_no=last + 1, is_current=True)
+    r = Routing(tenant_id=user.tenant_id, product_id=pid, version_no=last + 1, name=name.strip()[:120], is_current=True)
     db.add(r); db.flush()
     if prev and copy:
         for o in prev.operations:
@@ -166,7 +189,7 @@ def new_routing_version(pid: int, copy: bool = True, user: User = Depends(requir
                              unit=o.unit, min_skill=o.min_skill, sequence=o.sequence, per_item=o.per_item))
         db.flush()
         db.refresh(r)
-    audit.log(db, user, "routing", r.id, "create", {"product_id": pid, "version_no": r.version_no})
+    audit.log(db, user, "routing", r.id, "create", {"product_id": pid, "version_no": r.version_no, "name": r.name})
     return routing_out(r, False)
 
 
@@ -196,7 +219,19 @@ class OperationPatch(BaseModel):
 
 
 HOLD_FIELDS = {"hold_qty", "hold_reason", "hold_until"}
-_IMMUTABLE = "Маршрут используется в позициях заказов. Создайте новую версию маршрута (изменять можно только блокировку операции)"
+SAFE_FIELDS = HOLD_FIELDS | {"name"}          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
+
+
+def levels_count(db, user) -> int:
+    s = db.get(PlannerSettings, user.tenant_id)
+    return len(s.qualifications or []) if s else MAX_QUAL_LEVELS
+
+
+def check_level(db, user, value, what: str):
+    n = levels_count(db, user)
+    if value is not None and value > n:
+        raise HTTPException(422, f"{what}: в организации {n} ур. квалификации. Число уровней настраивается в «Организация → Об организации»")
+_IMMUTABLE = "Маршрут используется в позициях заказов. Создайте новую версию маршрута (изменять можно только название и блокировку операции)"
 
 
 @router.post("/routings/{rid}/operations", status_code=201)
@@ -206,6 +241,7 @@ def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CAT
         raise HTTPException(409, _IMMUTABLE)
     if db.scalar(select(Operation.id).where(Operation.routing_id == rid, Operation.name == body.name)):
         raise HTTPException(409, "Операция с таким названием уже есть в маршруте")
+    check_level(db, user, body.min_skill, "Требуемая квалификация")
     o = Operation(tenant_id=user.tenant_id, routing_id=rid, **body.model_dump())
     db.add(o); db.flush()
     audit.log(db, user, "operation", o.id, "create", body.model_dump())
@@ -219,8 +255,10 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
     ver = data.pop("version", None)
     if ver is not None and ver != o.version:
         raise HTTPException(409, "Запись изменена другим пользователем. Обновите страницу")
-    if (set(data) - HOLD_FIELDS) and _routing_used(db, user, o.routing_id):
+    if (set(data) - SAFE_FIELDS) and _routing_used(db, user, o.routing_id):
         raise HTTPException(409, _IMMUTABLE)
+    if data.get("min_skill") is not None:
+        check_level(db, user, data["min_skill"], "Требуемая квалификация")
     if "name" in data and db.scalar(select(Operation.id).where(
             Operation.routing_id == o.routing_id, Operation.name == data["name"], Operation.id != o.id)):
         raise HTTPException(409, "Операция с таким названием уже есть в маршруте")
@@ -360,6 +398,7 @@ class SettingsPatch(BaseModel):
     shift_hours: Optional[float] = Field(None, gt=0, le=24)
     fix_group_start: Optional[bool] = None
     fact_confirmation: Optional[bool] = None
+    qualifications: Optional[list[str]] = Field(None, min_length=1, max_length=MAX_QUAL_LEVELS)
 
 
 def settings_out(s: PlannerSettings) -> dict:
@@ -379,6 +418,15 @@ def patch_settings(body: SettingsPatch, user: User = Depends(require(*MANAGERS))
         for k, v in data["strictness_by_level"].items():
             if not k.isdigit() or not 0 <= v <= 100:
                 raise HTTPException(422, "Жёсткость по уровню: ключ — номер приоритета, значение — 0…100")
+    if data.get("qualifications") is not None:
+        names = [str(x).strip() for x in data["qualifications"]]
+        if any(not x or len(x) > 40 for x in names) or len({x.lower() for x in names}) != len(names):
+            raise HTTPException(422, "Названия уровней: непустые (до 40 знаков) и без повторов")
+        data["qualifications"] = names
+        top_w = db.scalar(select(func.max(Worker.skill)).where(Worker.tenant_id == user.tenant_id)) or 0
+        top_o = db.scalar(select(func.max(Operation.min_skill)).where(Operation.tenant_id == user.tenant_id)) or 0
+        if max(top_w, top_o) > len(names):
+            raise HTTPException(409, f"Уровней не может быть меньше {int(-(-max(top_w, top_o) // 1))}: этот уровень указан у работников или операций. Сначала измените их")
     changes = {}
     for k, v in data.items():
         if v is not None and getattr(s, k) != v:

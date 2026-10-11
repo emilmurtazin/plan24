@@ -132,8 +132,15 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $('.modal table'), 'маршрут'); 
   step('маршрут: ' + ($('.modal .muted').textContent.slice(0, 80)) + '…');
   click(byText('.modal button', 'Новая версия'));
-  await until(() => /v2/.test($('.modal h2').parentElement.textContent), 'версия 2'); step('создана версия маршрута v2, операций: ' + ($$('.modal table tr').length - 1));
+  await until(() => $('.modal form'), 'форма новой версии'); const nvf = $('.modal form'); setv(nvf.elements.name, 'Усиленная'); nvf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => /v2 · Усиленная/.test($('.modal h2').parentElement.textContent), 'версия 2 с названием'); step('создана версия «v2 · Усиленная», операций: ' + ($$('.modal table tr').length - 1));
+  click(byText('.modal button', 'Переименовать версию'));
+  await until(() => $('.modal form'), 'форма переименования'); const rnf = $('.modal form'); setv(rnf.elements.name, 'Усиленная-2'); rnf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => /v2 · Усиленная-2/.test($('.modal h2').parentElement.textContent), 'новое название версии'); step('версия переименована: v2 · Усиленная-2');
+  if (!/Уровень \d/.test($('.modal table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
+  step('операции показывают требуемую квалификацию названием уровня');
   click(byText('.modal button', 'Закрыть'));
+  await until(() => /v2 · Усиленная-2/.test($('#dt').textContent), 'каталог обновился'); step('каталог показывает текущую версию «v2 · Усиленная-2»');
   click(byText('nav.tabs button', 'Организация')); await until(() => $('#view nav button'), 'организация'); click(byText('#view nav button', 'Работники'));
   await until(() => $('[data-ac]'), 'исполнители'); click($('[data-ac]'));
   await until(() => $('.modal input[type=checkbox]'), 'допуски'); step('допуски: позиций для выбора ' + $$('.modal input[type=checkbox]').length);
@@ -145,6 +152,19 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   click(byText('.modal button', 'Закрыть'));
 
   // --- настройки ---
+  // уровни квалификации: форма работника — список; переименование и добавление уровней в «Об организации»
+  click(byText('#view nav button', 'Работники')); await until(() => $('[data-add]'), 'работники'); click($('[data-add]'));
+  await until(() => $('.modal form'), 'форма работника'); const wsk = $('.modal form').elements.skill;
+  if (wsk.tagName !== 'SELECT' || ![...wsk.options].some(o => /Уровень 1/.test(o.textContent))) throw new Error('квалификация работника — не список уровней');
+  step('форма работника: квалификация — список уровней (' + wsk.options.length + ')'); click(byText('.modal button', 'Отмена'));
+  click(byText('#view nav button', 'Об организации')); await until(() => $('#ql [data-q]'), 'уровни квалификации');
+  const n0 = $$('[data-q]').length; setv($('[data-q="0"]'), 'Ученик'); click($('#qa'));
+  await until(() => $$('[data-q]').length === n0 + 1, 'новый уровень'); click($('#qs'));
+  await until(() => $('[data-q="0"]') && $('[data-q="0"]').value === 'Ученик' && $$('[data-q]').length === n0 + 1, 'уровни сохранены'); step('уровни квалификации: ' + n0 + ' → ' + (n0 + 1) + ', первый «Ученик»');
+  click(byText('#view nav button', 'Работники')); await until(() => $('[data-add]'), 'работники'); click($('[data-add]'));
+  await until(() => $('.modal form'), 'форма работника 2');
+  if (![...$('.modal form').elements.skill.options].some(o => /Ученик/.test(o.textContent))) throw new Error('новое название уровня не дошло до формы работника');
+  step('новое название уровня видно в форме работника'); click(byText('.modal button', 'Отмена'));
   click(byText('#view nav button', 'Участки'));
   await until(() => $('[data-settings]'), 'кнопка «Настройки» в участках'); click($('[data-settings]'));
   await until(() => $('#sf'), 'настройки'); 

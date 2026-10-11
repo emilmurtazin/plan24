@@ -32,6 +32,7 @@ CASES = [
     ("POST", "/workers", {"name": "W-perm"}, MANAGERS),
     ("POST", "/products", {"name": "Prod-perm"}, CATALOG),
     ("GET", "/routings", None, READERS),
+    ("PATCH", "/routings/999999", {"name": "x"}, CATALOG),
     ("POST", "/order-lines", {"project_id": 999999, "product_id": 999999, "qty": 1}, MANAGERS),
     ("POST", "/holidays", {"holiday_date": "2026-12-31"}, MANAGERS),
     ("POST", "/absences", {"worker_id": 999999, "date_from": "2026-10-05", "date_to": "2026-10-05"}, MANAGERS),

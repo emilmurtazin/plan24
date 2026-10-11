@@ -6,9 +6,14 @@ async function loadRefs() {
     ['/projects', '/products', '/workers', '/work-centers', '/order-lines', '/fact-reasons', '/routings'].map(listAll));
   const by = a => Object.fromEntries(a.map(x => [x.id, x]));
   const tg = await GET('/telegram/status').catch(() => ({ configured: false, links: [] }));
-  return { projects, products, workers, centers, orders, reasons, routings, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
+  const quals = (await GET('/settings').catch(() => ({ qualifications: [] }))).qualifications || [];
+  return { quals, projects, products, workers, centers, orders, reasons, routings, tg, TGW: Object.fromEntries(tg.links.filter(l => l.worker_id).map(l => [l.worker_id, l])),
     P: by(projects), PR: by(products), W: by(workers), C: by(centers) };
 }
+/* Уровень квалификации: название из настроек организации, иначе число */
+const qn = (quals, n) => (Number.isInteger(+n) && quals && quals[n - 1]) || num(n);
+const qOpts = quals => (quals || []).map((l, i) => ({ v: i + 1, l: `${i + 1} — ${l}` }));
+const verLabel = v => 'v' + v.version_no + (v.name ? ' · ' + v.name : '');
 const opts = (arr, label = x => x.name) => arr.map(x => ({ v: x.id, l: label(x) }));
 const ORDER_ST = { draft: 'Черновик', planned: 'В плане', done: 'Выполнен', cancelled: 'Отменён' };
 const table = (cols, rows, actions) => `<table><tr>${cols.map(c => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ''}">${c.html ? c.html(r) : esc(c.get(r))}</td>`).join('')}${actions ? `<td style="white-space:nowrap">${actions(r)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 1}" class="muted">Пока пусто</td></tr>`}</table>`;
@@ -44,7 +49,7 @@ const TABS = {
       title: 'Заказы (позиции)', add: 'Добавить позицию', path: '/order-lines', defaults: { qty: 1, priority: 1, status: 'planned' },
       hint: (r) => r.products.length && r.projects.length ? 'Позиция = изделие в нужном количестве к сроку. Можно выбрать версию изделия; если не выбрать — берётся текущая. Уже созданные позиции остаются на своей версии.' : 'Сначала добавьте проект (вкладка «Проекты») и изделие с операциями («Каталог изделий»).',
       cols: r => [{ label: '№', get: x => x.ext_id || '#' + x.id }, { label: 'Проект', get: x => r.P[x.project_id]?.name }, { label: 'Заказчик', get: x => x.customer || r.P[x.project_id]?.customer || '—' },
-      { label: 'Изделие', get: x => r.PR[x.product_id]?.name }, { label: 'Версия', get: x => { const v = r.routings.find(q => q.id === x.routing_id); return v ? 'v' + v.version_no : '—'; } },
+      { label: 'Изделие', get: x => r.PR[x.product_id]?.name }, { label: 'Версия', get: x => { const v = r.routings.find(q => q.id === x.routing_id); return v ? verLabel(v) : '—'; } },
       { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', get: x => ORDER_ST[x.status] }],
       fields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true },
       { name: 'product_id', label: 'Изделие', type: 'select', options: opts(r.products), required: true, num: true },
@@ -64,7 +69,7 @@ const TABS = {
         const prod = form.elements.product_id, ver = form.elements.routing_id, proj = form.elements.project_id, cust = form.elements.customer;
         const fillVersions = (pid, sel) => {
           const list = r.routings.filter(q => q.product_id === +pid).sort((x, y) => y.version_no - x.version_no);
-          ver.innerHTML = (row ? '' : '<option value="">Текущая версия</option>') + list.map(q => `<option value="${q.id}" ${String(q.id) === String(sel) ? 'selected' : ''}>v${q.version_no}${q.is_current ? ' · текущая' : ''} (операций: ${q.operations})</option>`).join('');
+          ver.innerHTML = (row ? '' : '<option value="">Текущая версия</option>') + list.map(q => `<option value="${q.id}" ${String(q.id) === String(sel) ? 'selected' : ''}>${esc(verLabel(q))}${q.is_current ? ' · текущая' : ''} (операций: ${q.operations})</option>`).join('');
         };
         fillVersions(row ? row.product_id : prod?.value, row ? row.routing_id : '');
         if (prod) prod.onchange = () => fillVersions(prod.value, '');
@@ -82,11 +87,17 @@ const TABS = {
   },
   products: {
     label: 'Каталог изделий', cfg: {
-      title: 'Изделия', add: 'Добавить изделие', path: '/products', cols: () => [{ label: 'Изделие', get: x => x.name }, { label: 'Ед.', get: x => x.unit }],
-      hint: () => 'У каждого изделия есть версии маршрута — списки операций с нормами. Откройте «Версии и операции», чтобы добавить или изменить операции.',
+      title: 'Изделия', add: 'Добавить изделие', path: '/products',
+      cols: r => {
+        const cur = x => r.routings.find(q => q.product_id === x.id && q.is_current);
+        return [{ label: 'Изделие', get: x => x.name }, { label: 'Ед.', get: x => x.unit },
+        { label: 'Текущая версия', get: x => cur(x) ? verLabel(cur(x)) : '—' }, { label: 'Версий', cls: 'num', get: x => r.routings.filter(q => q.product_id === x.id).length },
+        { label: 'Операций', cls: 'num', get: x => cur(x) ? cur(x).operations : 0 }];
+      },
+      hint: () => 'У изделия может быть несколько версий маршрута; у каждой — свой список операций с нормами и требуемой квалификацией. В заказ берётся выбранная версия. «Операций» — в текущей версии.',
       fields: () => [nameField, { name: 'unit', label: 'Единица', required: true }], defaults: { unit: 'шт' },
       extra: r => `<button class="small" data-rt="${r.id}">Версии и операции</button> `,
-      after: (box, refs) => $$('[data-rt]', box).forEach(b => b.onclick = () => openRouting(refs.PR[b.dataset.rt]))
+      after: (box, refs, rows, reload) => $$('[data-rt]', box).forEach(b => b.onclick = () => openRouting(refs.PR[b.dataset.rt], undefined, reload))
     }
   },
   workers: {
@@ -94,11 +105,11 @@ const TABS = {
       title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available' },
       hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
       cols: r => [{ label: 'Имя', get: x => x.name }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
-      { label: 'Квалиф.', cls: 'num', get: x => num(x.skill) }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
+      { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
       fields: r => [nameField, { name: 'work_center_id', label: 'Участок', type: 'select', options: opts(r.centers), num: true },
         { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 0.05 },
-        { name: 'skill', label: 'Квалификация', type: 'number', required: true, min: 1, max: 10, step: 1 },
+        { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
         { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] }],
       extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
@@ -147,13 +158,29 @@ SCREENS.catalog = async v => {
 
 /* Организация: сведения, участки (+ настройки), работники, календарь, пользователи, журнал */
 const ORG_TABS = {
-  info: { label: 'Об организации', custom: async box => {
-    const t = S.me.tenant || {}, [centers, workers] = await Promise.all([listAll('/work-centers'), listAll('/workers')]);
+  info: { label: 'Об организации', custom: async (box, reload) => {
+    const t = S.me.tenant || {}, [centers, workers, st] = await Promise.all([listAll('/work-centers'), listAll('/workers'), GET('/settings')]);
     const users = S.me.role === 'owner' ? await GET('/users') : null;
+    const quals = [...(st.qualifications || [])];
+    const used = {}; workers.forEach(w => { used[w.skill] = (used[w.skill] || 0) + 1; });
+    const lvl = (l, i) => `<div class="row" style="margin-bottom:6px"><b style="min-width:24px">${i + 1}</b><input data-q="${i}" value="${esc(l)}" maxlength="40" aria-label="Название уровня ${i + 1}" style="flex:1">${used[i + 1] ? `<span class="muted">работников: ${used[i + 1]}</span>` : ''}</div>`;
     box.innerHTML = `<h2>Об организации</h2><div class="card" style="max-width:640px"><table>
       <tr><th>Название</th><td>${esc(t.name)}</td></tr><tr><th>Часовой пояс</th><td>${esc(t.timezone)}</td></tr>
       <tr><th>Участков</th><td>${centers.length}</td></tr><tr><th>Работников</th><td>${workers.length}</td></tr>${users ? `<tr><th>Пользователей</th><td>${users.length}</td></tr>` : ''}
-      <tr><th>Вы вошли как</th><td>${esc(S.me.name)} · ${ROLE_RU[S.me.role]}</td></tr></table></div>`;
+      <tr><th>Вы вошли как</th><td>${esc(S.me.name)} · ${ROLE_RU[S.me.role]}</td></tr></table></div>
+      <h2 style="margin-top:20px">Квалификации</h2><div class="card" style="max-width:640px">
+      <p class="muted" style="margin-top:0">Уровни квалификации организации — от низшего к высшему. Работнику назначается уровень, операции — требуемый; работник допускается к операции, если его уровень не ниже требуемого. Число уровней — от 1 до 10.</p>
+      <div id="ql">${quals.map(lvl).join('')}</div>
+      <div class="err" id="qe" role="alert"></div>
+      <div class="row"><button class="secondary" id="qa" ${quals.length >= 10 ? 'disabled' : ''}>+ Уровень</button><button class="secondary" id="qd" ${quals.length <= 1 ? 'disabled' : ''}>Убрать последний</button><span class="grow"></span><button id="qs">Сохранить уровни</button></div></div>`;
+    const read = () => $$('[data-q]', box).map(i => i.value);
+    const redraw = list => { quals.length = 0; quals.push(...list); $('#ql', box).innerHTML = quals.map(lvl).join(''); $('#qa', box).disabled = quals.length >= 10; $('#qd', box).disabled = quals.length <= 1; };
+    $('#qa', box).onclick = () => redraw([...read(), 'Уровень ' + (quals.length + 1)]);
+    $('#qd', box).onclick = () => redraw(read().slice(0, -1));
+    $('#qs', box).onclick = async () => {
+      try { await PATCH('/settings', { qualifications: read() }); toast('Уровни квалификации сохранены'); reload(); }
+      catch (e) { $('#qe', box).textContent = errText(e); }
+    };
   } },
   centers: TABS.centers, workers: TABS.workers, holidays: TABS.holidays, reasons: TABS.reasons,
   users: { label: 'Пользователи', owner: true, custom: box => SCREENS.users(box) },
@@ -165,23 +192,35 @@ SCREENS.org = (v, tab) => {
 };
 
 /* ---------- маршрут изделия: версии и операции ---------- */
-async function openRouting(product, selId) {
-  const rts = await GET(`/products/${product.id}/routings`);
+async function openRouting(product, selId, onClose) {
+  const [rts, st] = await Promise.all([GET(`/products/${product.id}/routings`), GET('/settings')]);
+  const quals = st.qualifications || [];
   const cur = rts.find(r => r.id === selId) || rts[0];
   const canEdit = !cur.used;
-  const m = modal(`<h2>Маршрут: ${esc(product.name)}</h2>
-    <div class="row" style="margin-bottom:10px">${rts.map(r => `<button class="small ${r.id === cur.id ? '' : 'secondary'}" data-v="${r.id}">v${r.version_no}${r.is_current ? ' · текущий' : ''}</button>`).join('')}<span class="grow"></span><button class="small secondary" data-nv>Новая версия</button></div>
-    <p class="muted">${cur.used ? 'Маршрут используется в позициях заказов — структуру менять нельзя, чтобы не сломать идущие заказы. Создайте новую версию. Блокировку операции менять можно.' : 'Одинаковый «Порядок» — операции идут параллельно. Норма — сколько изделий делает исполнитель с производительностью 1 за полный рабочий день.'}</p>
-    <div class="scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Квалиф.', cls: 'num', get: o => num(o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
+  const m = modal(`<h2>${esc(product.name)}: версии и операции</h2>
+    <div class="row" style="margin-bottom:10px">${rts.map(r => `<button class="small ${r.id === cur.id ? '' : 'secondary'}" data-v="${r.id}">${esc(verLabel(r))}${r.is_current ? ' · текущая' : ''}</button>`).join('')}<span class="grow"></span><button class="small secondary" data-nv>Новая версия</button></div>
+    <div class="row" style="margin-bottom:8px"><b>Версия: ${esc(verLabel(cur))}</b> <span class="muted">· операций: ${cur.operations.length}</span><span class="grow"></span><button class="small secondary" data-rn>Переименовать версию</button></div>
+    <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции и изменить блокировку. Для остального создайте новую версию.' : 'Одинаковый «Порядок» — операции идут параллельно. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
+    <div class="scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
     { label: 'Блок', html: o => o.hold_qty ? `<span class="warn">${num(o.hold_qty)}${o.hold_until ? ' до ' + fmtDY(o.hold_until) : ''}</span> ${esc(o.hold_reason)}` : '—' }], cur.operations,
-      o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Блокировка'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
+      o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Название / блок'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
     <div class="row" style="margin-top:12px">${canEdit ? '<button data-oa>+ Операция</button>' : ''}<button class="secondary" data-x>Закрыть</button></div>`, true);
-  const again = () => { m.close(); openRouting(product, cur.id); };
-  $('[data-x]', m.el).onclick = m.close;
-  $$('[data-v]', m.el).forEach(b => b.onclick = () => { m.close(); openRouting(product, +b.dataset.v); });
-  $('[data-nv]', m.el).onclick = async () => { try { const r = await POST(`/products/${product.id}/routings`); m.close(); toast(`Создана версия v${r.version_no}`); openRouting(product, r.id); } catch (e) { toast(errText(e), true); } };
-  const opFields = (full) => [...(full ? [{ name: 'name', label: 'Операция', required: true }, { name: 'sequence', label: 'Порядок', type: 'number', required: true, min: 0, step: 'any' },
-    { name: 'norm_per_day', label: 'Норма за день', type: 'number', required: true, min: 0, step: 'any' }, { name: 'min_skill', label: 'Требуемая квалификация', type: 'number', required: true, min: 1, max: 10, step: 1 },
+  const done = () => { m.close(); if (onClose) onClose(); };
+  const again = () => { m.close(); openRouting(product, cur.id, onClose); };
+  $('[data-x]', m.el).onclick = done;
+  $$('[data-v]', m.el).forEach(b => b.onclick = () => { m.close(); openRouting(product, +b.dataset.v, onClose); });
+  $('[data-nv]', m.el).onclick = () => formModal({
+    title: 'Новая версия', submit: 'Создать', fields: [{ name: 'name', label: 'Название версии (необязательно)', help: 'Например: «Усиленная» или «2026». Операции копируются из текущей версии.' }], values: {},
+    onSubmit: async (vals, f) => { const r = await POST(`/products/${product.id}/routings` + (vals.name ? '?name=' + encodeURIComponent(vals.name) : '')); f.close(); m.close(); toast(`Создана версия v${r.version_no}`); openRouting(product, r.id, onClose); }
+  });
+  $('[data-rn]', m.el).onclick = () => formModal({
+    title: 'Переименовать версию v' + cur.version_no, fields: [{ name: 'name', label: 'Название версии', help: 'Пустое название — версия называется просто «v' + cur.version_no + '»' }], values: { name: cur.name },
+    onSubmit: async (vals, f) => { await PATCH(`/routings/${cur.id}`, { name: vals.name || '' }); f.close(); toast('Название сохранено'); again(); }
+  });
+  const opFields = (full) => [{ name: 'name', label: 'Операция', required: true },
+  ...(full ? [{ name: 'sequence', label: 'Порядок', type: 'number', required: true, min: 0, step: 'any' },
+    { name: 'norm_per_day', label: 'Норма за день', type: 'number', required: true, min: 0, step: 'any' },
+    { name: 'min_skill', label: 'Требуемая квалификация', type: 'select', options: qOpts(quals), required: true, num: true, help: 'Работник допускается, если его уровень не ниже' },
     { name: 'per_item', label: 'Операций на изделие', type: 'number', required: true, min: 0, step: 'any' }] : []),
   { name: 'hold_qty', label: 'Блок: изделий, по которым операция не идёт', type: 'number', min: 0, step: 'any' }, { name: 'hold_until', label: 'Блок снимается автоматически с даты', type: 'date' }, { name: 'hold_reason', label: 'Причина блокировки' }];
   const edit = (o) => formModal({
