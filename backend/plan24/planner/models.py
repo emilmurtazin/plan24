@@ -65,6 +65,17 @@ class FactRow:
 
 
 @dataclass(frozen=True)
+class PinnedItem:
+    """Строка плана, закреплённая вручную: планировщик её не двигает, учитывает как уже запланированное."""
+    date: date
+    order_id: str
+    op: str
+    worker: str
+    qty: int
+    reason: str = "MANUAL"
+
+
+@dataclass(frozen=True)
 class PlanConfig:
     today: date                              # первый рабочий день горизонта (BR-2)
     work_days: tuple = ()                    # рабочие дни горизонта, по возрастанию
@@ -90,6 +101,9 @@ class PlanInput:
     # Частичное перепланирование: эти исполнители новых заданий не получают, но уже назначенное им
     # (строки Факта с plan>0, qty=0) учитывается как выполняемое — работа участка не пересчитывается.
     fixed_workers: frozenset = frozenset()
+    # Закреплённые вручную правки «Плана на день» (по умолчанию нет — поведение исходного скрипта):
+    pinned: tuple = ()                        # PinnedItem — строки, которые остаются как есть
+    pinned_days: frozenset = frozenset()      # (имя работника, дата): день закреплён, новых заданий ему не даём
 
 
 @dataclass(frozen=True)

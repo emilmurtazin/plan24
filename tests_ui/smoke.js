@@ -73,15 +73,53 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $$('.wcard').length, 'карточки исполнителей');
   const cards = $$('.wcard').length, inputs = $$('.fact input').length;
   step(`план на день: карточек ${cards}, полей ввода факта ${inputs}`);
-  const firstDone = $('[data-done]'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
+  const firstDone = $('.fact [data-q]:not([data-q="0"])'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
+  if (!$('.fact [data-save]') || $('.fact [data-save]').textContent.trim() !== 'Записать выполнение') throw new Error('кнопка факта должна называться «Записать выполнение»');
+  if ($$('.devbox').some(b => !b.hidden)) throw new Error('причина запрашивается, хотя отклонения нет');
+  step('форма факта: кнопка «Записать выполнение», поле причины скрыто, пока нет отклонения');
   click(firstDone);
-  await until(() => $('#toast') && !$('#toast').classList.contains('hidden') && /Факт сохранён|Исправлено/.test($('#toast').textContent), 'тост факта');
+  await until(() => $('#toast') && !$('#toast').classList.contains('hidden') && /Записано|Исправлено/.test($('#toast').textContent), 'тост факта');
   await until(() => $$('.b-done').length, 'бейдж выполнено');
-  step(`факт «Всё» сохранён для ${w0}: ${$('#toast').textContent}`);
-  const inp = $('.fact input[value]:not([value=""])'); setv(inp, String(Number(inp.value) + 1));
-  click(inp.closest('.fact').querySelector('[data-save]'));
-  await until(() => /Исправлено/.test($('#toast').textContent), 'исправление факта');
-  step('повторный ввод заменяет значение: ' + $('#toast').textContent);
+  step(`факт «Всё» записан для ${w0}: ${$('#toast').textContent}`);
+  // меньше плана → появляется запрос причины, без неё сохранить нельзя
+  const box = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 1);
+  const qin = box.querySelector('input[type=number]'); setv(qin, String(+box.dataset.plan - 1));
+  if (box.querySelector('.devbox').hidden) throw new Error('при факте меньше плана причина должна запрашиваться');
+  if (!/Меньше плана/.test(box.querySelector('.dtext').textContent)) throw new Error('нет пояснения «Меньше плана»: ' + box.querySelector('.dtext').textContent);
+  click(box.querySelector('[data-save]')); await sleep(150);
+  if (!/причину|комментарий/.test($('#toast').textContent)) throw new Error('без причины сохранилось: ' + $('#toast').textContent);
+  setv(box.querySelector('.dnote'), 'не хватило материала'); click(box.querySelector('[data-save]'));
+  await until(() => /Исправлено/.test($('#toast').textContent), 'исправление факта с причиной');
+  step('меньше плана: без причины не сохраняется, с комментарием — «' + $('#toast').textContent + '»');
+  const box2 = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 0 && !b.querySelector('.dnote').value);
+  if (box2) { setv(box2.querySelector('input[type=number]'), box2.dataset.plan); if (!box2.querySelector('.devbox').hidden) throw new Error('при факте по плану причина не нужна'); }
+
+  // --- правка плана: задание вручную закрепляет день ---
+  click($('#addT')); await until(() => $('.modal form') && $('.modal form').elements.operation_id && $('.modal form').elements.operation_id.options.length > 0 && $('.modal form').elements.operation_id.value, 'форма задания');
+  const tf = $('.modal form'); setv(tf.elements.qty, '2');
+  tf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => $$('.wcard').some(c => /добавлено вручную/.test(c.textContent)), 'задание добавлено вручную');
+  await until(() => $$('.wcard').some(c => /день закреплён/.test(c.textContent)), 'день закреплён');
+  step('«+ Задание»: добавлено вручную, день работника закреплён');
+  click($('[data-te]')); await until(() => $('.modal form') && $('.modal form').elements.operation_id.value, 'форма изменения'); click(byText('.modal button', 'Отмена'));
+  // --- работа вне перечня ---
+  click($('#addX')); await until(() => $('.modal form'), 'форма работы вне перечня'); const xf = $('.modal form');
+  setv(xf.elements.kind, 'other'); if (!xf.elements.order_line_id.closest('label').hidden) throw new Error('поле «Заказ» должно скрываться для работы не по заказу');
+  setv(xf.elements.title, 'Уборка участка'); setv(xf.elements.hours, '2'); xf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => $$('.task.extra').length, 'работа вне перечня в плане'); step('«+ Работа вне перечня»: «Уборка участка» · не относится к заказу');
+  const xb = $('.fact[data-xid]'); setv(xb.querySelector('input[type=number]'), '1');
+  if (xb.querySelector('.devbox').hidden) throw new Error('для работы вне перечня с фактом меньше плана причина должна запрашиваться');
+  setv(xb.querySelector('.dnote'), 'отвлекли на другую работу'); click(xb.querySelector('[data-save-x]'));
+  await until(() => /Записано/.test($('#toast').textContent) && $('.task.extra .b-none'), 'факт по работе вне перечня'); step('факт по работе вне перечня записан, «частично»');
+  // --- временный работник ---
+  click($('#addW')); await until(() => $('.modal form') && $('.modal form').elements.name, 'форма работника'); const nf = $('.modal form');
+  setv(nf.elements.name, 'Временный Иван'); nf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => /добавлен/.test($('#toast').textContent), 'работник добавлен'); step('временный работник добавлен: ' + $('#toast').textContent);
+  await until(() => $('.modal form') && $('.modal form').elements.order_line_id, 'форма задания для нового работника'); click(byText('.modal button', 'Отмена'));
+  // --- снять закрепление ---
+  click($('[data-unpin]')); await until(() => byText('.modal button', 'Да') || $('.modal .danger'), 'подтверждение');
+  click($('.modal .danger')); await until(() => /Закрепление снято|нельзя|работы вне перечня/.test($('#toast').textContent), 'ответ на снятие закрепления');
+  step('снятие закрепления: ' + $('#toast').textContent.slice(0, 90));
 
   // --- обзор показывает «данные изменились» ---
   click(byText('nav.tabs button', 'Дашборд'));
@@ -173,7 +211,9 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
 
   // --- настройки ---
   // уровни квалификации: форма работника — список; переименование и добавление уровней в «Об организации»
-  click(byText('#view nav button', 'Работники')); await until(() => $('[data-add]'), 'работники'); click($('[data-add]'));
+  click(byText('#view nav button', 'Работники')); await until(() => $('[data-add]'), 'работники');
+  if (!/Временный Иван/.test($('#dt').textContent) || !/только вручную/.test($('#dt').textContent)) throw new Error('временный работник не виден в списке или попал в автопланирование');
+  step('временный работник в списке: «временный», планирование «только вручную»'); click($('[data-add]'));
   await until(() => $('.modal form'), 'форма работника'); const wsk = $('.modal form').elements.skill;
   if (wsk.tagName !== 'SELECT' || ![...wsk.options].some(o => /Уровень 1/.test(o.textContent))) throw new Error('квалификация работника — не список уровней');
   step('форма работника: квалификация — список уровней (' + wsk.options.length + ')'); click(byText('.modal button', 'Отмена'));

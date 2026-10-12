@@ -106,15 +106,16 @@ const TABS = {
   },
   workers: {
     label: 'Работники', cfg: {
-      title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available' },
+      title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available', auto_plan: true },
       hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
-      cols: r => [{ label: 'Имя', get: x => x.name }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
-      { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
+      cols: r => [{ label: 'Имя', html: x => esc(x.name) + (x.is_temporary ? ' <span class="badge b-noop">временный</span>' : '') }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
+      { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Планирование', html: x => x.auto_plan ? 'автоматически' : '<span class="warn">только вручную</span>' }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
       fields: r => [nameField, { name: 'work_center_id', label: 'Участок', type: 'select', options: opts(r.centers), num: true },
         { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 0.05 },
         { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
-        { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] }],
+        { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] },
+        { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Плане на день». Так добавляются временные работники.' }],
       extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }

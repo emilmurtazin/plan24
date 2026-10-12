@@ -235,42 +235,6 @@ SCREENS.home = async v => {
 
 /* ---------------- План на день + факт ---------------- */
 let REASONS = null;
-SCREENS.day = async (v, day) => {
-  S.nav++;
-  const q = day ? '?day=' + day : '';
-  const [d, reasons] = await Promise.all([GET('/reports/day' + q), REASONS ? REASONS : GET('/fact-reasons?limit=200').then(r => REASONS = r.items)]);
-  const worker = S.me.role === 'worker';
-  let h = `<div class="row noprint" style="margin-bottom:8px"><h1 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} · ${fmtD(d.date)} ${wd(d.date)}</h1>${STAFF.includes(S.me.role) ? '<button class="secondary" id="rp">Перепланировать</button>' : ''}<button class="secondary" onclick="print()">Печать</button></div>`;
-  if (!d.plan_id) h += `<div class="banner info">План ещё не построен.</div>`;
-  if (d.days.length) h += `<div class="days noprint">${d.days.map(x => `<button data-d="${x}" aria-pressed="${x === d.date}"><b>${fmtD(x)}</b><small>${wd(x)}</small></button>`).join('')}</div>`;
-  if (!d.workers.length) h += `<div class="card empty">На этот день заданий нет.</div>`;
-  else h += `<div class="workers">${d.workers.map(w => `<div class="wcard"><h3>${esc(w.worker)}</h3>${w.tasks.map((t, i) => taskHtml(t, w, d, reasons)).join('')}</div>`).join('')}</div>`;
-  v.innerHTML = h;
-  $$('.days button', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.d));
-  if ($('#rp')) $('#rp').onclick = openReplan;
-  $$('[data-save]', v).forEach(b => b.onclick = () => saveFact(b, d, v));
-  $$('[data-done]', v).forEach(b => b.onclick = () => { const row = b.closest('.fact'); row.querySelector('input').value = b.dataset.done; saveFact(row.querySelector('[data-save]'), d, v); });
-};
-function taskHtml(t, w, d, reasons) {
-  const state = { done: ['b-done', '✔ выполнено'], partial: ['b-none', 'частично'], none: ['b-work', 'ждёт'], extra: ['b-noop', 'вне плана'] }[t.state];
-  const key = `data-w="${w.worker_id}" data-o="${t.order_line_id}" data-p="${t.operation_id}"`;
-  return `<div class="task"><div class="t1"><div><b>${esc(t.operation)}</b><small>${esc(t.product)} · заказ ${esc(t.order)}${t.project ? ' · ' + esc(t.project) : ''}${t.frozen ? ' · зафиксировано' : ''}</small></div><div class="qty" title="План">${t.plan_qty || '—'}</div></div>
-    <div><span class="badge ${state[0]}">${state[1]}</span>${t.fact_status === 'submitted' ? ' <span class="badge b-none">ждёт подтверждения</span>' : ''}</div>
-    ${d.can_enter ? `<div class="fact" ${key}><input type="number" min="0" step="any" inputmode="decimal" aria-label="Сделано, ${esc(t.operation)}" value="${t.fact_qty ?? ''}" placeholder="сделано">
-      ${t.plan_qty ? `<button class="small" data-done="${t.plan_qty}">Всё: ${t.plan_qty}</button>` : ''}<button class="small secondary" data-save>Сохранить</button>
-      <select aria-label="Причина отклонения" style="min-height:32px"><option value="">причина…</option>${reasons.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('')}</select></div>` : (t.fact_qty != null ? `<div>Сделано: <b>${t.fact_qty}</b></div>` : '')}</div>`;
-}
-async function saveFact(btn, d, v) {
-  const row = btn.closest('.fact'), qty = row.querySelector('input').value;
-  if (qty === '') { toast('Введите, сколько сделано', true); return; }
-  const reason = row.querySelector('select').value;
-  btn.disabled = true;
-  try {
-    const r = await api('POST', '/facts', { fact_date: d.date, order_line_id: +row.dataset.o, operation_id: +row.dataset.p, worker_id: +row.dataset.w, qty: Number(qty), reason_id: reason ? +reason : null }, { headers: { 'Idempotency-Key': uuid() } });
-    toast(r.replaced ? `Исправлено: было ${r.previous_qty}, стало ${r.qty}` : 'Факт сохранён'); await SCREENS.day(v, d.date);
-  } catch (e) { toast(errText(e), true); btn.disabled = false; }
-}
-
 /* ---------------- Статус и загрузка ---------------- */
 SCREENS.status = async v => {
   const { rows } = await GET('/reports/status');

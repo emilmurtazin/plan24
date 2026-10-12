@@ -147,6 +147,15 @@ def plan(inp: PlanInput) -> PlanResult:
         if f.qty == 0 and f.plan > 0:
             frozen_by_key[row_key] = f.plan
 
+    # --- закреплённые вручную: день работника закрыт для автопланирования, строки остаются на месте ---
+    for wn, d in inp.pinned_days:
+        if wn in worker_by_name and d in day_index:
+            worker_by_name[wn].free[day_index[d]] = 0.0
+    pinned_by_pair: dict = defaultdict(list)
+    for pi in inp.pinned:
+        if pi.date in day_index and pi.qty > 0:
+            pinned_by_pair[(pi.order_id, pi.op)].append((day_index[pi.date], pi))
+
     # индекс замороженных строк: (order_id, op) -> есть ли что искать (ускоряет поиск)
     frozen_pairs = {(k[1], k[2]) for k in frozen_by_key}
 
@@ -333,6 +342,15 @@ def plan(inp: PlanInput) -> PlanResult:
                                 if day > order_max_day:
                                     order_max_day = day
                                 frozen_by_key[rk] = 0
+                for di, pi in pinned_by_pair.get((order.id, op.name), ()):
+                    already_ops += pi.qty
+                    result_items.append(PlanItem(work_days[di], order.id, order.project, order.product, op.name,
+                                                 pi.qty, pi.worker, pi.reason, False))
+                    spend = pi.qty / op.norm_per_day
+                    add_prio_load(order.priority, di, spend)
+                    already_last_day = max(already_last_day, di)
+                    order_max_day = max(order_max_day, di)
+                    st.last_day_idx = max(st.last_day_idx, di)
                 st.planned_ops += already_ops
 
                 already_items = math.floor(already_ops / op.per_item)

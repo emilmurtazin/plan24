@@ -176,7 +176,8 @@ def test_loaded_worker_gets_no_new_tasks_today(full_org):
     perf = next(x["perf"] for x in o.workers if x["id"] == w["worker_id"])
     big = op["norm_per_day"] * perf * 0.9                                     # 90% дневной нормы
     o.post("/facts", json={"fact_date": TODAY.isoformat(), "order_line_id": t["order_line_id"],
-                           "operation_id": t["operation_id"], "worker_id": w["worker_id"], "qty": big})
+                           "operation_id": t["operation_id"], "worker_id": w["worker_id"], "qty": big,
+                           "note": "тест: выработал почти всю норму"}).raise_for_status()
     o.replan_all()
     day = o.get("/reports/day").json()
     mine = next((x for x in day["workers"] if x["worker_id"] == w["worker_id"]), None)

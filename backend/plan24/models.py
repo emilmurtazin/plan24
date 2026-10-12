@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Optional
 
+from sqlalchemy import false as sa_false
+from sqlalchemy import true as sa_true
 from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text,
                         UniqueConstraint, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -110,6 +112,9 @@ class Worker(Base):
     skill: Mapped[float] = mapped_column(Float, default=1)
     status: Mapped[str] = mapped_column(String(16), default="available")   # available | unavailable
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # участвует ли в автопланировании; временный работник, добавленный из «Плана на день», — нет, пока это не включат в настройках
+    auto_plan: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_true())
+    is_temporary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
@@ -249,6 +254,31 @@ class OrderLineOperation(Base):
     operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id"), primary_key=True)
     work_center_id: Mapped[int] = mapped_column(ForeignKey("work_centers.id"), primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+
+class DayPin(Base):
+    """День работника закреплён вручную: перепланирование его не меняет (правки «Плана на день» сохраняются)."""
+    __tablename__ = "day_pins"
+    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), primary_key=True)
+    plan_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+
+class ExtraTask(Base):
+    """Работа вне перечня операций: по заказу (order_line_id задан) или не относящаяся к заказу (None). Учёт — в часах."""
+    __tablename__ = "extra_tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    plan_date: Mapped[date] = mapped_column(Date, index=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"))
+    order_line_id: Mapped[Optional[int]] = mapped_column(ForeignKey("order_lines.id"))
+    title: Mapped[str] = mapped_column(String(200))
+    hours: Mapped[float] = mapped_column(Float)                       # запланировано часов
+    fact_hours: Mapped[Optional[float]] = mapped_column(Float)        # сделано часов (None — факт не внесён)
+    reason_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fact_reasons.id"))
+    note: Mapped[str] = mapped_column(String(400), default="")
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # ---------------------------------------------------------------- факт, планы, аудит

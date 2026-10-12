@@ -38,7 +38,7 @@ th{font-weight:600;font-size:14px;color:var(--muted);white-space:nowrap}td.num,t
 .task{padding:10px 0;border-top:1px solid var(--line)}.task:first-of-type{border-top:0}
 .task .t1{display:flex;justify-content:space-between;gap:10px}.task small{color:var(--muted);display:block}
 .qty{font-size:26px;font-weight:700;line-height:1}
-.fact{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.fact input{width:92px}
+.devbox{flex-basis:100%;background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--r);padding:8px}.devbox[hidden]{display:none}.devbox .row{margin-top:6px}.devbox input,.devbox select{min-height:34px}.tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.task.extra{border-top:1px dashed var(--line)}.qty small{display:block;font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);text-align:right}.fact label{font-size:13px;color:var(--muted)}.fact{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.fact input{width:92px}
 .heat{border-collapse:separate;border-spacing:2px;width:auto}.heat th,.heat td{padding:4px 6px;text-align:center;border:0;font-size:13px;min-width:44px}
 .heat td.name{text-align:left;font-weight:600;position:sticky;left:0;background:var(--card);white-space:nowrap}
 .cell{border-radius:3px;height:30px;line-height:30px}.c0{background:var(--grey-soft);color:var(--muted)}.c1{background:var(--blue-soft)}.c2{background:var(--amber-soft);font-weight:600}

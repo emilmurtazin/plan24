@@ -55,6 +55,8 @@ class WorkerIn(BaseModel):
     perf: float = Field(1.0, gt=0, le=10)
     skill: float = Field(1, gt=0, le=10)
     status: str = Field("available", pattern="^(available|unavailable)$")
+    auto_plan: bool = True                 # участвует в автопланировании (временному работнику из «Плана на день» — нет)
+    is_temporary: bool = False
 
 
 class WorkerPatch(BaseModel):
@@ -63,6 +65,8 @@ class WorkerPatch(BaseModel):
     perf: Optional[float] = Field(None, gt=0, le=10)
     skill: Optional[float] = Field(None, gt=0, le=10)
     status: Optional[str] = Field(None, pattern="^(available|unavailable)$")
+    auto_plan: Optional[bool] = None
+    is_temporary: Optional[bool] = None
     version: Optional[int] = None
 
 

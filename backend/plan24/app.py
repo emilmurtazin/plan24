@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, demo, dev, facts, integrations, plans, refs, reports, users
+from .routers import auth, dayedit, demo, dev, facts, integrations, plans, refs, reports, users
 
 STATIC = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -75,7 +75,7 @@ def create_app() -> FastAPI:
         except Exception as e:                                       # noqa: BLE001
             return problem(503, "База данных недоступна", type(e).__name__)
 
-    for r in (auth.router, users.router, refs.router, plans.router, facts.router, reports.router, demo.router, dev.router, integrations.router):
+    for r in (auth.router, users.router, refs.router, plans.router, dayedit.router, facts.router, reports.router, demo.router, dev.router, integrations.router):
         app.include_router(r, prefix="/api/v1")
 
     if STATIC.exists():

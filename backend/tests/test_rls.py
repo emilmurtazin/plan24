@@ -270,7 +270,7 @@ def test_ready_probe_reports_schema_drift(two, request):
         assert r.status_code == 503 and "ревизии" in r.json()["title"]
     finally:
         with own.begin() as c:
-            c.execute(sa.text("UPDATE alembic_version SET version_num='0005'"))
+            c.execute(sa.text("UPDATE alembic_version SET version_num='0006'"))
         own.dispose()
     assert a.c.get("/api/v1/health/ready").status_code == 200
 

@@ -11,9 +11,9 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import (Fact, Holiday, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
+from .models import (DayPin, Fact, Holiday, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
                     Product, Project, Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine, utcnow)
-from .planner import (FactRow, Operation as POp, OrderLine as POrder, PlanConfig, PlanInput, Worker as PWorker,
+from .planner import (PinnedItem, FactRow, Operation as POp, OrderLine as POrder, PlanConfig, PlanInput, Worker as PWorker,
                       build_work_calendar, plan as run_planner, reports)
 
 PAST_DAYS = 14        # глубина истории плана для отклонений «план/факт»
@@ -32,6 +32,8 @@ class Ctx:
     op_id: dict = field(default_factory=dict)              # (order_key, op name) -> Operation.id
     product_name: dict = field(default_factory=dict)       # order_key -> имя изделия для людей
     project_id: dict = field(default_factory=dict)
+    carry: list = field(default_factory=list)              # закреплённые строки предыдущего плана, которые остаются в новом
+    pinned_keys: set = field(default_factory=set)          # (дата, позиция, операция, работник) закреплённых строк
 
 
 def _weekdays(s: str) -> tuple:
@@ -65,7 +67,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
             if d in cal_set:
                 absent[a.worker_id].add(d)
             d += timedelta(days=1)
-    avail = [w for w in workers_all if w.status == "available"]
+    avail = [w for w in workers_all if w.status == "available" and w.auto_plan]
     links: dict = defaultdict(set)
     for l in db.scalars(q(WorkerOrderLine)):
         links[l.worker_id].add(l.order_line_id)
@@ -160,6 +162,26 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
                                          product=prod_key_of[k], op=op, worker=w, plan=remaining, qty=0))
     facts = tuple(fact_rows)
 
+    # --- закреплённые вручную правки «Плана на день»: остаются как есть при любом перепланировании ---
+    fixed_avail = {w.id for w in avail if w.name in fixed_names}          # их будущее и так сохраняется выше (left)
+    out_of_scope = {w.id for w in workers_all if scope is not None and w.work_center_id != scope}
+    pinned_days = frozenset((wname[x.worker_id], x.plan_date) for x in db.scalars(q(DayPin).where(DayPin.plan_date >= plan_today))
+                            if x.worker_id in wname and x.worker_id not in out_of_scope)
+    pinned_list: list = []
+    if active_plan is not None:
+        for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == active_plan.id, PlanItem.is_locked.is_(True),
+                                                    PlanItem.plan_date >= plan_today).order_by(PlanItem.id)):
+            if it.worker_id in fixed_avail:
+                continue
+            ctx.carry.append(it)
+            ctx.pinned_keys.add((it.plan_date, it.order_line_id, it.operation_id, it.worker_id))
+            key, opn, wn = ctx.key_by_order_id.get(it.order_line_id), op_names.get(it.operation_id), wname.get(it.worker_id)
+            if key is None or opn is None or wn is None:
+                continue
+            if rows.get((it.plan_date, key, opn, wn), [0, 0])[1] > 0:     # по строке уже внесён факт — дальше как при заморозке
+                continue
+            pinned_list.append(PinnedItem(it.plan_date, key, opn, wn, it.qty, it.reason_code))
+
     by_level = {int(k): float(v) for k, v in (ov.get("strictness_by_level", st.strictness_by_level) or {}).items()}
     cfg = PlanConfig(
         today=plan_today, work_days=cal, efficiency=ov.get("efficiency", st.efficiency),
@@ -170,7 +192,8 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         strictness_by_level=by_level, freeze_days=freeze_days,
         fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start))
     inp = PlanInput(order_lines=tuple(porders), products=pproducts, workers=pworkers, facts=facts, config=cfg,
-                    all_workers_perf={w.name: w.perf for w in workers_all}, fixed_workers=fixed_names)
+                    all_workers_perf={w.name: w.perf for w in workers_all}, fixed_workers=fixed_names,
+                    pinned=tuple(sorted(pinned_list, key=str)), pinned_days=pinned_days)
     return inp, ctx
 
 
@@ -181,7 +204,8 @@ def _prior_plan_items(db: Session, tenant_id: int, plan_today: date, freeze_wind
     out = []
     active = db.scalar(select(Plan).where(Plan.tenant_id == tenant_id, Plan.status == "active"))
     if active and freeze_window:
-        out += list(db.scalars(select(PlanItem).where(PlanItem.plan_id == active.id, PlanItem.plan_date.in_(freeze_window))))
+        out += list(db.scalars(select(PlanItem).where(PlanItem.plan_id == active.id, PlanItem.plan_date.in_(freeze_window),
+                                                      PlanItem.is_locked.is_(False))))      # закреплённые идут отдельно (pinned)
     lo = plan_today - timedelta(days=PAST_DAYS)
     plans = list(db.scalars(select(Plan).where(Plan.tenant_id == tenant_id).order_by(Plan.id.desc()).limit(60)))
     if plans:
@@ -244,7 +268,7 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
     if prev and inp.fixed_workers:
         wid = {n: ctx.worker_by_name[n].id for n in inp.fixed_workers if n in ctx.worker_by_name}
         for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == prev.id, PlanItem.worker_id.in_(set(wid.values())))):
-            old_flags[(it.plan_date, it.order_line_id, it.operation_id, it.worker_id)] = (it.is_frozen, it.reason_code)
+            old_flags[(it.plan_date, it.order_line_id, it.operation_id, it.worker_id)] = (it.is_frozen, it.reason_code, it.is_locked)
     if prev:
         prev.status = "archived"
         db.flush()
@@ -256,11 +280,21 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
                      "scope_center_id": (overrides or {}).get("scope_center_id")})
     db.add(p)
     db.flush()
+    saved: set = set()
     for it in res.items:
         o = ctx.order_by_key[it.order_id]
         wid_ = ctx.worker_by_name[it.worker].id
         opid_ = ctx.op_id[(it.order_id, it.operation)]
-        frozen, reason = old_flags.get((it.date, o.id, opid_, wid_), (it.is_frozen, it.reason_code))
+        k4 = (it.date, o.id, opid_, wid_)
+        frozen, reason, locked = old_flags.get(k4, (it.is_frozen, it.reason_code, k4 in ctx.pinned_keys))
         db.add(PlanItem(tenant_id=user.tenant_id, plan_id=p.id, plan_date=it.date, order_line_id=o.id, operation_id=opid_,
-                        worker_id=wid_, qty=it.qty, is_frozen=frozen, reason_code=reason))
+                        worker_id=wid_, qty=it.qty, is_frozen=frozen, is_locked=locked, reason_code=reason))
+        saved.add(k4)
+    for it in ctx.carry:             # закреплённое, что планировщик не вывел (факт уже внесён, позиция закрыта и т. п.), всё равно остаётся
+        k4 = (it.plan_date, it.order_line_id, it.operation_id, it.worker_id)
+        if k4 not in saved:
+            db.add(PlanItem(tenant_id=user.tenant_id, plan_id=p.id, plan_date=it.plan_date, order_line_id=it.order_line_id,
+                            operation_id=it.operation_id, worker_id=it.worker_id, qty=it.qty, is_frozen=it.is_frozen,
+                            is_locked=True, reason_code=it.reason_code))
+            saved.add(k4)
     return p

@@ -6,14 +6,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import audit, distribution, planning
 from .. import db as dbm
 from ..db import DB
 from ..deps import ALL, MANAGERS, READERS, STAFF, get_or_404, get_today, require, scoped
-from ..models import Plan, PlanItem, User, WorkCenter
+from ..models import DayPin, Plan, PlanItem, User, WorkCenter
 from ..planner.compare import compare_strictness
 
 router = APIRouter(prefix="/plans", tags=["plans"])
@@ -129,7 +129,7 @@ def history(limit: int = 30, user: User = Depends(require(*STAFF)), db: Session 
 
 
 @router.post("/{pid}/activate")
-def activate(pid: int, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def activate(pid: int, user: User = Depends(require(*MANAGERS)), db: Session = DB, today: date = Depends(get_today)):
     """Откат: сделать архивный план активным (BR-13). Данные не изменяются."""
     p = get_or_404(db, Plan, pid, user)
     if p.status != "active":
@@ -138,5 +138,10 @@ def activate(pid: int, user: User = Depends(require(*MANAGERS)), db: Session = D
             cur.status = "archived"
             db.flush()
         p.status = "active"
+        # закрепления дней соответствуют активному плану: берём их из его закреплённых строк
+        db.execute(delete(DayPin).where(DayPin.tenant_id == user.tenant_id, DayPin.plan_date >= today))
+        for wid, d in {(i.worker_id, i.plan_date) for i in db.scalars(select(PlanItem).where(
+                PlanItem.plan_id == p.id, PlanItem.is_locked.is_(True), PlanItem.plan_date >= today))}:
+            db.add(DayPin(tenant_id=user.tenant_id, worker_id=wid, plan_date=d))
         audit.log(db, user, "plan", p.id, "activate")
     return {"id": p.id, "status": p.status}

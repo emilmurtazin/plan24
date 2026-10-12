@@ -9,13 +9,15 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select
+import math
+
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import audit
 from .deps import get_or_404, scoped
-from .models import Fact, FactReason, Operation, OrderLine, PlannerSettings, Worker, utcnow
+from .models import Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Worker, utcnow
 from fastapi import HTTPException
 
 
@@ -45,6 +47,29 @@ def can_touch_worker(actor, worker: Worker):
         _deny(403, "Это исполнитель другого участка")
 
 
+def _g(x: float) -> str:
+    return f"{x:g}"
+
+
+def deviation(db: Session, actor, *, fact_date: date, ol: OrderLine, op: Operation, worker: Worker, qty: float):
+    """Что требует объяснения: «under» — меньше плана на день, «over» — больше, чем нужно по заказу. → (код, текст) или None."""
+    total_other = db.scalar(select(func.coalesce(func.sum(Fact.qty), 0.0)).where(
+        Fact.tenant_id == actor.tenant_id, Fact.order_line_id == ol.id, Fact.operation_id == op.id, Fact.deleted_at.is_(None),
+        ~((Fact.fact_date == fact_date) & (Fact.worker_id == worker.id)))) or 0.0
+    required = math.ceil(ol.qty * op.per_item - 1e-9)
+    if total_other + qty > required + 1e-9:
+        return "over", (f"Выполнено больше, чем нужно по заказу (нужно {_g(required)}, с этим фактом будет {_g(total_other + qty)}) — "
+                        "укажите причину или комментарий")
+    plan = db.scalar(select(Plan).where(Plan.tenant_id == actor.tenant_id, Plan.status == "active"))
+    if plan:
+        planned = db.scalar(select(func.coalesce(func.sum(PlanItem.qty), 0)).where(
+            PlanItem.plan_id == plan.id, PlanItem.plan_date == fact_date, PlanItem.order_line_id == ol.id,
+            PlanItem.operation_id == op.id, PlanItem.worker_id == worker.id)) or 0
+        if planned and qty < planned:
+            return "under", f"Сделано меньше плана ({_g(qty)} из {_g(planned)}) — укажите причину или комментарий"
+    return None
+
+
 def enter(db: Session, actor, *, fact_date: date, order_line_id: int, operation_id: int, worker_id: int, qty: float,
           today: date, reason_id: Optional[int] = None, note: str = "", source: str = "web"):
     """Записывает итог дня по исполнителю; повторный ввод заменяет значение. → (факт, прежнее значение или None)."""
@@ -63,6 +88,10 @@ def enter(db: Session, actor, *, fact_date: date, order_line_id: int, operation_
     if reason_id is not None:
         get_or_404(db, FactReason, reason_id, actor)
 
+    if source == "web" and reason_id is None and not (note or "").strip():
+        dev = deviation(db, actor, fact_date=fact_date, ol=ol, op=op, worker=worker, qty=qty)
+        if dev:                                    # причину просим только при отклонении; в Telegram её спрашивает бот после записи
+            _deny(422, dev[1])
     st = db.get(PlannerSettings, actor.tenant_id)
     needs_confirm = st.fact_confirmation and actor.role == "worker"
     key = (Fact.tenant_id == actor.tenant_id, Fact.fact_date == fact_date, Fact.order_line_id == ol.id,
