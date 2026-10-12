@@ -141,15 +141,22 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   // регрессия: переключение раздела сразу после перерисовки не должно затираться запоздавшим ответом прежнего экрана
   click(byText('nav.tabs button', 'Дашборд')); click(byText('nav.tabs button', 'Загрузка')); click(byText('nav.tabs button', 'Дашборд')); click(byText('nav.tabs button', 'Статус заказов'));
   await sleep(1200);
-  if (!$('#tb')) throw new Error('запоздавший ответ перерисовал не тот раздел: ' + $('#view').textContent.slice(0, 80));
+  if (!$('#od')) throw new Error('запоздавший ответ перерисовал не тот раздел: ' + $('#view').textContent.slice(0, 80));
   step('быстрое переключение разделов: остаётся последний выбранный');
   click(byText('nav.tabs button', 'Статус заказов'));
-  await until(() => $$('#tb tr').length > 3, 'таблица статусов'); step('статус заказов: строк ' + ($$('#tb tr').length - 1));
-  const total = $$('#tb tr').length - 1; setv($('#fs'), 'В работе');
-  const inWork = $$('#tb tr').length - 1; setv($('#fq'), 'шкаф'); const q = $$('#tb tr').length - 1;
-  if (!(q > 0 && q < inWork)) throw new Error('поиск не сужает список: ' + q + ' из ' + inWork);
-  setv($('#fq'), ''); setv($('#fs'), '');
-  step(`фильтры: всего ${total}, «В работе» ${inWork}, поиск «шкаф» ${q}`);
+  await until(() => $$('#od .stt tr[class]').length >= 2 || $$('#od .stt tr').length > 3, 'операции заказа');
+  const opsN = $$('#od .stt tr:not(.det)').length - 1, title0 = $('#od h2').textContent;
+  for (const h of ['Выполнено', 'В плане', 'Не в плане', 'Смен до завершения', 'Дата завершения', 'Узкое место']) if (!$('#od .stt').textContent.includes(h)) throw new Error('в таблице операций нет колонки «' + h + '»');
+  if ($$('#od .stt tr.bn').length !== 1) throw new Error('должно быть ровно одно узкое место, найдено ' + $$('#od .stt tr.bn').length);
+  if (!/Прогноз завершения/.test($('#od').textContent) || !/Срок заказа/.test($('#od').textContent)) throw new Error('в карточке заказа нет прогноза и срока');
+  step(`статус заказа «${title0}»: операций ${opsN}, узкое место отмечено (${$('#od tr.bn b').textContent})`);
+  // выбор изделия сужает список заказов; выбор заказа перерисовывает операции
+  const prods = [...$('#sp').options].filter(o => o.value).map(o => o.value); const all = $('#so').options.length;
+  setv($('#sp'), prods[prods.length - 1]); await until(() => $('#so').options.length < all || prods.length === 1, 'фильтр по изделию');
+  await until(() => $('#od h2') && $('#od h2').textContent.includes(prods[prods.length - 1]), 'заказ выбранного изделия');
+  step(`фильтр по изделию «${prods[prods.length - 1]}»: заказов ${all} → ${$('#so').options.length}`);
+  setv($('#sp'), ''); const lastRow = [...$$('#all tr[data-o]')].pop(); const lastTitle = lastRow.querySelector('td b').textContent; click(lastRow);
+  await until(() => $('#od h2') && $('#od h2').textContent.includes('Заказ ' + lastTitle), 'выбор заказа из общей таблицы'); step('выбор заказа из таблицы «Все заказы»: ' + $('#od h2').textContent);
   click(byText('nav.tabs button', 'Загрузка'));
   await until(() => $$('.heat tr').length > 2, 'тепловая карта'); step('загрузка: исполнителей ' + ($$('.heat tr').length - 1));
 

@@ -5,13 +5,13 @@ from collections import defaultdict
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import distribution, reports_service
+from .. import distribution, order_status, reports_service
 from ..db import DB
-from ..deps import READERS, STAFF, ALL, get_today, require, scoped
+from ..deps import READERS, STAFF, ALL, get_or_404, get_today, require, scoped
 from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, Worker)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -50,6 +50,17 @@ def status(user: User = Depends(require(*READERS)), db: Session = DB):
     if not p:
         return {"plan_id": None, "rows": []}
     return {"plan_id": p.id, "created_at": p.created_at.isoformat(), "rows": _own_rows(db, user, p.summary.get("status", []))}
+
+
+@router.get("/order-status")
+def order_status_by_operations(order_line_id: int, user: User = Depends(require(*READERS)), db: Session = DB,
+                               today: date = Depends(get_today)):
+    """Статус одного заказа по операциям: выполнено, в плане, смены до завершения, узкое место, проблемы, рекомендации.
+    Участок (бригадир) видит только свои операции."""
+    ol = get_or_404(db, OrderLine, order_line_id, user)
+    if user.role == "foreman" and ol.id not in distribution.order_ids_of_center(db, user, user.work_center_id):
+        raise HTTPException(404, "У этой позиции нет операций вашего участка")
+    return order_status.build(db, user, ol, today)
 
 
 @router.get("/load")

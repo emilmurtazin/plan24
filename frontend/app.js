@@ -236,19 +236,6 @@ SCREENS.home = async v => {
 /* ---------------- План на день + факт ---------------- */
 let REASONS = null;
 /* ---------------- Статус и загрузка ---------------- */
-SCREENS.status = async v => {
-  const { rows } = await GET('/reports/status');
-  if (!rows.length) { v.innerHTML = '<h1>Статус заказов</h1><div class="card empty">План ещё не построен.</div>'; return; }
-  const statuses = [...new Set(rows.map(r => r.status))];
-  v.innerHTML = `<h1>Статус заказов</h1><div class="row" style="margin-bottom:10px"><label class="f" style="margin:0">Статус<select id="fs"><option value="">все</option>${statuses.map(s => `<option>${esc(s)}</option>`).join('')}</select></label>
-    <label class="f" style="margin:0">Поиск<input id="fq" placeholder="заказ, изделие, проект"></label></div><div class="card scroll" id="tb"></div>`;
-  const draw = () => {
-    const s = $('#fs').value, q = $('#fq').value.toLowerCase();
-    const r = rows.filter(x => (!s || x.status === s) && (!q || (x.id + x.product + x.project).toLowerCase().includes(q)));
-    $('#tb').innerHTML = `<table><tr><th>Заказ</th><th>Проект</th><th>Изделие</th><th class="num">Выполнено</th><th>Прогноз</th><th>Срок</th><th>Статус</th></tr>${r.map(x => `<tr><td>${esc(x.id)}</td><td>${esc(x.project)}</td><td>${esc(x.product)} × ${x.qty}</td><td class="num">${x.pct == null ? '—' : x.pct + '%'}</td><td>${esc(x.forecast_text)}</td><td>${fmtDY(x.due)}</td><td>${stBadge(x.status)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">Ничего не найдено</td></tr>'}</table>`;
-  };
-  $('#fs').onchange = draw; $('#fq').oninput = draw; draw();
-};
 SCREENS.load = async v => {
   const L = await GET('/reports/load');
   if (!L.plan_id) { v.innerHTML = '<h1>Загрузка</h1><div class="card empty">План ещё не построен.</div>'; return; }

@@ -36,6 +36,7 @@ CASES = [
     ("GET", "/order-lines/999999/operations", None, READERS),
     ("PUT", "/order-lines/999999/operations", {"assignments": []}, MANAGERS),
     ("GET", "/order-distribution", None, MANAGERS),
+    ("GET", "/reports/order-status?order_line_id=999999", None, READERS),
     ("POST", "/plan-day/items", {"plan_date": "2099-01-01", "worker_id": 1, "order_line_id": 1, "operation_id": 1, "qty": 1}, STAFF),
     ("PATCH", "/plan-day/items/999999", {"qty": 1}, STAFF),
     ("DELETE", "/plan-day/items/999999", None, STAFF),
