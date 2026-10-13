@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from .. import config, db as dbm
+from .. import config, db as dbm, snapshots
 from . import bot, client, notifications
 
 log = logging.getLogger("plan24.telegram")
@@ -30,11 +30,11 @@ def main(argv):
     elif cmd == "delete-webhook":
         c.delete_webhook(); print("Вебхук удалён")
     elif cmd == "notify":
-        s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); s.commit(); client.deliver(out)
+        s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); client.deliver(out)
         print("Сообщений отправлено:", len(out))
     elif cmd == "scheduler":
         while True:
-            s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); s.commit(); s.close()
+            s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); s.close()
             client.deliver(out); time.sleep(60)
     elif cmd == "poll":          # без публичного HTTPS: бот опрашивает Telegram сам (вебхук при этом должен быть удалён)
         offset, delay = 0, 1

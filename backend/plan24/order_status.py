@@ -100,6 +100,7 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
             continue                                  # участок видит только свой набор операций
         has_centers = bool(centers)
         problems, recs = [], []
+        staffing = None
         cand = [w for w in workers.values() if w.status == "available" and w.auto_plan and w.skill >= op.min_skill
                 and (not has_centers or w.work_center_id in cs)]
         on_op = [workers[i] for i in c["workers"] if i in workers]
@@ -137,12 +138,14 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
             need = math.ceil(c["remaining"] / (op.norm_per_day * perf * target) - 1e-9)
             cur = len(on_op)
             if need > cur:
+                staffing = {"need": need, "current": cur, "add": need - cur, "target_days": target}
                 spare = [w for w in sorted(cand, key=lambda w: -w.perf) if w.id not in c["workers"]]
                 goal = f"закончить к {_d(due)}" if days > 0 else f"закончить за {target} смен"
                 txt = f"Добавить ориентировочно {need - cur} работн. (сейчас {cur}, нужно около {need}), чтобы {goal}"
                 if not spare:
                     txt += ". Свободных подходящих работников на участке нет — нужен перевод с другого участка или новые люди"
                 else:
+                    staffing["spare"] = len(spare)
                     txt += ". Подходят по квалификации: " + ", ".join(w.name for w in spare[:3])
                     if need > cur + len(spare):          # людей, которых можно подключить, меньше, чем нужно для срока
                         full = math.ceil(c["remaining"] / (op.norm_per_day * perf * (cur + len(spare))) - 1e-9)
@@ -159,6 +162,7 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
             "end_date": c["end"], "shifts_left": (0 if c["remaining"] <= 1e-9 else shifts(plan_today, c["end"]) if c["end"] else None),
             "workers": [w.name for w in on_op], "status": status, "is_bottleneck": is_b,
             "bottleneck_critical": bool(is_b and order_late), "late": late, "problems": problems, "recommendations": recs,
+            "staffing": staffing,
         })
     req = sum(c["required"] for c in calc) or 1
     prog = sum(min(c["done"], c["required"]) for c in calc) / req

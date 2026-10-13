@@ -464,7 +464,7 @@ class SettingsPatch(BaseModel):
 
 
 def settings_out(s: PlannerSettings) -> dict:
-    return {c.name: getattr(s, c.name) for c in s.__table__.columns if c.name not in ("tenant_id", "updated_by")}
+    return {c.name: getattr(s, c.name) for c in s.__table__.columns if c.name not in ("tenant_id", "updated_by", "snapshot_on")}
 
 
 @router.get("/settings")

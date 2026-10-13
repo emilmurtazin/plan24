@@ -153,6 +153,7 @@ class PlannerSettings(Base):
     shift_hours: Mapped[float] = mapped_column(Float, default=8)           # только для отображения
     fix_group_start: Mapped[bool] = mapped_column(Boolean, default=False)  # D-04: выкл. по умолчанию
     fact_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)  # FR-22a
+    snapshot_on: Mapped[Optional[date]] = mapped_column(Date)           # когда последний раз сохранялся снимок плана по дням
     qualifications: Mapped[list] = mapped_column(JSON, default=default_quals)   # названия уровней квалификации; число уровней = длина списка
     updated_by: Mapped[Optional[int]] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -279,6 +280,21 @@ class ExtraTask(Base):
     note: Mapped[str] = mapped_column(String(400), default="")
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class DayPlanSnapshot(Base):
+    """«Что было запланировано на день»: копия строк активного плана на сегодня и будущее, обновляется при перепланировании,
+    ручной правке и раз в сутки. Прошедшие дни не перезаписываются — по ним считается недовыполнение плана.
+    Ссылки без внешних ключей: история не должна мешать удалению справочников."""
+    __tablename__ = "day_plan_snapshots"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    plan_date: Mapped[date] = mapped_column(Date, index=True)
+    order_line_id: Mapped[int] = mapped_column(Integer)
+    operation_id: Mapped[int] = mapped_column(Integer)
+    worker_id: Mapped[int] = mapped_column(Integer)
+    work_center_id: Mapped[Optional[int]] = mapped_column(Integer)      # участок работника на момент снимка
+    qty: Mapped[int] = mapped_column(Integer)
 
 
 # ---------------------------------------------------------------- факт, планы, аудит

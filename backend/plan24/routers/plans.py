@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, distribution, planning
+from .. import audit, distribution, planning, snapshots
 from .. import db as dbm
 from ..db import DB
 from ..deps import ALL, MANAGERS, READERS, STAFF, get_or_404, get_today, require, scoped
@@ -143,5 +143,6 @@ def activate(pid: int, user: User = Depends(require(*MANAGERS)), db: Session = D
         for wid, d in {(i.worker_id, i.plan_date) for i in db.scalars(select(PlanItem).where(
                 PlanItem.plan_id == p.id, PlanItem.is_locked.is_(True), PlanItem.plan_date >= today))}:
             db.add(DayPin(tenant_id=user.tenant_id, worker_id=wid, plan_date=d))
+        snapshots.sync(db, user.tenant_id, p, today)
         audit.log(db, user, "plan", p.id, "activate")
     return {"id": p.id, "status": p.status}

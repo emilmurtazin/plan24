@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import distribution, order_status, reports_service
+from .. import dashboard as dashboard_service
+from .. import distribution, order_status, reports_service, snapshots
 from ..db import DB
 from ..deps import READERS, STAFF, ALL, get_or_404, get_today, require, scoped
 from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, Worker)
@@ -50,6 +51,13 @@ def status(user: User = Depends(require(*READERS)), db: Session = DB):
     if not p:
         return {"plan_id": None, "rows": []}
     return {"plan_id": p.id, "created_at": p.created_at.isoformat(), "rows": _own_rows(db, user, p.summary.get("status", []))}
+
+
+@router.get("/overview")
+def overview(user: User = Depends(require(*READERS)), db: Session = DB, today: date = Depends(get_today)):
+    """Данные дашборда: выполнение, статусы, потребность в ресурсах, причины отклонений, работники, графики на 3 месяца."""
+    snapshots.ensure_today(db, user.tenant_id, today)         # раз в сутки при первом открытии, если снимок за день ещё не делали
+    return dashboard_service.build(db, user, today)
 
 
 @router.get("/order-status")

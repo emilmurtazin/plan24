@@ -62,3 +62,7 @@ ol.steps{padding-left:20px}ol.steps li{margin:6px 0}
 @media (max-width:700px){.grid2{grid-template-columns:1fr}}
 .stt tr.bn td:first-child{box-shadow:inset 4px 0 0 var(--amber)}.stt tr.det td{background:var(--grey-soft);padding:10px 14px}.stt tr.det ul{margin:4px 0 0;padding-left:18px}.stt tr.det li{margin-bottom:3px}
 tr[aria-selected=true] td{background:var(--blue-soft)}
+
+.chart{width:100%;height:auto;display:block}.stack{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--grey-soft)}.stack i{display:block;height:100%}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}.legend span{display:inline-flex;align-items:center}
+details summary{cursor:pointer;color:var(--blue);margin:8px 0}

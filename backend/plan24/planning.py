@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .models import (DayPin, Fact, Holiday, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
                     Product, Project, Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine, utcnow)
+from . import snapshots
 from .planner import (PinnedItem, FactRow, Operation as POp, OrderLine as POrder, PlanConfig, PlanInput, Worker as PWorker,
                       build_work_calendar, plan as run_planner, reports)
 
@@ -297,4 +298,5 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
                             operation_id=it.operation_id, worker_id=it.worker_id, qty=it.qty, is_frozen=it.is_frozen,
                             is_locked=True, reason_code=it.reason_code))
             saved.add(k4)
+    snapshots.sync(db, user.tenant_id, p, inp.config.today)       # что запланировано на каждый день — для графика недовыполнения
     return p

@@ -67,6 +67,11 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   click($('#demo'));
   await until(() => $$('.kpi').length >= 4, 'обзор с KPI', 15000);
   step('демо загружено, план построен, KPI: ' + $$('.kpi').map(k => k.textContent.replace(/\s+/g, ' ')).join(' / '));
+  for (const h of ['Статус заказов', 'Потребность в ресурсах', 'Повторяющиеся проблемы и причины отклонений', 'Работники', 'Загрузка участков на 3 месяца вперёд', 'Недовыполнение плана по участкам за 3 месяца']) if (!$$('#view h2').some(x => x.textContent.includes(h))) throw new Error('на дашборде нет раздела «' + h + '»');
+  if (!/По участкам/.test($('#view').textContent) || !/По квалификациям/.test($('#view').textContent)) throw new Error('нет таблиц работников по участкам и квалификациям');
+  const loadSvg = $('#view svg.chart'); if (!loadSvg || $$('#view svg.chart path').length < 2) throw new Error('нет графика загрузки по участкам (линии по каждому участку)');
+  if (!/Данные таблицей/.test($('#view').textContent)) throw new Error('у графика нет таблицы с данными');
+  step('дашборд: все разделы на месте; график загрузки — линий ' + $$('#view svg.chart path').length + ', узлов ' + $$('#view svg.chart circle').length + ', графики недовыполнения: ' + (/Пока нет данных за прошедшие дни/.test($('#view').textContent) ? 'истории ещё нет (как и должно быть)' : 'есть'));
 
   // --- план на день и факт ---
   click(byText('nav.tabs button', 'План на день'));

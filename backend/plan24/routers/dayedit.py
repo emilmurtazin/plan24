@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .. import audit, facts_service
+from .. import audit, facts_service, snapshots
 from ..db import DB
 from ..deps import STAFF, get_or_404, get_today, require, scoped
 from ..models import (DayPin, ExtraTask, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem,
@@ -138,6 +138,7 @@ def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = 
     pin_day(db, user, plan, w.id, body.plan_date)
     audit.log(db, user, "plan_item", it.id, "manual_add", {"date": body.plan_date, "worker_id": w.id, "order_line_id": ol.id,
                                                           "operation_id": op.id, "qty": body.qty})
+    snapshots.sync(db, user.tenant_id, plan, today)
     return {"item": _item_out(it), "warnings": warns + _over_need(db, user, plan, ol, op)}
 
 
@@ -172,6 +173,7 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
     pin_day(db, user, plan, wid, d)
     audit.log(db, user, "plan_item", res.id, "manual_edit", {"from": [x.isoformat() if isinstance(x, date) else x for x in old],
                                                             "to": [d.isoformat(), wid, olid, opid, qty]})
+    snapshots.sync(db, user.tenant_id, plan, today)
     return {"item": _item_out(res), "warnings": warns + _over_need(db, user, plan, ol, op)}
 
 
@@ -190,6 +192,7 @@ def delete_item(iid: int, user: User = Depends(require(*STAFF)), db: Session = D
     db.delete(it)
     db.flush()
     pin_day(db, user, plan, wid, d)
+    snapshots.sync(db, user.tenant_id, plan, today)
 
 
 @router.delete("/plan-day/pins", status_code=204)
