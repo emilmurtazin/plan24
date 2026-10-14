@@ -17,7 +17,7 @@ const S = { me: null, screen: null, access: null, refresh: localStorage.getItem(
 
 function toast(m, bad) {
   if (!m) return;
-  const t = $('#toast'); t.textContent = m; t.style.background = bad ? '#b3261e' : ''; t.classList.remove('hidden');
+  const t = $('#toast'); t.textContent = m; t.style.background = bad ? 'rgba(215,0,21,.95)' : ''; t.classList.remove('hidden');
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.add('hidden'), bad ? 6000 : 3000);
 }
 
@@ -274,6 +274,10 @@ async function openReplan() {
     } catch (e) { box.innerHTML = `<p class="err">${esc(errText(e))}</p>`; }
   };
 }
+
+/* ---------------- меню «⋯» / «Добавить» (<details class="menu">): закрываются кликом мимо, по пункту и Esc ---------------- */
+document.addEventListener('click', e => $$('details.menu[open]').forEach(m => { if (!m.contains(e.target) || e.target.closest('.pop button')) m.open = false; }));
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $$('details.menu[open]').forEach(m => m.open = false); });
 
 /* ---------------- старт ---------------- */
 (async function boot() {

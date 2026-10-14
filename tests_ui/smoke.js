@@ -78,26 +78,27 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $$('.wcard').length, 'карточки исполнителей');
   const cards = $$('.wcard').length, inputs = $$('.fact input').length;
   step(`план на день: карточек ${cards}, полей ввода факта ${inputs}`);
-  const firstDone = $('.fact [data-q]:not([data-q="0"])'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
-  if (!$('.fact [data-save]') || $('.fact [data-save]').textContent.trim() !== 'Записать выполнение') throw new Error('кнопка факта должна называться «Записать выполнение»');
+  const firstDone = $$('.fact').find(b => b.querySelector('input').value === '' && +b.dataset.plan > 0).querySelector('[data-save]'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
+  const devOf = b => b.closest('tr').nextElementSibling.querySelector('.devbox');
+  if (!$('.fact [data-save]') || $('.fact [data-save]').getAttribute('aria-label') !== 'Записать выполнение') throw new Error('кнопка факта должна называться «Записать выполнение»');
   if ($$('.devbox').some(b => !b.hidden)) throw new Error('причина запрашивается, хотя отклонения нет');
-  step('форма факта: кнопка «Записать выполнение», поле причины скрыто, пока нет отклонения');
+  step('форма факта: кнопка ✓ «Записать выполнение», поле причины скрыто, пока нет отклонения');
   click(firstDone);
   await until(() => $('#toast') && !$('#toast').classList.contains('hidden') && /Записано|Исправлено/.test($('#toast').textContent), 'тост факта');
   await until(() => $$('.b-done').length, 'бейдж выполнено');
-  step(`факт «Всё» записан для ${w0}: ${$('#toast').textContent}`);
+  step(`факт «по плану» (✓ при пустом поле) записан для ${w0}: ${$('#toast').textContent}`);
   // меньше плана → появляется запрос причины, без неё сохранить нельзя
   const box = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 1);
   const qin = box.querySelector('input[type=number]'); setv(qin, String(+box.dataset.plan - 1));
-  if (box.querySelector('.devbox').hidden) throw new Error('при факте меньше плана причина должна запрашиваться');
-  if (!/Меньше плана/.test(box.querySelector('.dtext').textContent)) throw new Error('нет пояснения «Меньше плана»: ' + box.querySelector('.dtext').textContent);
+  if (devOf(box).hidden) throw new Error('при факте меньше плана причина должна запрашиваться');
+  if (!/Меньше плана/.test(devOf(box).querySelector('.dtext').textContent)) throw new Error('нет пояснения «Меньше плана»: ' + devOf(box).querySelector('.dtext').textContent);
   click(box.querySelector('[data-save]')); await sleep(150);
   if (!/причину|комментарий/.test($('#toast').textContent)) throw new Error('без причины сохранилось: ' + $('#toast').textContent);
-  setv(box.querySelector('.dnote'), 'не хватило материала'); click(box.querySelector('[data-save]'));
+  setv(devOf(box).querySelector('.dnote'), 'не хватило материала'); click(box.querySelector('[data-save]'));
   await until(() => /Исправлено/.test($('#toast').textContent), 'исправление факта с причиной');
   step('меньше плана: без причины не сохраняется, с комментарием — «' + $('#toast').textContent + '»');
-  const box2 = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 0 && !b.querySelector('.dnote').value);
-  if (box2) { setv(box2.querySelector('input[type=number]'), box2.dataset.plan); if (!box2.querySelector('.devbox').hidden) throw new Error('при факте по плану причина не нужна'); }
+  const box2 = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 0 && !devOf(b).querySelector('.dnote').value);
+  if (box2) { setv(box2.querySelector('input[type=number]'), box2.dataset.plan); if (!devOf(box2).hidden) throw new Error('при факте по плану причина не нужна'); }
 
   // --- правка плана: задание вручную закрепляет день ---
   click($('#addT')); await until(() => $('.modal form') && $('.modal form').elements.operation_id && $('.modal form').elements.operation_id.options.length > 0 && $('.modal form').elements.operation_id.value, 'форма задания');
@@ -113,8 +114,8 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   setv(xf.elements.title, 'Уборка участка'); setv(xf.elements.hours, '2'); xf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await until(() => $$('.task.extra').length, 'работа вне перечня в плане'); step('«+ Работа вне перечня»: «Уборка участка» · не относится к заказу');
   const xb = $('.fact[data-xid]'); setv(xb.querySelector('input[type=number]'), '1');
-  if (xb.querySelector('.devbox').hidden) throw new Error('для работы вне перечня с фактом меньше плана причина должна запрашиваться');
-  setv(xb.querySelector('.dnote'), 'отвлекли на другую работу'); click(xb.querySelector('[data-save-x]'));
+  if (devOf(xb).hidden) throw new Error('для работы вне перечня с фактом меньше плана причина должна запрашиваться');
+  setv(devOf(xb).querySelector('.dnote'), 'отвлекли на другую работу'); click(xb.querySelector('[data-save-x]'));
   await until(() => /Записано/.test($('#toast').textContent) && $('.task.extra .b-none'), 'факт по работе вне перечня'); step('факт по работе вне перечня записан, «частично»');
   // --- временный работник ---
   click($('#addW')); await until(() => $('.modal form') && $('.modal form').elements.name, 'форма работника'); const nf = $('.modal form');
