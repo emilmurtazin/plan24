@@ -78,15 +78,15 @@ async function inFreshWindow(url, fn) {           // отдельная вкла
   await until(() => $$('.wcard').length, 'карточки исполнителей');
   const cards = $$('.wcard').length, inputs = $$('.fact input').length;
   step(`план на день: карточек ${cards}, полей ввода факта ${inputs}`);
-  const firstDone = $$('.fact').find(b => b.querySelector('input').value === '' && +b.dataset.plan > 0).querySelector('[data-save]'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
+  const firstDone = $('.fact [data-q]:not([data-q="0"])'); const w0 = firstDone.closest('.wcard').querySelector('h3').textContent;
   const devOf = b => b.closest('tr').nextElementSibling.querySelector('.devbox');
-  if (!$('.fact [data-save]') || $('.fact [data-save]').getAttribute('aria-label') !== 'Записать выполнение') throw new Error('кнопка факта должна называться «Записать выполнение»');
+  if (!$('.fact [data-save]') || $('.fact [data-save]').textContent.trim() !== 'Записать выполнение') throw new Error('кнопка факта должна называться «Записать выполнение»');
   if ($$('.devbox').some(b => !b.hidden)) throw new Error('причина запрашивается, хотя отклонения нет');
-  step('форма факта: кнопка ✓ «Записать выполнение», поле причины скрыто, пока нет отклонения');
+  step('форма факта: кнопка «Записать выполнение», поле причины скрыто, пока нет отклонения');
   click(firstDone);
   await until(() => $('#toast') && !$('#toast').classList.contains('hidden') && /Записано|Исправлено/.test($('#toast').textContent), 'тост факта');
   await until(() => $$('.b-done').length, 'бейдж выполнено');
-  step(`факт «по плану» (✓ при пустом поле) записан для ${w0}: ${$('#toast').textContent}`);
+  step(`факт «Всё» записан для ${w0}: ${$('#toast').textContent}`);
   // меньше плана → появляется запрос причины, без неё сохранить нельзя
   const box = $$('.fact').find(b => b.querySelector('input[type=number]').value !== '' && +b.dataset.plan > 1);
   const qin = box.querySelector('input[type=number]'); setv(qin, String(+box.dataset.plan - 1));

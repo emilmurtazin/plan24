@@ -19,20 +19,18 @@ const reasonBox = (reasons, reasonId, note) => `<div class="devbox" hidden><div 
   <input class="dnote" maxlength="400" placeholder="или напишите комментарий" aria-label="Комментарий к отклонению" value="${esc(note || '')}"></div></div>`;
 
 /* ------------------------------ экран ------------------------------ */
-const menu = (items, label = 'Действия') => { const l = items.filter(Boolean); return l.length ? `<details class="menu noprint"><summary aria-label="${label}">⋯</summary><div class="pop">${l.join('')}</div></details>` : ''; };
-
 SCREENS.day = async (v, day) => {
   S.nav++;
   const [d, reasons] = await Promise.all([GET('/reports/day' + (day ? '?day=' + day : '')), reasonsList()]);
   const worker = S.me.role === 'worker', can = d.can_edit;
-  const add = can ? `<details class="menu noprint"><summary class="btn" role="button">Добавить</summary><div class="pop"><button id="addT">Задание</button><button id="addX">Работа вне перечня</button><button id="addW">Новый работник</button></div></details>` : '';
-  const more = menu([STAFF.includes(S.me.role) ? '<button id="rp">Перепланировать…</button>' : '', '<button onclick="print()">Печать</button>'], 'Ещё');
-  let h = `<div class="row" style="margin-bottom:10px"><h1 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} <span class="muted" style="font-weight:500">${fmtD(d.date)} ${wd(d.date)}</span></h1>${add}${more}</div>`;
+  let h = `<div class="row" style="margin-bottom:10px"><h1 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} <span class="muted" style="font-weight:500">${fmtD(d.date)} ${wd(d.date)}</span></h1>
+    <span class="row noprint">${can ? '<button id="addT">+ Задание</button><button class="secondary" id="addX">+ Работа вне перечня</button><button class="secondary" id="addW">+ Работник</button>' : ''}
+    ${STAFF.includes(S.me.role) ? '<button class="secondary" id="rp">Перепланировать</button>' : ''}<button class="secondary" onclick="print()">Печать</button></span></div>`;
   if (!d.plan_id) h += `<div class="banner info">План ещё не построен.</div>`;
   if (d.days.length) h += `<div class="days noprint">${d.days.map(x => `<button data-d="${x}" aria-pressed="${x === d.date}"><b>${fmtD(x)}</b><small>${wd(x)}</small></button>`).join('')}</div>`;
-  if (can && d.workers.length) h += `<p class="hint noprint">Любая правка закрепляет день работника: перепланирование его не меняет.</p>`;
-  if (!d.workers.length) h += `<div class="card empty">На этот день заданий нет.${can ? ' Добавьте задание через «Добавить».' : ''}</div>`;
-  else h += `<div class="card flush"><div class="scroll"><table class="dt"><thead><tr><th>Задание</th><th class="num">План</th><th>${d.can_enter ? 'Сделано' : 'Факт'}</th><th>Статус</th><th></th></tr></thead>${d.workers.map(w => workerRows(w, d, reasons, can)).join('')}</table></div></div>`;
+  if (can && d.workers.length) h += `<p class="hint noprint">Любая правка закрепляет день работника: перепланирование его не меняет. Закрепление можно снять в строке работника.</p>`;
+  if (!d.workers.length) h += `<div class="card empty">На этот день заданий нет.${can ? ' Добавьте задание кнопкой «+ Задание».' : ''}</div>`;
+  else h += `<div class="card flush"><div class="scroll"><table class="dt"><thead><tr><th>Задание</th><th class="num">План</th><th>${d.can_enter ? 'Сделано' : 'Факт'}</th><th>Статус</th>${can ? '<th class="noprint">Задание</th>' : ''}</tr></thead>${d.workers.map(w => workerRows(w, d, reasons, can)).join('')}</table></div></div>`;
   v.innerHTML = h;
   const reload = () => SCREENS.day(v, d.date);
   $$('.days button', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.d));
@@ -51,44 +49,48 @@ SCREENS.day = async (v, day) => {
 const findTask = (d, key) => { const [w, o, p] = key.split('-').map(Number); return d.workers.find(x => x.worker_id === w).tasks.find(t => t.order_line_id === o && t.operation_id === p); };
 const findExtra = (d, id) => d.workers.flatMap(w => w.extras).find(x => x.id == id);
 
-/* исполнитель = заголовок группы + его строки; действия над исполнителем — в меню «⋯» */
+/* исполнитель = цветной заголовок группы (с прогрессом и своими кнопками) + его строки */
 function workerRows(w, d, reasons, can) {
   const todo = w.tasks.filter(t => t.plan_qty > 0 && t.fact_qty == null && (t.need_left == null || t.plan_qty <= t.need_left));
   const total = w.tasks.length + w.extras.length, done = w.tasks.filter(t => t.state === 'done').length + w.extras.filter(x => x.fact_hours != null && x.fact_hours >= x.hours).length;
-  const wm = can ? menu([`<button data-wt="${w.worker_id}">Добавить задание</button>`, `<button data-wx="${w.worker_id}">Добавить работу вне перечня</button>`, w.pinned ? `<button data-unpin="${w.worker_id}">Снять закрепление дня</button>` : ''], 'Действия с работником') : '';
-  return `<tbody class="wcard"><tr class="grp"><td colspan="5"><div class="gh"><h3 class="gn">${esc(w.worker)}</h3>${w.is_temporary ? '<span class="tag">временный</span>' : ''}${w.pinned ? '<span class="tag pin" title="Перепланирование этот день не меняет">день закреплён</span>' : ''}
-    ${total ? `<span class="gc">${done} из ${total}</span>` : ''}<span class="grow"></span>${d.can_enter && todo.length > 1 ? `<button class="small secondary noprint" data-allplan="${w.worker_id}">Всё по плану (${todo.length})</button>` : ''}${wm}</div></td></tr>
+  const cols = can ? 5 : 4, ini = (w.worker || '?').trim().charAt(0).toUpperCase();
+  return `<tbody class="wcard"><tr class="grp"><td colspan="${cols}"><div class="gh"><span class="ava" aria-hidden="true">${esc(ini)}</span><h3 class="gn">${esc(w.worker)}</h3>${w.is_temporary ? '<span class="tag">временный</span>' : ''}${w.pinned ? '<span class="tag pin" title="Перепланирование этот день не меняет">день закреплён</span>' : ''}
+    ${total ? `<span class="gprog" title="Выполнено заданий"><span class="bar"><i style="width:${Math.round(done / total * 100)}%"></i></span><span class="gc">${done} из ${total}</span></span>` : ''}<span class="grow"></span>
+    <span class="row noprint" style="gap:6px">${can ? `<button class="small" data-wt="${w.worker_id}">+ Задание</button><button class="small secondary" data-wx="${w.worker_id}">+ Работа вне перечня</button>${w.pinned ? `<button class="small secondary" data-unpin="${w.worker_id}">Снять закрепление</button>` : ''}` : ''}
+    ${d.can_enter && todo.length > 1 ? `<button class="small secondary" data-allplan="${w.worker_id}">Всё по плану (${todo.length})</button>` : ''}</span></div></td></tr>
     ${w.tasks.map(t => taskRow(t, w, d, reasons, can)).join('')}${w.extras.map(x => extraRow(x, w, d, reasons, can)).join('')}
-    ${total ? '' : '<tr class="main"><td colspan="5" class="muted">Заданий нет.</td></tr>'}</tbody>`;
+    ${total ? '' : `<tr class="main"><td colspan="${cols}" class="muted">Заданий нет.</td></tr>`}</tbody>`;
 }
-const reasonRow = (reasons, id, note) => `<tr class="dev" hidden><td colspan="5">${reasonBox(reasons, id, note)}</td></tr>`;
-const factCell = (key, label, val, ph, step, max, saveAttr, done) => `<div class="fact" ${key}><input type="number" min="0" ${max ? `max="${max}"` : ''} step="${step}" inputmode="decimal" aria-label="${label}" value="${val ?? ''}" placeholder="${ph}"><button class="go ${done ? 'done' : ''}" ${saveAttr} aria-label="Записать выполнение" title="Записать. Пустое поле — выполнено по плану (${ph})">✓</button></div>`;
+const reasonRow = (reasons, id, note, cols) => `<tr class="dev" hidden><td colspan="${cols}">${reasonBox(reasons, id, note)}</td></tr>`;
+const factCell = (key, label, val, ph, step, max, saveAttr, quick) => `<div class="fact" ${key}><div class="fl"><input type="number" min="0" ${max ? `max="${max}"` : ''} step="${step}" inputmode="decimal" aria-label="${label}" value="${val ?? ''}" placeholder="${ph}"><button class="small" ${saveAttr}>Записать выполнение</button></div>${quick}</div>`;
 
 function taskRow(t, w, d, reasons, can) {
-  const state = { done: ['b-done', '✔ выполнено'], partial: ['b-none', 'частично'], none: ['b-work', 'ждёт'], extra: ['b-noop', 'вне плана'] }[t.state];
+  const state = { done: ['b-done', '✔ выполнено', 'st-done'], partial: ['b-none', 'частично', 'st-partial'], none: ['b-work', 'ждёт', 'st-none'], extra: ['b-noop', 'вне плана', 'st-extra'] }[t.state];
   const key = `data-w="${w.worker_id}" data-o="${t.order_line_id}" data-p="${t.operation_id}" data-plan="${t.plan_qty}" data-need="${t.need_left ?? ''}"`;
-  const edit = can && t.item_id && t.plan_qty > 0;
-  return `<tr class="main task"><td><b>${esc(t.operation)}</b><small>${esc(t.product)} · заказ ${esc(t.order)}${t.project ? ' · ' + esc(t.project) : ''}</small>
-      ${t.manual ? '<span class="tag">добавлено вручную</span>' : t.frozen ? '<span class="tag">зафиксировано заранее</span>' : ''}${t.reason ? `<small>Причина: ${esc(t.reason)}</small>` : ''}${t.note ? `<small>«${esc(t.note)}»</small>` : ''}</td>
+  const edit = can && t.item_id && t.plan_qty > 0, cols = can ? 5 : 4;
+  const quick = t.plan_qty ? `<div class="fq"><button class="small secondary" data-q="${t.plan_qty}">Всё: ${t.plan_qty}</button><button class="small secondary" data-q="0">Не делали</button></div>` : '';
+  return `<tr class="main task ${state[2]}"><td><b class="op">${esc(t.operation)}</b><small>${esc(t.product)} · заказ ${esc(t.order)}${t.project ? ' · ' + esc(t.project) : ''}</small>
+      ${t.manual ? '<span class="tag">✎ добавлено вручную</span>' : t.frozen ? '<span class="tag">❄ зафиксировано заранее</span>' : ''}${t.reason ? `<small class="rs">Причина: ${esc(t.reason)}</small>` : ''}${t.note ? `<small class="rs">«${esc(t.note)}»</small>` : ''}</td>
     <td class="num qty" title="План на день">${t.plan_qty || '—'}</td>
-    <td>${d.can_enter ? factCell(key, 'Сделано, ' + esc(t.operation), t.fact_qty, t.plan_qty || 'сколько', 'any', 0, 'data-save', t.state === 'done') : (t.fact_qty != null ? `<b>${t.fact_qty}</b>` : '<span class="muted">—</span>')}</td>
+    <td>${d.can_enter ? factCell(key, 'Сделано, ' + esc(t.operation), t.fact_qty, t.plan_qty || 'сколько', 'any', 0, 'data-save', quick) : (t.fact_qty != null ? `<b class="fv">${t.fact_qty}</b>` : '<span class="muted">—</span>')}</td>
     <td><span class="badge ${state[0]}">${state[1]}</span>${t.fact_status === 'submitted' ? ' <span class="badge b-none">ждёт подтверждения</span>' : ''}</td>
-    <td class="act">${edit ? menu([`<button data-te="${w.worker_id}-${t.order_line_id}-${t.operation_id}">Изменить…</button>`, `<button class="danger" data-td="${t.item_id}">Убрать</button>`], 'Действия с заданием') : ''}</td></tr>${d.can_enter ? reasonRow(reasons, t.reason_id, t.note) : ''}`;
+    ${can ? `<td class="act noprint">${edit ? `<button class="small secondary" data-te="${w.worker_id}-${t.order_line_id}-${t.operation_id}">Изменить</button> <button class="small danger" data-td="${t.item_id}">Убрать</button>` : ''}</td>` : ''}</tr>${d.can_enter ? reasonRow(reasons, t.reason_id, t.note, cols) : ''}`;
 }
 
 function extraRow(x, w, d, reasons, can) {
-  const kind = x.order ? `по заказу ${esc(x.order)}${x.product ? ' · ' + esc(x.product) : ''}` : 'не относится к заказу';
-  const full = x.fact_hours != null && x.fact_hours >= x.hours;
-  return `<tr class="main task extra"><td><b>${esc(x.title)}</b><small>Работа вне перечня операций · ${kind}</small>${x.reason ? `<small>Причина: ${esc(x.reason)}</small>` : ''}${x.note ? `<small>«${esc(x.note)}»</small>` : ''}</td>
+  const kind = x.order ? `по заказу ${esc(x.order)}${x.product ? ' · ' + esc(x.product) : ''}` : 'не относится к заказу', cols = can ? 5 : 4;
+  const full = x.fact_hours != null && x.fact_hours >= x.hours, st = x.fact_hours == null ? 'st-none' : full ? 'st-done' : 'st-partial';
+  const quick = `<div class="fq"><button class="small secondary" data-q="${x.hours}">Всё: ${fmtQ(x.hours)}</button></div>`;
+  return `<tr class="main task extra ${st}"><td><b class="op">${esc(x.title)}</b><small>Работа вне перечня операций · ${kind}</small>${x.reason ? `<small class="rs">Причина: ${esc(x.reason)}</small>` : ''}${x.note ? `<small class="rs">«${esc(x.note)}»</small>` : ''}</td>
     <td class="num qty" title="План, часов">${fmtQ(x.hours)}<small> ч</small></td>
-    <td>${d.can_enter ? factCell(`data-xid="${x.id}" data-hours="${x.hours}"`, 'Сделано, часов', x.fact_hours, x.hours, '0.25', 24, 'data-save-x', full) : (x.fact_hours != null ? `<b>${fmtQ(x.fact_hours)} ч</b>` : '<span class="muted">—</span>')}</td>
+    <td>${d.can_enter ? factCell(`data-xid="${x.id}" data-hours="${x.hours}"`, 'Сделано, часов', x.fact_hours, x.hours, '0.25', 24, 'data-save-x', quick) : (x.fact_hours != null ? `<b class="fv">${fmtQ(x.fact_hours)} ч</b>` : '<span class="muted">—</span>')}</td>
     <td>${x.fact_hours != null ? `<span class="badge ${full ? 'b-done' : 'b-none'}">${full ? '✔ выполнено' : 'частично'}</span>` : '<span class="badge b-work">ждёт</span>'}</td>
-    <td class="act">${can && x.fact_hours == null ? menu([`<button data-xe="${x.id}">Изменить…</button>`, `<button class="danger" data-xd="${x.id}">Убрать</button>`], 'Действия с работой') : ''}</td></tr>${d.can_enter ? reasonRow(reasons, x.reason_id, x.note) : ''}`;
+    ${can ? `<td class="act noprint">${x.fact_hours == null ? `<button class="small secondary" data-xe="${x.id}">Изменить</button> <button class="small danger" data-xd="${x.id}">Убрать</button>` : ''}</td>` : ''}</tr>${d.can_enter ? reasonRow(reasons, x.reason_id, x.note, cols) : ''}`;
 }
 
 /* ------------------------------ учёт факта ------------------------------ */
-/* Кнопка ✓: пустое поле = «выполнено по плану»; число = ровно это число (включая 0 — «не делали»).
-   Отклонение от плана раскрывает строку с причиной сразу под заданием. */
+/* «Всё: N» / «Не делали» подставляют число и сразу записывают (если нет отклонения);
+   отклонение от плана раскрывает строку с причиной сразу под заданием. */
 function wireFact(box, d, reload) {
   const row = box.closest('tr').nextElementSibling, dev = $('.devbox', row), inp = $('input', box), btn = $('[data-save],[data-save-x]', box), isX = !!box.dataset.xid;
   const plan = isX ? +box.dataset.hours : +box.dataset.plan, need = isX || box.dataset.need === '' ? null : +box.dataset.need, saved = inp.value;
@@ -99,8 +101,8 @@ function wireFact(box, d, reload) {
     return dv;
   };
   inp.addEventListener('input', refresh); inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } }); refresh();
+  $$('[data-q]', box).forEach(b => b.onclick = () => { inp.value = b.dataset.q; const dv = refresh(); if (!dv) save(); else $('.dreason', row).focus(); });
   const save = async () => {
-    if (inp.value === '' && plan > 0) inp.value = plan;
     const q = inp.value; if (q === '') { toast('Введите, сколько сделано', true); inp.focus(); return; }
     const dv = refresh(), reason = $('.dreason', row).value, note = $('.dnote', row).value.trim();
     if (dv && !reason && !note) { row.hidden = dev.hidden = false; toast(dv.text + '. Укажите причину или комментарий', true); $('.dreason', row).focus(); return; }
