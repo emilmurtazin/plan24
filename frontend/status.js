@@ -15,7 +15,7 @@ SCREENS.status = async (v, pick) => {
     <div class="row noprint" style="margin-bottom:12px"><label class="f" style="margin:0">Изделие<select id="sp"><option value="">все изделия</option>${products.map(p => `<option ${p === prod ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></label>
     <label class="f" style="margin:0;min-width:280px">Заказ<select id="so"></select></label></div>
     <div id="od"><div class="card empty">Загрузка…</div></div>
-    <h2 style="margin-top:22px" class="noprint">Все заказы</h2><div class="card scroll noprint" id="all"></div>`;
+    <h2 style="margin-top:22px" class="noprint">Все заказы</h2><div class="card flush scroll noprint" id="all"></div>`;
   const fillOrders = () => {
     const p = $('#sp').value, list = rows.filter(r => !p || r.product === p);
     if (!list.some(r => r.order_line_id === oid)) oid = list[0]?.order_line_id;
@@ -38,14 +38,14 @@ SCREENS.status = async (v, pick) => {
 
 function orderView(s) {
   const o = s.order, ops = s.operations;
-  const kpi = (t, b, extra = '') => `<div class="kpi"><small class="muted">${t}</small><b style="font-size:22px">${b}</b>${extra}</div>`;
+  const kpi = (t, b, extra = '', cls = 'k-grey') => `<div class="kpi ${cls}"><small class="muted">${t}</small><b style="font-size:22px">${b}</b>${extra}</div>`;
   const late = o.late_days ? `<span class="err">позже срока на ${o.late_days} дн.</span>` : (o.forecast_end && o.due_date ? '<span class="ok">укладывается в срок</span>' : '');
   return `<div class="card"><div class="row" style="margin-bottom:6px"><h2 class="grow" style="margin:0">Заказ ${esc(o.order)} · ${esc(o.product)} × ${num(o.qty)}</h2>${stBadge(o.status)}</div>
     <p class="muted" style="margin:0 0 12px">${esc(o.project)}${o.customer ? ' · заказчик ' + esc(o.customer) : ''} · версия изделия v${o.version}${o.version_name ? ' «' + esc(o.version_name) + '»' : ''}</p>
-    <div class="grid4">${kpi('Выполнено', num(o.progress) + '%', `<div class="bar"><i style="width:${Math.min(100, o.progress)}%"></i></div>`)}
-    ${kpi('Срок заказа', fmtDY(o.due_date))}${kpi('Прогноз завершения', o.forecast_end ? fmtDY(o.forecast_end) : (o.status === 'Готово' ? 'выполнен' : 'не определён'), late)}
-    ${o.bottleneck ? kpi('Узкое место', esc(o.bottleneck), '<small class="muted">определяет срок заказа</small>') : ''}</div></div>
-    ${ops.length ? `<div class="card scroll" style="margin-top:12px"><table class="stt"><tr><th>Операция</th><th class="num">Выполнено</th><th class="num">В плане</th><th class="num">Не в плане</th><th class="num">Смен до завершения</th><th>Дата завершения</th><th>Узкое место</th><th>Статус</th></tr>
+    <div class="grid4">${kpi('Выполнено', num(o.progress) + '%', `<div class="bar"><i style="width:${Math.min(100, o.progress)}%"></i></div>`, 'k-blue')}
+    ${kpi('Срок заказа', fmtDY(o.due_date), '', 'k-grey')}${kpi('Прогноз завершения', o.forecast_end ? fmtDY(o.forecast_end) : (o.status === 'Готово' ? 'выполнен' : 'не определён'), late, o.late_days ? 'k-red' : (o.forecast_end && o.due_date ? 'k-green' : 'k-grey'))}
+    ${o.bottleneck ? kpi('Узкое место', esc(o.bottleneck), '<small class="muted">определяет срок заказа</small>', 'k-amber') : ''}</div></div>
+    ${ops.length ? `<div class="card flush scroll" style="margin-top:12px"><table class="stt"><tr><th>Операция</th><th class="num">Выполнено</th><th class="num">В плане</th><th class="num">Не в плане</th><th class="num">Смен до завершения</th><th>Дата завершения</th><th>Узкое место</th><th>Статус</th></tr>
     ${ops.map(opRow).join('')}</table></div>` : '<div class="card empty" style="margin-top:12px">В вашем участке у этого заказа нет операций.</div>'}
     <p class="muted noprint" style="font-size:14px">«Не в плане» — часть объёма, которую не удалось распределить в горизонте планирования. Смены считаются рабочими днями от сегодняшнего. Рекомендации ориентировочные: считаются по нормам и производительности без учёта загрузки людей другими операциями.</p>`;
 }

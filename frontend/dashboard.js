@@ -1,7 +1,7 @@
 /* Дашборд: выполнение, статусы заказов, потребность в ресурсах, повторяющиеся причины, работники, графики на 3 месяца. */
 'use strict';
 
-const PAL = ['#1f77b4', '#2e7d4f', '#d98a00', '#b3261e', '#7b52c9', '#00838f', '#8d6e63', '#546e7a'];
+const PAL = ['#0a84ff', '#30d158', '#ff9f0a', '#ff453a', '#bf5af2', '#40c8e0', '#ac8e68', '#8e8e93'];
 const ST_ORDER = ['Риск опоздания', 'В работе', 'Готово'];
 
 function niceMax(v) { if (v <= 0) return 10; const steps = [10, 20, 25, 40, 50, 100, 150, 200, 300, 500, 1000]; return steps.find(s => s >= v) || Math.ceil(v / 100) * 100; }
@@ -39,10 +39,10 @@ const dataTable = (weeks, series, f, unit = '%') => `<details class="noprint"><s
 
 async function dashboardView(plan) {
   const d = await GET('/reports/overview'), by = d.by_status || {}, p = d.progress, w = d.workers;
-  let h = `<div class="cards3"><div class="kpi"><b>${num(p.percent)}%</b>выполнено по ${p.orders} поз.<div class="bar"><i style="width:${Math.min(100, p.percent)}%"></i></div></div>
-    <div class="kpi"><b class="${by['Риск опоздания'] ? 'err' : ''}">${by['Риск опоздания'] || 0}</b>позиций в риске</div><div class="kpi"><b>${by['В работе'] || 0}</b>в работе</div>
-    <div class="kpi"><b class="ok">${by['Готово'] || 0}</b>готово</div><div class="kpi"><b>${num(d.week_peak_load)}%</b>пик загрузки участка (3 мес.)</div>
-    <div class="kpi"><b>${w.available}<small class="muted"> / ${w.total}</small></b>работников доступно</div></div>`;
+  let h = `<div class="cards3"><div class="kpi k-blue"><b>${num(p.percent)}%</b>выполнено по ${p.orders} поз.<div class="bar"><i style="width:${Math.min(100, p.percent)}%"></i></div></div>
+    <div class="kpi ${by['Риск опоздания'] ? 'k-red' : 'k-grey'}"><b class="${by['Риск опоздания'] ? 'err' : ''}">${by['Риск опоздания'] || 0}</b>позиций в риске</div><div class="kpi k-blue"><b>${by['В работе'] || 0}</b>в работе</div>
+    <div class="kpi k-green"><b class="ok">${by['Готово'] || 0}</b>готово</div><div class="kpi ${d.week_peak_load >= 100 ? 'k-red' : d.week_peak_load >= 80 ? 'k-amber' : 'k-grey'}"><b>${num(d.week_peak_load)}%</b>пик загрузки участка (3 мес.)</div>
+    <div class="kpi k-grey"><b>${w.available}<small class="muted"> / ${w.total}</small></b>работников доступно</div></div>`;
   if (d.loaded_today.length) h += `<div class="card"><b>Уже загружены сегодня</b> и не получают новых заданий: ${d.loaded_today.map(esc).join(', ')}</div>`;
 
   /* статусы заказов */

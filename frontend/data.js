@@ -17,13 +17,13 @@ const qOpts = quals => (quals || []).map((l, i) => ({ v: i + 1, l: `${i + 1} —
 const verLabel = v => 'v' + v.version_no + (v.name ? ' · ' + v.name : '');
 const opts = (arr, label = x => x.name) => arr.map(x => ({ v: x.id, l: label(x) }));
 const ORDER_ST = { draft: 'Черновик', planned: 'В плане', done: 'Выполнен', cancelled: 'Отменён' };
-const table = (cols, rows, actions) => `<table><tr>${cols.map(c => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ''}">${c.html ? c.html(r) : esc(c.get(r))}</td>`).join('')}${actions ? `<td style="white-space:nowrap">${actions(r)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 1}" class="muted">Пока пусто</td></tr>`}</table>`;
+const table = (cols, rows, actions) => `<table><thead><tr>${cols.map(c => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ''}">${c.html ? c.html(r) : esc(c.get(r))}</td>`).join('')}${actions ? `<td class="act">${actions(r)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 1}" class="empty">Пока пусто</td></tr>`}</tbody></table>`;
 
 /* Универсальная вкладка «список + добавить/изменить/удалить» */
 async function crudTab(box, cfg, reload) {
   const refs = await loadRefs(), rows = await listAll(cfg.path);
   const acts = r => `${cfg.extra ? cfg.extra(r) : ''}<button class="small secondary" data-e="${r.id}">Изменить</button> <button class="small danger" data-d="${r.id}">Удалить</button>`;
-  box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(cfg.title)}</h2>${cfg.headerExtra || ''}${cfg.noAdd ? '' : `<button data-add>+ ${esc(cfg.add)}</button>`}</div>${cfg.hint ? `<p class="muted">${esc(cfg.hint(refs, rows))}</p>` : ''}<div class="card scroll">${table(cfg.cols(refs), rows, acts)}</div>`;
+  box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(cfg.title)}</h2>${cfg.headerExtra || ''}${cfg.noAdd ? '' : `<button data-add>+ ${esc(cfg.add)}</button>`}</div>${cfg.hint ? `<p class="hint">${esc(cfg.hint(refs, rows))}</p>` : ''}<div class="card flush scroll">${table(cfg.cols(refs), rows, acts)}</div>`;
   const open = (row) => {
     const fields = (row && cfg.editFields ? cfg.editFields(refs) : cfg.fields(refs));
     formModal({
@@ -51,8 +51,8 @@ const TABS = {
       hint: (r) => r.products.length && r.projects.length ? 'Позиция = изделие в нужном количестве к сроку. Можно выбрать версию изделия; если не выбрать — берётся текущая. Уже созданные позиции остаются на своей версии.' : 'Сначала добавьте проект (вкладка «Проекты») и изделие с операциями («Каталог изделий»).',
       cols: r => [{ label: '№', get: x => x.ext_id || '#' + x.id }, { label: 'Проект', get: x => r.P[x.project_id]?.name }, { label: 'Заказчик', get: x => x.customer || r.P[x.project_id]?.customer || '—' },
       { label: 'Изделие', get: x => r.PR[x.product_id]?.name }, { label: 'Версия', get: x => { const v = r.routings.find(q => q.id === x.routing_id); return v ? verLabel(v) : '—'; } },
-      { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', get: x => ORDER_ST[x.status] },
-      ...(r.centers.length ? [{ label: 'Операции по участкам', html: x => { const q = r.dist[x.id] || { total: 0, distributed: 0 }; return q.distributed >= q.total && q.total ? `<span class="ok">${q.distributed} из ${q.total}</span>` : `<span class="err"><b>${q.distributed} из ${q.total}</b> · не распределено</span>`; } }] : [])],
+      { label: 'Кол-во', cls: 'num', get: x => num(x.qty) }, { label: 'Срок', get: x => fmtDY(x.due_date) }, { label: 'Приоритет', cls: 'num', get: x => x.priority }, { label: 'Статус', html: x => `<span class="badge ${{ planned: 'b-work', done: 'b-done', cancelled: 'b-noop', draft: 'b-none' }[x.status] || 'b-noop'}">${esc(ORDER_ST[x.status])}</span>` },
+      ...(r.centers.length ? [{ label: 'Операции по участкам', html: x => { const q = r.dist[x.id] || { total: 0, distributed: 0 }; return q.distributed >= q.total && q.total ? `<span class="badge b-done">${q.distributed} из ${q.total}</span>` : `<span class="badge b-risk">${q.distributed} из ${q.total} · не распределено</span>`; } }] : [])],
       extra: x => `<button class="small" data-dist="${x.id}">По участкам</button> `,
       after: (box, refs, rows, reload) => $$('[data-dist]', box).forEach(b => b.onclick = () => openDistribution(rows.find(x => x.id == b.dataset.dist), refs, reload)),
       fields: r => [{ name: 'project_id', label: 'Проект', type: 'select', options: opts(r.projects), required: true, num: true },
@@ -109,7 +109,7 @@ const TABS = {
       title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available', auto_plan: true },
       hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
       cols: r => [{ label: 'Имя', html: x => esc(x.name) + (x.is_temporary ? ' <span class="badge b-noop">временный</span>' : '') }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
-      { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Планирование', html: x => x.auto_plan ? 'автоматически' : '<span class="warn">только вручную</span>' }, { label: 'Статус', html: x => x.status === 'available' ? 'Доступен' : '<span class="warn">Недоступен</span>' },
+      { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Планирование', html: x => x.auto_plan ? 'автоматически' : '<span class="warn">только вручную</span>' }, { label: 'Статус', html: x => x.status === 'available' ? '<span class="badge b-done">Доступен</span>' : '<span class="badge b-none">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
       fields: r => [nameField, { name: 'work_center_id', label: 'Участок', type: 'select', options: opts(r.centers), num: true },
         { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 0.05 },
@@ -142,7 +142,7 @@ const TABS = {
 function tabsScreen(v, { title, tabs, tab, key, self }) {
   S.nav++;
   const ids = Object.keys(tabs); tab = ids.includes(tab) ? tab : (ids.includes(S[key]) ? S[key] : ids[0]); S[key] = tab;
-  v.innerHTML = `<h1>${esc(title)}</h1><nav class="tabs" style="margin-bottom:14px;border:1px solid var(--line)">${ids.map(k => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(tabs[k].label)}</button>`).join('')}</nav><div id="dt"></div>`;
+  v.innerHTML = `<h1>${esc(title)}</h1><nav class="seg" aria-label="Вкладки раздела">${ids.map(k => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(tabs[k].label)}</button>`).join('')}</nav><div id="dt"></div>`;
   $$('[data-t]', v).forEach(b => b.onclick = () => self(v, b.dataset.t));
   const box = $('#dt', v), t = tabs[tab];
   const fail = e => { if (!(e instanceof Stale)) box.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; };
@@ -329,7 +329,7 @@ SCREENS.users = async v => {
       { name: 'password', label: 'Или задайте временный пароль (не короче 8)', type: 'password' }] : [{ name: 'is_active', label: 'Доступ разрешён', type: 'checkbox' }, { name: 'password', label: 'Новый пароль (если нужно сбросить)', type: 'password' }])];
   const rowName = u => u.work_center_id ? ' · ' + (centers.find(c => c.id === u.work_center_id)?.name || '') : (u.worker_id ? ' · ' + (workers.find(w => w.id === u.worker_id)?.name || '') : '');
   v.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Пользователи</h2><button id="add">+ Добавить</button></div>
-    <div class="card scroll">${table([{ label: 'Имя', get: u => u.name }, { label: 'E-mail', get: u => u.email }, { label: 'Роль', get: u => ROLE_RU[u.role] + rowName(u) }, { label: 'Доступ', html: u => u.is_active ? '<span class="ok">разрешён</span>' : '<span class="err">закрыт</span>' }], users, u => `<button class="small secondary" data-e="${u.id}">Изменить</button>${u.id !== S.me.id ? ` <button class="small secondary" data-inv="${u.id}">Пригласить снова</button>` : ''}${u.role === 'foreman' ? ` <button class="small" data-tgu="${u.id}">Telegram</button>` : ''}`)}</div>
+    <div class="card flush scroll">${table([{ label: 'Имя', get: u => u.name }, { label: 'E-mail', get: u => u.email }, { label: 'Роль', get: u => ROLE_RU[u.role] + rowName(u) }, { label: 'Доступ', html: u => u.is_active ? '<span class="badge b-done">разрешён</span>' : '<span class="badge b-risk">закрыт</span>' }], users, u => `<button class="small secondary" data-e="${u.id}">Изменить</button>${u.id !== S.me.id ? ` <button class="small secondary" data-inv="${u.id}">Пригласить снова</button>` : ''}${u.role === 'foreman' ? ` <button class="small" data-tgu="${u.id}">Telegram</button>` : ''}`)}</div>
     <p class="muted">Права: владелец — всё, включая пользователей; руководитель — данные, настройки и планирование; технолог — создаёт и редактирует каталог изделий, остальное смотрит; бригадир — свой участок и факт; сборщик — только свои задания и факт; наблюдатель — только просмотр отчётов.</p>`;
   $('#add').onclick = () => formModal({ title: 'Новый пользователь', fields: fields(true), values: { role: 'viewer' }, onSubmit: async (vals, m) => { await POST('/users', vals); m.close(); toast(vals.send_invite ? 'Приглашение отправлено' : 'Пользователь создан'); SCREENS.users(v); } });
   $$('[data-inv]', v).forEach(b => b.onclick = async () => { try { await POST(`/users/${b.dataset.inv}/invite`); toast('Приглашение отправлено'); } catch (e) { toast(errText(e), true); } });
@@ -344,7 +344,7 @@ SCREENS.audit = async v => {
   let before = 0, all = [];
   const draw = async () => {
     const r = await GET('/audit?limit=100' + (before ? '&before=' + before : '')); all = all.concat(r.items); before = r.next_before;
-    v.innerHTML = `<h2>Журнал изменений</h2><div class="card scroll">${table([{ label: 'Когда', get: a => fmtDT(a.at) }, { label: 'Кто', get: a => a.user || '—' }, { label: 'Что', get: a => (ENT[a.entity] || a.entity) + ' ' + (a.entity_id ?? '') }, { label: 'Действие', get: a => ACT[a.action] || a.action },
+    v.innerHTML = `<h2>Журнал изменений</h2><div class="card flush scroll">${table([{ label: 'Когда', get: a => fmtDT(a.at) }, { label: 'Кто', get: a => a.user || '—' }, { label: 'Что', get: a => (ENT[a.entity] || a.entity) + ' ' + (a.entity_id ?? '') }, { label: 'Действие', get: a => ACT[a.action] || a.action },
     { label: 'Детали', html: a => `<small class="muted">${esc(JSON.stringify(a.changes)).slice(0, 160)}</small>` }], all)}</div>${before ? '<button class="secondary" id="more">Показать ещё</button>' : ''}`;
     if ($('#more')) $('#more').onclick = draw;
   };
