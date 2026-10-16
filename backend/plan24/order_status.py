@@ -153,6 +153,10 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
                 recs.append(txt)
         if is_b and order_late and not recs:
             recs.append("Операция определяет срок заказа: проверить норму и условия работы, при необходимости усилить участок")
+        # человеко-смен до завершения: сколько полных рабочих дней одного работника нужно на оставшийся объём
+        # (норма × средняя производительность работников операции × коэффициент эффективности)
+        pool_perf = (sum(w.perf for w in (on_op or cand)) / len(on_op or cand)) if (on_op or cand) else 1.0
+        person_shifts = 0.0 if c["remaining"] <= 1e-9 else round(c["remaining"] / (op.norm_per_day * pool_perf * (st.efficiency if st else 1.0)), 1)
         status = ("Готово" if c["remaining"] <= 1e-9 else "Не распределена" if (has_centers and not cs)
                   else "Не весь объём в плане" if c["unplanned"] > 1e-9 else "В плане")
         out_ops.append({
@@ -160,6 +164,7 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
             "min_skill": op.min_skill, "sections": sorted(centers[x] for x in cs if x in centers),
             "required": c["required"], "done": c["done"], "planned": c["planned"], "unplanned": c["unplanned"], "remaining": c["remaining"],
             "end_date": c["end"], "shifts_left": (0 if c["remaining"] <= 1e-9 else shifts(plan_today, c["end"]) if c["end"] else None),
+            "person_shifts_left": person_shifts,
             "workers": [w.name for w in on_op], "status": status, "is_bottleneck": is_b,
             "bottleneck_critical": bool(is_b and order_late), "late": late, "problems": problems, "recommendations": recs,
             "staffing": staffing,

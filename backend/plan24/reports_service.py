@@ -99,7 +99,7 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
                           "note": f.note if f else ""})
         out.append({"worker_id": wid, "worker": w.name, "work_center_id": w.work_center_id, "is_temporary": w.is_temporary,
                     "pinned": wid in pins, "tasks": items, "extras": extras.get(wid, [])})
-    can_enter = (d == today) if user.role == "worker" else (d <= today and user.role != "viewer")
+    can_enter = (d == today) if user.role == "worker" else (d <= today and user.role not in ("viewer", "director"))
     can_edit = bool(plan) and user.role in ("owner", "manager", "foreman") and d >= today
     days = (plan.summary.get("work_days", [])[:14] if plan else [])
     return {"date": d.isoformat(), "plan_id": plan.id if plan else None, "can_enter": can_enter, "can_edit": can_edit,

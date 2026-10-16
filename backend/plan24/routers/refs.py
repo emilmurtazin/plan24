@@ -284,6 +284,122 @@ def delete_operation(oid: int, user: User = Depends(require(*CATALOG)), db: Sess
     audit.log(db, user, "operation", oid, "delete")
 
 
+# ------------------------------------------------------------------ загрузка каталога из файла
+CATALOG_IMPORT_LIMIT = 2000
+
+
+class CatalogRow(BaseModel):
+    product: str = ""
+    unit: str = ""
+    version_name: str = ""
+    operation: str = ""
+    sequence: str = ""
+    norm_per_day: str = ""
+    min_skill: str = ""               # число или название уровня квалификации организации
+    per_item: str = ""
+
+
+class CatalogImportIn(BaseModel):
+    rows: list[CatalogRow] = Field(max_length=CATALOG_IMPORT_LIMIT)
+    on_existing: str = Field("skip", pattern="^(skip|version)$")     # изделие уже есть: пропустить или добавить новую версию
+    dry_run: bool = False
+
+
+def _num(text: str) -> Optional[float]:
+    t = (text or "").strip().replace(" ", "").replace("\u00a0", "").replace(",", ".")
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        raise ValueError(text)
+
+
+@router.post("/products/import")
+def import_catalog(body: CatalogImportIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Загрузка изделий и операций из файла (по строке на операцию; строки уже разобраны клиентом). Всё или ничего.
+    Новое изделие создаётся с версией v1; если изделие есть — по выбору пропускается или получает новую версию."""
+    if not body.rows:
+        raise HTTPException(422, "В файле нет строк с изделиями")
+    st = db.get(PlannerSettings, user.tenant_id)
+    quals = [q.strip().lower() for q in ((st.qualifications if st else None) or [])]
+    levels = len(quals) or MAX_QUAL_LEVELS
+    errors, groups = [], {}
+    for i, r in enumerate(body.rows, start=1):
+        pname = r.product.strip()
+        if not pname:
+            errors.append({"row": i, "message": "Не указано изделие"})
+            continue
+        if len(pname) > 160:
+            errors.append({"row": i, "message": "Название изделия длиннее 160 символов"})
+            continue
+        oname = r.operation.strip()
+        try:
+            norm, seq, per = _num(r.norm_per_day), _num(r.sequence), _num(r.per_item)
+            skill_txt = r.min_skill.strip()
+            if not skill_txt:
+                skill = 1.0
+            elif skill_txt.lower() in quals:
+                skill = float(quals.index(skill_txt.lower()) + 1)
+            else:
+                skill = _num(skill_txt)
+        except ValueError as e:
+            errors.append({"row": i, "message": f"Не удалось прочитать число «{e.args[0]}»"})
+            continue
+        if not oname:
+            errors.append({"row": i, "message": f"У изделия «{pname}» не указана операция"})
+            continue
+        if norm is None or norm <= 0:
+            errors.append({"row": i, "message": f"Операция «{oname}»: норма за день должна быть больше нуля"})
+            continue
+        if per is not None and per <= 0:
+            errors.append({"row": i, "message": f"Операция «{oname}»: «На изделие» должно быть больше нуля"})
+            continue
+        if skill is None or not (0 < skill <= levels):
+            errors.append({"row": i, "message": f"Операция «{oname}»: квалификация должна быть уровнем от 1 до {levels}"})
+            continue
+        g = groups.setdefault(pname.lower(), {"name": pname, "unit": r.unit.strip()[:24] or "шт", "version": r.version_name.strip()[:120], "ops": []})
+        if any(o["name"].lower() == oname.lower() for o in g["ops"]):
+            errors.append({"row": i, "message": f"Операция «{oname}» повторяется у изделия «{pname}»"})
+            continue
+        g["ops"].append({"name": oname[:160], "norm_per_day": norm, "min_skill": skill, "per_item": per if per is not None else 1.0,
+                         "sequence": seq if seq is not None else float(len(g["ops"]) + 1)})
+    if errors:
+        return {"created": 0, "versions": 0, "skipped": [], "errors": errors, "dry_run": body.dry_run}
+    existing = {p.name.lower(): p for p in db.scalars(scoped(Product, user))}
+    created = versions = 0
+    skipped = []
+    for key, g in groups.items():
+        prod = existing.get(key)
+        if prod is not None and body.on_existing == "skip":
+            skipped.append(prod.name)
+            continue
+        if body.dry_run:
+            versions, created = (versions + 1, created) if prod else (versions, created + 1)
+            continue
+        if prod is None:
+            prod = Product(tenant_id=user.tenant_id, name=g["name"], unit=g["unit"])
+            db.add(prod)
+            db.flush()
+            audit.log(db, user, "product", prod.id, "create", {"name": prod.name, "import": True})
+            version_no = 1
+            created += 1
+        else:
+            prev = db.scalar(scoped(Routing, user).where(Routing.product_id == prod.id, Routing.is_current.is_(True)))
+            if prev:
+                prev.is_current = False
+            version_no = (db.scalar(select(func.max(Routing.version_no)).where(
+                Routing.tenant_id == user.tenant_id, Routing.product_id == prod.id)) or 0) + 1
+            versions += 1
+        r = Routing(tenant_id=user.tenant_id, product_id=prod.id, version_no=version_no, name=g["version"], is_current=True)
+        db.add(r)
+        db.flush()
+        for o in g["ops"]:
+            db.add(Operation(tenant_id=user.tenant_id, routing_id=r.id, unit=prod.unit, **o))
+        audit.log(db, user, "routing", r.id, "create", {"product_id": prod.id, "version_no": version_no, "operations": len(g["ops"]), "import": True})
+    return {"created": created, "versions": versions, "skipped": skipped, "errors": [], "dry_run": body.dry_run}
+
+
 # ------------------------------------------------------------------ позиции заказов
 ORDER_STATUSES = "^(draft|planned|done|cancelled)$"
 

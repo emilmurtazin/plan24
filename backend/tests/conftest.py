@@ -174,5 +174,6 @@ def full_org(env):
     o.add_user("worker", "w@a.ru", worker_id=w1["id"])
     o.add_user("viewer", "v@a.ru")
     o.add_user("technologist", "t@a.ru")
+    o.add_user("director", "d@a.ru")
     o.wcs, o.workers, o.w1 = wcs, workers, w1
     return o

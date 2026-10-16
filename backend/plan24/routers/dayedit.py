@@ -1,6 +1,7 @@
 """Правка «Плана на день» (этап 4 доработок).
 
-Ручные правки меняют строки активного плана и закрепляют день работника (DayPin): перепланирование участка его не меняет.
+Ручные правки меняют строки активного плана, но день работника сами не закрепляют: закрепление — отдельное явное
+действие (POST /plan-day/pins). Закреплённый день (DayPin) перепланирование участка не меняет; незакреплённый — пересчитывается.
 Работы вне перечня операций — отдельная сущность ExtraTask (по заказу или не по заказу), учёт в часах."""
 from __future__ import annotations
 
@@ -48,6 +49,11 @@ def pin_day(db: Session, user: User, plan: Plan, worker_id: int, d: date) -> Non
     for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == plan.id, PlanItem.worker_id == worker_id,
                                                 PlanItem.plan_date == d)):
         it.is_locked = True
+
+
+def day_pinned(db: Session, user: User, worker_id: int, d: date) -> bool:
+    return db.scalar(select(DayPin.worker_id).where(DayPin.tenant_id == user.tenant_id, DayPin.worker_id == worker_id,
+                                                    DayPin.plan_date == d)) is not None
 
 
 def _check_task(db: Session, user: User, w: Worker, ol: OrderLine, op: Operation) -> list:
@@ -103,7 +109,7 @@ def _upsert(db: Session, user: User, plan: Plan, d: date, ol_id: int, op_id: int
                       worker_id=wid, qty=0)
         db.add(it)
     it.qty += qty
-    it.is_locked, it.is_frozen, it.reason_code = True, False, "MANUAL"
+    it.is_locked, it.is_frozen, it.reason_code = day_pinned(db, user, wid, d), False, "MANUAL"    # блокируется только в закреплённом дне
     return it
 
 
@@ -126,7 +132,7 @@ class ItemPatch(BaseModel):
 
 @router.post("/plan-day/items", status_code=201)
 def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
-    """Добавить задание на день (можно несколько операций одному работнику). День работника закрепляется."""
+    """Добавить задание на день (можно несколько операций одному работнику). День работника не закрепляется сам."""
     plan = _plan(db, user)
     _future(body.plan_date, today)
     w = _worker(db, user, body.worker_id)
@@ -135,7 +141,6 @@ def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = 
     warns = _check_task(db, user, w, ol, op)
     it = _upsert(db, user, plan, body.plan_date, ol.id, op.id, w.id, body.qty)
     db.flush()
-    pin_day(db, user, plan, w.id, body.plan_date)
     audit.log(db, user, "plan_item", it.id, "manual_add", {"date": body.plan_date, "worker_id": w.id, "order_line_id": ol.id,
                                                           "operation_id": op.id, "qty": body.qty})
     snapshots.sync(db, user.tenant_id, plan, today)
@@ -162,15 +167,13 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
     op = get_or_404(db, Operation, opid, user)
     warns = _check_task(db, user, w, ol, op)
     if (d, wid, olid, opid) == old[:4]:                       # тот же ключ: меняется только количество
-        it.qty, it.is_locked, it.reason_code, it.is_frozen = qty, True, "MANUAL", False
+        it.qty, it.is_locked, it.reason_code, it.is_frozen = qty, day_pinned(db, user, wid, d), "MANUAL", False
         res = it
     else:
         db.delete(it)
         db.flush()
         res = _upsert(db, user, plan, d, olid, opid, wid, qty)
-        pin_day(db, user, plan, old[1], old[0])               # прежний день работника тоже остаётся таким, как его оставили
     db.flush()
-    pin_day(db, user, plan, wid, d)
     audit.log(db, user, "plan_item", res.id, "manual_edit", {"from": [x.isoformat() if isinstance(x, date) else x for x in old],
                                                             "to": [d.isoformat(), wid, olid, opid, qty]})
     snapshots.sync(db, user.tenant_id, plan, today)
@@ -179,7 +182,7 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
 
 @router.delete("/plan-day/items/{iid}", status_code=204)
 def delete_item(iid: int, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
-    """Убрать задание. День работника закрепляется, чтобы перепланирование не вернуло его обратно."""
+    """Убрать задание. Чтобы перепланирование не вернуло его обратно, день работника нужно закрепить вручную."""
     plan = _plan(db, user)
     it = db.scalar(scoped(PlanItem, user).where(PlanItem.id == iid, PlanItem.plan_id == plan.id))
     if it is None:
@@ -191,8 +194,23 @@ def delete_item(iid: int, user: User = Depends(require(*STAFF)), db: Session = D
                                                               "operation_id": it.operation_id, "qty": it.qty})
     db.delete(it)
     db.flush()
-    pin_day(db, user, plan, wid, d)
     snapshots.sync(db, user.tenant_id, plan, today)
+
+
+class PinIn(BaseModel):
+    worker_id: int
+    plan_date: date
+
+
+@router.post("/plan-day/pins", status_code=201)
+def pin(body: PinIn, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
+    """Закрепить день работника вручную: задания этого дня перепланирование не меняет (и не добавляет новых)."""
+    plan = _plan(db, user)
+    _future(body.plan_date, today)
+    w = _worker(db, user, body.worker_id)
+    pin_day(db, user, plan, w.id, body.plan_date)
+    audit.log(db, user, "day_pin", w.id, "pin", {"date": body.plan_date})
+    return {"worker_id": w.id, "plan_date": body.plan_date.isoformat(), "pinned": True}
 
 
 @router.delete("/plan-day/pins", status_code=204)
@@ -224,7 +242,7 @@ class TempWorkerIn(BaseModel):
 @router.post("/plan-day/workers", status_code=201)
 def add_temp_worker(body: TempWorkerIn, user: User = Depends(require(*STAFF)), db: Session = DB):
     """Новый (например, временный) работник. Попадает в общий список работников, но автопланировщик заказов ему не даёт,
-    пока это не включено в «Организация → Работники» (поле «Участвует в автопланировании»)."""
+    пока это не включено в «Работники → Работники» (поле «Участвует в автопланировании»)."""
     cid = body.work_center_id
     if user.role == "foreman":
         if cid not in (None, user.work_center_id):
@@ -295,7 +313,6 @@ def add_extra(body: ExtraIn, user: User = Depends(require(*STAFF)), db: Session 
                   title=body.title.strip(), hours=body.hours, created_by=user.id)
     db.add(x)
     db.flush()
-    pin_day(db, user, plan, w.id, body.plan_date)
     audit.log(db, user, "extra_task", x.id, "create", {"date": body.plan_date, "worker_id": w.id, "title": x.title, "hours": x.hours,
                                                       "order_line_id": x.order_line_id})
     return extra_out(x)
@@ -321,11 +338,8 @@ def patch_extra(xid: int, body: ExtraPatch, user: User = Depends(require(*STAFF)
         v = getattr(body, k)
         if v is not None:
             setattr(x, k, v.strip() if k == "title" else v)
-    plan = _plan(db, user)
+    _plan(db, user)
     db.flush()
-    pin_day(db, user, plan, x.worker_id, x.plan_date)
-    if old != (x.plan_date, x.worker_id):
-        pin_day(db, user, plan, old[1], old[0])
     audit.log(db, user, "extra_task", x.id, "update", {"title": x.title, "hours": x.hours})
     return extra_out(x)
 

@@ -13,7 +13,7 @@ from .. import dashboard as dashboard_service
 from .. import distribution, order_status, reports_service, snapshots
 from ..db import DB
 from ..deps import READERS, STAFF, ALL, get_or_404, get_today, require, scoped
-from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, Worker)
+from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, WorkCenter, Worker)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -80,7 +80,8 @@ def load(user: User = Depends(require(*READERS)), db: Session = DB):
     if user.role == "foreman":
         keep = [n for n in lm["workers"] if lm["worker_info"].get(n, {}).get("work_center_id") == user.work_center_id]
         lm = {**lm, "workers": keep, **{k: {n: lm[k][n] for n in keep} for k in ("plan", "fact", "deviation")}}
-    return {"plan_id": p.id, **lm}
+    centers = {c.id: c.name for c in db.scalars(scoped(WorkCenter, user))}
+    return {"plan_id": p.id, **lm, "centers": {str(k): v for k, v in centers.items()}}
 
 
 @router.get("/dashboard")

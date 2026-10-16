@@ -1,9 +1,9 @@
 """Матрица прав (ТЗ раздел 9, «Права доступа»): каждый эндпоинт × каждая роль."""
 import pytest
 
-ROLES = ["owner", "manager", "technologist", "foreman", "worker", "viewer"]
-O, M, T, F, W, V = ROLES
-MANAGERS, STAFF, READERS, ALL = {O, M}, {O, M, F}, {O, M, T, F, V}, set(ROLES)
+ROLES = ["owner", "manager", "technologist", "foreman", "worker", "viewer", "director"]
+O, M, T, F, W, V, D = ROLES
+MANAGERS, STAFF, READERS, ALL = {O, M}, {O, M, F}, {O, M, T, F, V, D}, set(ROLES)
 CATALOG = {O, M, T}          # каталог изделий: создание и редактирование
 
 # (метод, путь, тело, кому разрешено). Для разрешённых допустим любой статус, кроме 401/403
@@ -42,11 +42,12 @@ CASES = [
     ("PATCH", "/plan-day/items/999999", {"qty": 1}, STAFF),
     ("DELETE", "/plan-day/items/999999", None, STAFF),
     ("DELETE", "/plan-day/pins?worker_id=1&plan_date=2099-01-01", None, STAFF),
+    ("POST", "/plan-day/pins", {"worker_id": 1, "plan_date": "2099-01-01"}, STAFF),
     ("POST", "/plan-day/workers", {"name": "Матрица-врем", "work_center_id": 1}, STAFF),
     ("POST", "/extra-tasks", {"plan_date": "2099-01-01", "worker_id": 1, "title": "x", "hours": 1}, STAFF),
     ("PATCH", "/extra-tasks/999999", {"title": "y"}, STAFF),
     ("DELETE", "/extra-tasks/999999", None, STAFF),
-    ("PUT", "/extra-tasks/999999/fact", {"fact_hours": 1}, ALL - {"technologist", "viewer"}),
+    ("PUT", "/extra-tasks/999999/fact", {"fact_hours": 1}, ALL - {"technologist", "viewer", "director"}),
     ("POST", "/order-lines", {"project_id": 999999, "product_id": 999999, "qty": 1}, MANAGERS),
     ("POST", "/holidays", {"holiday_date": "2026-12-31"}, MANAGERS),
     ("POST", "/absences", {"worker_id": 999999, "date_from": "2026-10-05", "date_to": "2026-10-05"}, MANAGERS),
@@ -73,6 +74,9 @@ CASES = [
     ("GET", "/users", None, {O}),
     ("POST", "/users", {"email": "z@a.ru", "name": "Тест Тестов", "role": "viewer", "password": "password-1"}, {O}),
     ("PATCH", "/users/999999", {"name": "Тест Тестов"}, {O}),
+    ("POST", "/users/import", {"rows": [{"email": "bad", "first_name": "А", "last_name": "Б", "role": "viewer"}], "dry_run": True}, {O}),
+    ("POST", "/products/import", {"rows": [{"product": "Imp-perm", "operation": "Оп", "norm_per_day": "5"}], "dry_run": True}, CATALOG),
+    ("PATCH", "/auth/profile", {}, ALL),
 ]
 
 
@@ -98,14 +102,17 @@ def test_every_route_is_covered_by_matrix(full_org):
     covered = set()
     import re
     for m, p, _, _ in CASES:
-        covered.add((m, "/api/v1" + re.sub(r"\d+", "{}", p)))
+        covered.add((m, "/api/v1" + re.sub(r"\d+", "{}", p.split("?")[0])))
     crud = {"work-centers", "fact-reasons", "projects", "workers", "absences", "holidays", "products", "order-lines"}
     missing = []
-    for r in app.routes:
-        path = getattr(r, "path", "")
+    # маршруты берём из описания API: в новых версиях FastAPI подключённые роутеры лежат во вложенных обёртках,
+    # и обход app.routes ничего бы не находил (проверка стала бы пустой)
+    paths = app.openapi()["paths"]
+    assert len(paths) > 50, "описание API пустое — проверка маршрутов не сработает"
+    for path, ops in paths.items():
         if not path.startswith("/api/v1") or "openapi" in path:
             continue
-        for m in getattr(r, "methods", set()) - {"HEAD", "OPTIONS"}:
+        for m in {k.upper() for k in ops} - {"HEAD", "OPTIONS"}:
             norm = re.sub(r"\{[^}]+\}", "{}", path)
             if (m, path) in open_routes:
                 continue

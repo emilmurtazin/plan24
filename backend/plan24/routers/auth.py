@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
@@ -11,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import audit, config, email_tokens, mailer, security
+from .. import audit, config, email_tokens, mailer, names, security
 from .. import db as dbm
 from ..db import DB
 from ..deps import current_user, tenant_of
@@ -23,6 +24,7 @@ _DUMMY = security.hash_password("dummy-password-for-timing")
 
 PERMISSIONS = {   # что может роль — для интерфейса (серверная проверка всё равно выполняется в каждом эндпоинте)
     "owner": ["refs.write", "catalog.write", "plan.run", "settings.write", "fact.any", "users", "audit", "reports"],
+    "director": ["reports"],
     "manager": ["refs.write", "catalog.write", "plan.run", "settings.write", "fact.any", "audit", "reports"],
     "technologist": ["catalog.write", "reports"],
     "foreman": ["plan.run", "fact.center", "reports"],
@@ -34,7 +36,9 @@ DEFAULT_REASONS = ["Нет материала", "Поломка оборудов
 
 class RegisterIn(BaseModel):
     org_name: str = Field(min_length=2, max_length=200)
-    name: str = Field(min_length=2, max_length=200)
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    name: Optional[str] = Field(None, max_length=200)       # для старых клиентов: «Имя Фамилия» одной строкой
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     accept_terms: bool                                  # согласие на обработку ПД (152-ФЗ, раздел 12)
@@ -59,6 +63,13 @@ class TokenIn(BaseModel):
     token: str = Field(min_length=10, max_length=200)
 
 
+class ProfileIn(BaseModel):
+    first_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    last_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    email: Optional[EmailStr] = None
+    current_password: Optional[str] = Field(None, max_length=128)    # нужен при смене e-mail
+
+
 class ForgotIn(BaseModel):
     email: EmailStr
 
@@ -69,7 +80,8 @@ class ResetIn(BaseModel):
 
 
 def user_out(u: User, t: Tenant) -> dict:
-    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "email_verified": u.email_verified,
+    return {"id": u.id, "name": u.name, "first_name": u.first_name, "last_name": u.last_name, "email": u.email,
+            "role": u.role, "email_verified": u.email_verified,
             "work_center_id": u.work_center_id, "worker_id": u.worker_id,
             "permissions": PERMISSIONS[u.role],
             "tenant": {"id": t.id, "name": t.name, "timezone": t.timezone, "plan": t.plan,
@@ -105,8 +117,9 @@ def register(body: RegisterIn, bg: BackgroundTasks, db: Session = DB):
     db.add(PlannerSettings(tenant_id=t.id, strictness_by_level={}))
     for r in DEFAULT_REASONS:
         db.add(FactReason(tenant_id=t.id, name=r))
-    u = User(tenant_id=t.id, email=email, password_hash=security.hash_password(body.password), name=body.name.strip(),
-             role="owner", consent_at=utcnow())
+    first, last, full = names.resolve(body.first_name, body.last_name, body.name)
+    u = User(tenant_id=t.id, email=email, password_hash=security.hash_password(body.password), name=full,
+             first_name=first, last_name=last, role="owner", consent_at=utcnow())
     db.add(u)
     try:
         db.flush()
@@ -223,3 +236,38 @@ def change_password(body: PasswordIn, u: User = Depends(current_user), db: Sessi
     security.revoke_all(db, u.id)
     audit.log(db, u, "user", u.id, "password_change")
     return {"ok": True}
+
+
+@router.patch("/profile")
+def update_profile(body: ProfileIn, bg: BackgroundTasks, u: User = Depends(current_user), db: Session = DB):
+    """Профиль: имя, фамилия, e-mail. Смена e-mail требует текущего пароля и снова запрашивает подтверждение адреса.
+    Пароль меняется отдельно: POST /auth/change-password."""
+    changes: dict = {}
+    if body.first_name is not None or body.last_name is not None:
+        first = (body.first_name if body.first_name is not None else u.first_name).strip()
+        last = (body.last_name if body.last_name is not None else u.last_name).strip()
+        if not first or not last:
+            raise HTTPException(422, "Имя и фамилия не могут быть пустыми")
+        if (first, last) != (u.first_name, u.last_name):
+            changes["name"] = [u.name, names.full_name(first, last)]
+            u.first_name, u.last_name, u.name = first, last, names.full_name(first, last)
+    send_verify = False
+    if body.email is not None and body.email.lower() != u.email:
+        if not body.current_password or not security.verify_password(u.password_hash, body.current_password):
+            raise HTTPException(403, "Для смены e-mail введите текущий пароль")
+        new = body.email.lower()
+        if dbm.email_taken(db, new):
+            raise HTTPException(409, "Этот e-mail уже зарегистрирован")
+        changes["email"] = [u.email, new]
+        u.email, u.email_verified = new, False
+        send_verify = True
+    if changes:
+        try:
+            db.flush()
+        except IntegrityError:
+            raise HTTPException(409, "Этот e-mail уже зарегистрирован")
+        audit.log(db, u, "user", u.id, "profile_update", changes)
+    if send_verify:
+        subj, text, html_ = mailer.verify_email(u.name, tenant_of(db, u).name, email_tokens.issue(db, u, "verify"))
+        bg.add_task(mailer.send, u.email, subj, text, html_)
+    return user_out(u, tenant_of(db, u))

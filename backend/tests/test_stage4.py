@@ -1,5 +1,5 @@
-"""Этап 4 доработок: правка «Плана на день» (закрепляется и переживает перепланирование), работы вне перечня,
-временный работник, причина отклонения только при необходимости."""
+"""Этап 4 доработок: правка «Плана на день» (день закрепляется только вручную; закреплённый переживает перепланирование),
+работы вне перечня, временный работник, причина отклонения только при необходимости."""
 from sqlalchemy import select
 
 from conftest import TODAY
@@ -55,10 +55,38 @@ def add(o, day, worker_id, t, qty=3, role="owner"):
                                                  "operation_id": t["operation_id"], "qty": qty})
 
 
+def pin(o, worker_id, day, role="owner"):
+    """Явное закрепление дня работника (правки плана сами день не закрепляют)."""
+    r = o.post("/plan-day/pins", role, json={"worker_id": worker_id, "plan_date": day})
+    assert r.status_code == 201, r.text
+    return r
+
+
 def replan_center(o, center_id, role="owner"):
     r = o.post("/plans/replan", role, json={"work_center_id": center_id})
     assert r.status_code == 201, r.text
     return r
+
+
+def test_manual_edit_does_not_pin_by_itself(full_org):
+    o = full_org
+    o.replan_all()
+    day, w, t = find_task(o)
+    w2 = mate(o, w)
+    r = add(o, day, w2["id"], t, 3)
+    assert r.status_code == 201, r.text
+    assert r.json()["item"]["qty"] == 3 and r.json()["item"]["reason_code"] == "MANUAL" and not r.json()["item"]["is_locked"]
+    assert (w2["id"], day) not in pins(o)
+    card = next(x for x in o.get("/reports/day", params={"day": day}).json()["workers"] if x["worker_id"] == w2["id"])
+    assert not card["pinned"]
+    # изменение и удаление тоже не закрепляют
+    o.patch(f"/plan-day/items/{r.json()['item']['id']}", json={"qty": 2})
+    assert (w2["id"], day) not in pins(o)
+    assert o.delete(f"/plan-day/items/{r.json()['item']['id']}").status_code == 204
+    assert (w2["id"], day) not in pins(o)
+    x = o.post("/extra-tasks", json={"plan_date": day, "worker_id": w2["id"], "title": "Уборка", "hours": 1})
+    assert x.status_code == 201
+    assert (w2["id"], day) not in pins(o)
 
 
 def test_manual_task_is_pinned_and_survives_replan(full_org):
@@ -68,7 +96,7 @@ def test_manual_task_is_pinned_and_survives_replan(full_org):
     w2 = mate(o, w)
     r = add(o, day, w2["id"], t, 3)
     assert r.status_code == 201, r.text
-    assert r.json()["item"]["qty"] == 3 and r.json()["item"]["is_locked"] and r.json()["item"]["reason_code"] == "MANUAL"
+    pin(o, w2["id"], day)                                              # закрепление — только вручную
     assert (w2["id"], day) in pins(o)
     rep = o.get("/reports/day", params={"day": day}).json()
     card = next(x for x in rep["workers"] if x["worker_id"] == w2["id"])
@@ -93,6 +121,8 @@ def test_manual_delete_is_not_undone_by_replan(full_org):
     day, w, t = find_task(o)
     assert o.delete(f"/plan-day/items/{t['item_id']}").status_code == 204
     assert not [i for i in items(o, w["worker_id"], day) if (i[1], i[2]) == (t["order_line_id"], t["operation_id"])]
+    assert (w["worker_id"], day) not in pins(o)
+    pin(o, w["worker_id"], day)
     assert (w["worker_id"], day) in pins(o)
     replan_center(o, w["work_center_id"])
     assert not [i for i in items(o, w["worker_id"], day) if (i[1], i[2]) == (t["order_line_id"], t["operation_id"])]
@@ -100,7 +130,7 @@ def test_manual_delete_is_not_undone_by_replan(full_org):
     assert all(i[5] for i in items(o, w["worker_id"], day))
 
 
-def test_edit_moves_task_and_pins_both_days(full_org):
+def test_edit_moves_task_and_pinned_days_survive(full_org):
     o = full_org
     o.replan_all()
     day, w, t = find_task(o)
@@ -109,8 +139,12 @@ def test_edit_moves_task_and_pins_both_days(full_org):
     assert r.status_code == 200, r.text
     assert r.json()["item"]["worker_id"] == w2["id"] and r.json()["item"]["qty"] == 2
     got = [i for i in items(o, w2["id"], day) if (i[1], i[2]) == (t["order_line_id"], t["operation_id"])]
-    assert got and got[0][4] >= 2 and got[0][5]
-    assert {(w["worker_id"], day), (w2["id"], day)} <= set(pins(o))
+    assert got and got[0][4] >= 2 and not got[0][5]
+    assert not {(w["worker_id"], day), (w2["id"], day)} & set(pins(o))
+    pin(o, w["worker_id"], day)
+    pin(o, w2["id"], day)
+    got = [i for i in items(o, w2["id"], day) if (i[1], i[2]) == (t["order_line_id"], t["operation_id"])]
+    assert got[0][5]
     # слияние с уже существующей строкой того же ключа
     r2 = add(o, day, w2["id"], t, 1)
     assert r2.status_code == 201
@@ -200,7 +234,8 @@ def test_extra_tasks_flow(full_org):
                                      "title": "Доработка фурнитуры", "hours": 2}).json()
     b = o.post("/extra-tasks", json={"plan_date": day, "worker_id": wid, "title": "Уборка участка", "hours": 1.5}).json()
     assert a["order_line_id"] == t["order_line_id"] and b["order_line_id"] is None
-    assert (wid, day) in pins(o)
+    assert (wid, day) not in pins(o)
+    pin(o, wid, day)
     card = next(x for x in o.get("/reports/day", params={"day": day}).json()["workers"] if x["worker_id"] == wid)
     assert {e["title"] for e in card["extras"]} == {"Доработка фурнитуры", "Уборка участка"}
     assert next(e for e in card["extras"] if e["title"] == "Доработка фурнитуры")["order"]
@@ -259,6 +294,7 @@ def test_temp_worker_is_saved_but_not_auto_planned(full_org):
                          for tt in ww["tasks"] if tt["plan_qty"] and tt["item_id"])
         r = add(o, day, tw["id"], t, 2)
     assert r.status_code == 201, r.text
+    pin(o, tw["id"], day)
     replan_center(o, c)
     assert [i[4] for i in items(o, tw["id"], day)] == [2]
     # в настройках можно включить автопланирование
@@ -300,6 +336,7 @@ def test_rollback_rebuilds_pins_from_the_activated_plan(full_org):
     day, w, t = find_task(o)
     w2 = mate(o, w)
     add(o, day, w2["id"], t, 3)
+    pin(o, w2["id"], day)
     plans = o.get("/plans").json()["items"]
     first = next(p for p in plans if p["status"] == "active")["id"]
     replan_center(o, w["work_center_id"])                              # план № 2 унаследовал закрепление

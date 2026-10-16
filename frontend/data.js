@@ -91,7 +91,7 @@ const TABS = {
   },
   products: {
     label: 'Каталог изделий', cfg: {
-      title: 'Изделия', add: 'Добавить изделие', path: '/products',
+      title: 'Изделия', add: 'Добавить изделие', path: '/products', headerExtra: '<button class="secondary" data-import>Загрузить из файла</button>',
       cols: r => {
         const cur = x => r.routings.find(q => q.product_id === x.id && q.is_current);
         return [{ label: 'Изделие', get: x => x.name }, { label: 'Ед.', get: x => x.unit },
@@ -101,7 +101,7 @@ const TABS = {
       hint: () => 'У изделия может быть несколько версий маршрута; у каждой — свой список операций с нормами и требуемой квалификацией. В заказ берётся выбранная версия. «Операций» — в текущей версии.',
       fields: () => [nameField, { name: 'unit', label: 'Единица', required: true }], defaults: { unit: 'шт' },
       extra: r => `<button class="small" data-rt="${r.id}">Версии и операции</button> `,
-      after: (box, refs, rows, reload) => $$('[data-rt]', box).forEach(b => b.onclick = () => openRouting(refs.PR[b.dataset.rt], undefined, reload))
+      after: (box, refs, rows, reload) => { $$('[data-rt]', box).forEach(b => b.onclick = () => openRouting(refs.PR[b.dataset.rt], undefined, reload)); $('[data-import]', box).onclick = () => importCatalog(refs, reload); }
     }
   },
   workers: {
@@ -115,7 +115,7 @@ const TABS = {
         { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 0.05 },
         { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
         { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] },
-        { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Плане на день». Так добавляются временные работники.' }],
+        { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Выполнение → План на день». Так добавляются временные работники.' }],
       extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }
@@ -130,7 +130,7 @@ const TABS = {
   },
   holidays: {
     label: 'Календарь', cfg: {
-      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Организация → Участки → Настройки». Здесь — дополнительные нерабочие даты.',
+      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Работники → Участки → Настройки». Здесь — дополнительные нерабочие даты.',
       cols: () => [{ label: 'Дата', get: x => fmtDY(x.holiday_date) }, { label: 'Название', get: x => x.name }],
       fields: () => [{ name: 'holiday_date', label: 'Дата', type: 'date', required: true }, { name: 'name', label: 'Название' }], editFields: () => [{ name: 'name', label: 'Название' }]
     }
@@ -139,10 +139,10 @@ const TABS = {
 };
 
 /* Группа вкладок: шапка + переключатель + контейнер. Вкладка — либо CRUD-таблица из TABS, либо свой экран (custom). */
-function tabsScreen(v, { title, tabs, tab, key, self }) {
+function tabsScreen(v, { title, tabs, tab, key, self, def }) {
   S.nav++;
-  const ids = Object.keys(tabs); tab = ids.includes(tab) ? tab : (ids.includes(S[key]) ? S[key] : ids[0]); S[key] = tab;
-  v.innerHTML = `<h1>${esc(title)}</h1><nav class="seg" aria-label="Вкладки раздела">${ids.map(k => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(tabs[k].label)}</button>`).join('')}</nav><div id="dt"></div>`;
+  const ids = Object.keys(tabs); tab = ids.includes(tab) ? tab : (ids.includes(S[key]) ? S[key] : (ids.includes(def) ? def : ids[0])); S[key] = tab;
+  v.innerHTML = `<h1>${esc(title)}</h1>${ids.length > 1 ? `<nav class="seg" aria-label="Вкладки раздела">${ids.map(k => `<button data-t="${k}" ${k === tab ? 'aria-current="page"' : ''}>${esc(tabs[k].label)}</button>`).join('')}</nav>` : ''}<div id="dt"></div>`;
   $$('[data-t]', v).forEach(b => b.onclick = () => self(v, b.dataset.t));
   const box = $('#dt', v), t = tabs[tab];
   const fail = e => { if (!(e instanceof Stale)) box.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; };
@@ -161,7 +161,7 @@ SCREENS.catalog = async v => {
   reload();
 };
 
-/* Организация: сведения, участки (+ настройки), работники, календарь, пользователи, журнал */
+/* Организация: сведения, календарь, пользователи, журнал. Участки, работники и причины отклонений — в разделе «Работники» */
 const ORG_TABS = {
   info: { label: 'Об организации', custom: async (box, reload) => {
     const t = S.me.tenant || {}, [centers, workers, st] = await Promise.all([listAll('/work-centers'), listAll('/workers'), GET('/settings')]);
@@ -187,10 +187,13 @@ const ORG_TABS = {
       catch (e) { $('#qe', box).textContent = errText(e); }
     };
   } },
-  centers: TABS.centers, workers: TABS.workers, holidays: TABS.holidays, reasons: TABS.reasons,
+  holidays: TABS.holidays,
   users: { label: 'Пользователи', owner: true, custom: box => SCREENS.users(box) },
   audit: { label: 'Журнал', custom: box => SCREENS.audit(box) },
 };
+/* Работники: участки (+ настройки планировщика), работники, причины отклонений */
+SCREENS.people = (v, tab) => tabsScreen(v, { title: 'Работники', tabs: { centers: TABS.centers, workers: TABS.workers, reasons: TABS.reasons }, tab, key: 'peopleTab', self: SCREENS.people, def: 'workers' });
+
 SCREENS.org = (v, tab) => {
   const tabs = Object.fromEntries(Object.entries(ORG_TABS).filter(([, t]) => !t.owner || S.me.role === 'owner'));
   return tabsScreen(v, { title: 'Организация', tabs, tab, key: 'orgTab', self: SCREENS.org });
@@ -241,7 +244,7 @@ async function openRouting(product, selId, onClose) {
 async function openDistribution(order, refs, onClose) {
   const v = await GET(`/order-lines/${order.id}/operations`);
   const title = `${order.ext_id || '#' + order.id} · ${refs.PR[order.product_id]?.name || ''}`;
-  if (!v.centers.length) { toast('В организации нет участков. Добавьте их в разделе «Организация → Участки»', true); return; }
+  if (!v.centers.length) { toast('В организации нет участков. Добавьте их в разделе «Работники → Участки»', true); return; }
   const m = modal(`<h2>Операции по участкам</h2><p class="muted" style="margin-top:0">${esc(title)} · версия ${esc(verLabel(refs.routings.find(q => q.id === v.routing_id) || { version_no: '?' }))}</p>
     <p class="muted">Отметьте участки, где выполняется каждая операция. Участок видит только свои операции. <b>Операция без участка — ошибка:</b> она не попадает в план, и следующие за ней операции тоже не планируются.</p>
     <div class="row" style="margin-bottom:8px"><label class="f" style="margin:0">Быстро: все операции на участок<select id="dq">${v.centers.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label><button class="small secondary" id="dqa">Назначить всем операциям</button><button class="small secondary" id="dqc">Снять все</button></div>
@@ -321,25 +324,27 @@ SCREENS.users = async v => {
   const [users, centers, workers] = await Promise.all([GET('/users'), listAll('/work-centers'), listAll('/workers')]);
   const roleOpts = Object.entries(ROLE_RU).map(([v, l]) => ({ v, l }));
   const fields = (isNew) => [
-    ...(isNew ? [{ name: 'email', label: 'E-mail', type: 'email', required: true }] : []), { name: 'name', label: 'Имя', required: true },
+    ...(isNew ? [{ name: 'email', label: 'E-mail', type: 'email', required: true }] : []),
+    { name: 'first_name', label: 'Имя', required: true }, { name: 'last_name', label: 'Фамилия', required: true },
     { name: 'role', label: 'Роль', type: 'select', required: true, options: roleOpts, help: 'Бригадиру нужен участок, сборщику — исполнитель.' },
     { name: 'work_center_id', label: 'Участок (для бригадира)', type: 'select', options: opts(centers), num: true },
     { name: 'worker_id', label: 'Исполнитель (для сборщика)', type: 'select', options: opts(workers), num: true },
     ...(isNew ? [{ name: 'send_invite', label: 'Отправить приглашение по e-mail', type: 'checkbox', help: 'Человек сам задаст пароль по ссылке из письма (действует 7 суток). Тогда пароль ниже не нужен.' },
       { name: 'password', label: 'Или задайте временный пароль (не короче 8)', type: 'password' }] : [{ name: 'is_active', label: 'Доступ разрешён', type: 'checkbox' }, { name: 'password', label: 'Новый пароль (если нужно сбросить)', type: 'password' }])];
   const rowName = u => u.work_center_id ? ' · ' + (centers.find(c => c.id === u.work_center_id)?.name || '') : (u.worker_id ? ' · ' + (workers.find(w => w.id === u.worker_id)?.name || '') : '');
-  v.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Пользователи</h2><button id="add">+ Добавить</button></div>
-    <div class="card flush scroll">${table([{ label: 'Имя', get: u => u.name }, { label: 'E-mail', get: u => u.email }, { label: 'Роль', get: u => ROLE_RU[u.role] + rowName(u) }, { label: 'Доступ', html: u => u.is_active ? '<span class="badge b-done">разрешён</span>' : '<span class="badge b-risk">закрыт</span>' }], users, u => `<button class="small secondary" data-e="${u.id}">Изменить</button>${u.id !== S.me.id ? ` <button class="small secondary" data-inv="${u.id}">Пригласить снова</button>` : ''}${u.role === 'foreman' ? ` <button class="small" data-tgu="${u.id}">Telegram</button>` : ''}`)}</div>
-    <p class="muted">Права: владелец — всё, включая пользователей; руководитель — данные, настройки и планирование; технолог — создаёт и редактирует каталог изделий, остальное смотрит; бригадир — свой участок и факт; сборщик — только свои задания и факт; наблюдатель — только просмотр отчётов.</p>`;
+  v.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Пользователи</h2><button class="secondary" id="imp">Загрузить из файла</button><button id="add">+ Добавить</button></div>
+    <div class="card flush scroll">${table([{ label: 'Фамилия', get: u => u.last_name || '—' }, { label: 'Имя', get: u => u.first_name }, { label: 'E-mail', get: u => u.email }, { label: 'Роль', get: u => ROLE_RU[u.role] + rowName(u) }, { label: 'Доступ', html: u => u.is_active ? '<span class="badge b-done">разрешён</span>' : '<span class="badge b-risk">закрыт</span>' }], users, u => `<button class="small secondary" data-e="${u.id}">Изменить</button>${u.id !== S.me.id ? ` <button class="small secondary" data-inv="${u.id}">Пригласить снова</button>` : ''}${u.role === 'foreman' ? ` <button class="small" data-tgu="${u.id}">Telegram</button>` : ''}`)}</div>
+    <p class="muted">Права: администратор — всё, включая пользователей; руководитель проекта — данные, настройки и планирование; директор и наблюдатель — только просмотр отчётов; технолог — создаёт и редактирует каталог изделий, остальное смотрит; бригадир — свой участок и факт; сборщик — только свои задания и факт.</p>`;
   $('#add').onclick = () => formModal({ title: 'Новый пользователь', fields: fields(true), values: { role: 'viewer' }, onSubmit: async (vals, m) => { await POST('/users', vals); m.close(); toast(vals.send_invite ? 'Приглашение отправлено' : 'Пользователь создан'); SCREENS.users(v); } });
+  $('#imp').onclick = () => importUsers(() => SCREENS.users(v));
   $$('[data-inv]', v).forEach(b => b.onclick = async () => { try { await POST(`/users/${b.dataset.inv}/invite`); toast('Приглашение отправлено'); } catch (e) { toast(errText(e), true); } });
   $$('[data-tgu]', v).forEach(b => b.onclick = () => openTelegram('user', +b.dataset.tgu, users.find(x => x.id == b.dataset.tgu).name));
   $$('[data-e]', v).forEach(b => b.onclick = () => { const u = users.find(x => x.id == b.dataset.e); formModal({ title: u.name, fields: fields(false), values: u, onSubmit: async (vals, m) => { if (!vals.password) delete vals.password; await PATCH('/users/' + u.id, vals); m.close(); toast('Сохранено'); SCREENS.users(v); } }); });
 };
 
 /* ---------- журнал ---------- */
-const ENT = { settings: 'Настройки', order_line: 'Позиция заказа', worker: 'Исполнитель', fact: 'Факт', plan: 'План', user: 'Пользователь', product: 'Изделие', operation: 'Операция', routing: 'Маршрут', project: 'Проект', worker_access: 'Допуски', absence: 'Отсутствие', holiday: 'Праздник', work_center: 'Участок', fact_reason: 'Причина', tenant: 'Организация', demo: 'Демо' };
-const ACT = { create: 'создание', update: 'изменение', delete: 'удаление', replan: 'перепланирование', activate: 'откат плана', confirm: 'подтверждение', register: 'регистрация', load: 'загрузка', password_change: 'смена пароля' };
+const ENT = { settings: 'Настройки', order_line: 'Позиция заказа', worker: 'Исполнитель', fact: 'Факт', plan: 'План', user: 'Пользователь', product: 'Изделие', operation: 'Операция', routing: 'Маршрут', project: 'Проект', worker_access: 'Допуски', absence: 'Отсутствие', holiday: 'Праздник', work_center: 'Участок', fact_reason: 'Причина', tenant: 'Организация', demo: 'Демо', day_pin: 'Закрепление дня', extra_task: 'Работа вне перечня' };
+const ACT = { create: 'создание', update: 'изменение', delete: 'удаление', replan: 'перепланирование', activate: 'откат плана', confirm: 'подтверждение', register: 'регистрация', load: 'загрузка', password_change: 'смена пароля', pin: 'закрепление', import: 'загрузка из файла', profile_update: 'изменение профиля' };
 SCREENS.audit = async v => {
   let before = 0, all = [];
   const draw = async () => {

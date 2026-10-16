@@ -32,7 +32,7 @@ def default_quals(n: int = 3) -> list:
     return [f"Уровень {i}" for i in range(1, n + 1)]
 
 
-ROLES = ("owner", "manager", "technologist", "foreman", "worker", "viewer")
+ROLES = ("owner", "manager", "technologist", "foreman", "worker", "viewer", "director")
 
 
 # ---------------------------------------------------------------- ядро
@@ -60,7 +60,9 @@ class User(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    name: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(200))            # полное имя «Имя Фамилия» — собирается из first_name и last_name
+    first_name: Mapped[str] = mapped_column(String(100), default="", server_default="")
+    last_name: Mapped[str] = mapped_column(String(100), default="", server_default="")
     role: Mapped[str] = mapped_column(String(16))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)

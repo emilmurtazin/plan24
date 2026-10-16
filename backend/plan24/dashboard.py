@@ -13,10 +13,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import distribution, order_status
-from .models import (DayPlanSnapshot, Fact, FactReason, Operation, OrderLine, Plan, PlannerSettings, Routing, User,
-                     WorkCenter, Worker)
+from .models import (DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Routing,
+                     User, WorkCenter, Worker)
 
 WEEKS = 13                      # ≈ 3 месяца
+MONTH_DAYS = 30                 # окно «Статуса заказов» на дашборде: плановый срок заверш. — ближайший месяц
+LOAD_DAYS = 92                  # «ближайшие 3 месяца» для среднего процента загрузки
 NO_SECTION = 0
 
 
@@ -62,6 +64,10 @@ def build(db: Session, user: User, today: date) -> dict:
     risk = sorted((r for r in rows if r["status"] == "Риск опоздания"), key=lambda r: (r.get("due") or "9999"))
     soon = sorted((r for r in rows if r["status"] != "Готово" and r.get("due")), key=lambda r: r["due"])[:5]
 
+    # ---------- ключевые показатели и заказы ближайшего месяца ----------
+    kpi = _kpi(db, t, rows, prog["per_order"], plan, today, workers, own)
+    orders_month = _orders_month(rows, today)
+
     # ---------- загрузка участков на 3 месяца вперёд ----------
     load = _load_forecast(plan, today, sections, own)
     # ---------- недовыполнение за 3 месяца назад ----------
@@ -74,6 +80,7 @@ def build(db: Session, user: User, today: date) -> dict:
     return {
         "plan_id": plan.id if plan else None, "today": today.isoformat(),
         "progress": {"percent": prog["percent"], "done": prog["done"], "required": prog["required"], "orders": len(rows)},
+        "kpi": kpi, "orders_month": orders_month,
         "by_status": dict(by_status), "risk": risk[:8], "soonest": soon,
         "workers": _workers(workers, sections, quals, cname),
         "resources": resources, "reasons": reasons, "load": load, "underperformance": under,
@@ -83,6 +90,67 @@ def build(db: Session, user: User, today: date) -> dict:
 
 
 # ------------------------------------------------------------------ части
+def _kpi(db: Session, t: int, rows: list, per_order: dict, plan: Optional[Plan], today: date, workers: list, own) -> dict:
+    """Пять показателей дашборда.
+
+    Проект «в работе» — есть незавершённая позиция, по которой уже внесён факт; «в очереди» — есть незавершённые позиции,
+    но по ним факта ещё нет; «с риском срыва сроков» — есть позиция со статусом «Риск опоздания» (проект может быть
+    одновременно в работе или в очереди). Работники с заданиями — получившие на сегодня строку плана или работу вне перечня.
+    Загрузка — средний процент рабочего дня по работникам и рабочим дням плана на ближайшие 3 месяца."""
+    ids = [r["order_line_id"] for r in rows]
+    proj_of = {o.id: o.project_id for o in db.scalars(select(OrderLine).where(OrderLine.id.in_(ids)))} if ids else {}
+    started, queued, risky, projects = set(), set(), set(), set()
+    for r in rows:
+        pid = proj_of.get(r["order_line_id"])
+        if pid is None or r["status"] in ("Готово", "Нет операций"):
+            continue
+        projects.add(pid)
+        if r["status"] == "Риск опоздания":
+            risky.add(pid)
+        if per_order.get(r["order_line_id"], 0.0) > 0:
+            started.add(pid)
+    queued = projects - started
+
+    wids = {w.id for w in workers}
+    busy = set()
+    if plan:
+        busy |= {w for (w,) in db.execute(select(PlanItem.worker_id).where(
+            PlanItem.plan_id == plan.id, PlanItem.plan_date == today, PlanItem.qty > 0).distinct())}
+    busy |= {w for (w,) in db.execute(select(ExtraTask.worker_id).where(
+        ExtraTask.tenant_id == t, ExtraTask.plan_date == today).distinct())}
+    busy &= wids
+
+    load_pct, horizon = None, None
+    lm = (plan.summary.get("load") if plan else None) or {}
+    info, plan_load = lm.get("worker_info", {}), lm.get("plan", {})
+    names = [n for n in lm.get("workers", []) if own is None or info.get(n, {}).get("work_center_id") == own]
+    lo, hi = today.isoformat(), (today + timedelta(days=LOAD_DAYS)).isoformat()
+    days = [d for d in lm.get("dates", []) if lo <= d <= hi]
+    if names and days:
+        load_pct = round(sum(plan_load.get(n, {}).get(d, 0.0) for n in names for d in days) / (len(names) * len(days)) * 100, 1)
+        horizon = days[-1]
+    return {"projects_in_work": len(started), "projects_queued": len(queued), "projects_at_risk": len(risky),
+            "workers_with_tasks": len(busy), "workers_total": len(wids), "load_3m": load_pct, "load_horizon_end": horizon}
+
+
+def _orders_month(rows: list, today: date) -> list:
+    """Заказы с плановым сроком завершения в ближайший месяц (и просроченные, но не завершённые) — одной таблицей."""
+    end = (today + timedelta(days=MONTH_DAYS)).isoformat()
+    out = []
+    for r in rows:
+        due = r.get("due")
+        if not due or due > end:
+            continue
+        overdue = due < today.isoformat()
+        if overdue and r["status"] == "Готово":
+            continue
+        out.append({"order_line_id": r["order_line_id"], "id": r["id"], "project": r["project"], "product": r["product"],
+                    "qty": r.get("qty"), "progress": r.get("progress", 0.0), "due": due, "forecast": r.get("forecast"),
+                    "forecast_text": r.get("forecast_text"), "status": r["status"], "overdue": overdue})
+    out.sort(key=lambda r: (r["due"], str(r["id"])))
+    return out
+
+
 def _progress(db: Session, t: int, ol_ids: list) -> dict:
     if not ol_ids:
         return {"percent": 0.0, "done": 0.0, "required": 0.0, "per_order": {}}

@@ -37,20 +37,21 @@ function barChart({ weeks, series, field, label }) {
 }
 const dataTable = (weeks, series, f, unit = '%') => `<details class="noprint"><summary>Данные таблицей</summary><div class="scroll"><table><tr><th>Участок</th>${weeks.map(w => `<th class="num">${fmtD(w)}</th>`).join('')}</tr>${series.map(s => `<tr><td>${esc(s.section)}</td>${s[f].map(v => `<td class="num">${v == null ? '—' : num(v) + unit}</td>`).join('')}</tr>`).join('')}</table></div></details>`;
 
-async function dashboardView(plan) {
-  const d = await GET('/reports/overview'), by = d.by_status || {}, p = d.progress, w = d.workers;
-  let h = `<div class="cards3"><div class="kpi k-blue"><b>${num(p.percent)}%</b>выполнено по ${p.orders} поз.<div class="bar"><i style="width:${Math.min(100, p.percent)}%"></i></div></div>
-    <div class="kpi ${by['Риск опоздания'] ? 'k-red' : 'k-grey'}"><b class="${by['Риск опоздания'] ? 'err' : ''}">${by['Риск опоздания'] || 0}</b>позиций в риске</div><div class="kpi k-blue"><b>${by['В работе'] || 0}</b>в работе</div>
-    <div class="kpi k-green"><b class="ok">${by['Готово'] || 0}</b>готово</div><div class="kpi ${d.week_peak_load >= 100 ? 'k-red' : d.week_peak_load >= 80 ? 'k-amber' : 'k-grey'}"><b>${num(d.week_peak_load)}%</b>пик загрузки участка (3 мес.)</div>
-    <div class="kpi k-grey"><b>${w.available}<small class="muted"> / ${w.total}</small></b>работников доступно</div></div>`;
-  if (d.loaded_today.length) h += `<div class="card"><b>Уже загружены сегодня</b> и не получают новых заданий: ${d.loaded_today.map(esc).join(', ')}</div>`;
+/* Показатель: крупное число, подпись и пояснение по наведению */
+const kpiCard = (value, label, cls, hint, extra = '') => `<div class="kpi ${cls}" title="${esc(hint)}"><b>${value}</b>${esc(label)}${extra}</div>`;
 
-  /* статусы заказов */
-  const total = Object.values(by).reduce((a, b) => a + b, 0) || 1, col = { 'Риск опоздания': 'var(--red)', 'В работе': 'var(--blue)', 'Готово': 'var(--green)' };
-  h += `<div class="card"><h2>Статус заказов</h2>${total ? `<div class="stack" role="img" aria-label="Заказы по статусам">${ST_ORDER.filter(k => by[k]).map(k => `<i style="width:${by[k] / total * 100}%;background:${col[k]}" title="${k}: ${by[k]}"></i>`).join('')}</div>
-    <div class="legend">${ST_ORDER.map(k => `<span><i style="background:${col[k]}"></i>${k}: <b>${by[k] || 0}</b></span>`).join('')}</div>` : ''}
-    ${d.risk.length ? `<h3>Риск опоздания</h3><div class="scroll"><table><tr><th>Заказ</th><th>Изделие</th><th>Проект</th><th>Выполнено</th><th>Срок</th><th>Прогноз</th></tr>${d.risk.map(r => `<tr data-ord="${r.order_line_id}" style="cursor:pointer" title="Открыть статус заказа"><td><b>${esc(r.id)}</b></td><td>${esc(r.product)}</td><td>${esc(r.project)}</td><td class="num">${num(r.progress)}%</td><td>${fmtDY(r.due)}</td><td class="err">${esc(r.forecast_text)}</td></tr>`).join('')}</table></div>` : '<p class="muted">Заказов с риском опоздания нет.</p>'}
-    ${d.soonest.length ? `<h3>Ближайшие сроки</h3><div class="scroll"><table><tr><th>Заказ</th><th>Изделие</th><th>Выполнено</th><th>Срок</th><th>Статус</th></tr>${d.soonest.map(r => `<tr data-ord="${r.order_line_id}" style="cursor:pointer"><td><b>${esc(r.id)}</b></td><td>${esc(r.product)}</td><td class="num">${num(r.progress)}%</td><td>${fmtDY(r.due)}</td><td>${stBadge(r.status)}</td></tr>`).join('')}</table></div>` : ''}</div>`;
+async function dashboardView(plan) {
+  const d = await GET('/reports/overview'), k = d.kpi, w = d.workers;
+  const pct = v => v == null ? '—' : num(v) + '%';
+  let h = `<div class="cards5">
+    ${kpiCard(k.projects_in_work, 'проектов в работе', 'k-blue', 'Есть незавершённые позиции, по которым уже внесён факт')}
+    ${kpiCard(k.projects_queued, 'проектов в очереди', 'k-grey', 'Есть незавершённые позиции, по которым факта ещё нет')}
+    ${kpiCard(`<span class="${k.projects_at_risk ? 'err' : ''}">${k.projects_at_risk}</span>`, 'проектов с риском срыва сроков', k.projects_at_risk ? 'k-red' : 'k-grey', 'Есть позиция со статусом «Риск опоздания»: прогноз завершения позже срока')}
+    ${kpiCard(`${k.workers_with_tasks}<small class="muted"> из ${k.workers_total}</small>`, 'работников с заданиями сегодня', 'k-green', 'Работники, у которых на сегодня есть задание или работа вне перечня, из общего числа работников')}
+    ${kpiCard(pct(k.load_3m), 'загрузка на ближайшие 3 месяца', k.load_3m >= 100 ? 'k-red' : k.load_3m >= 80 ? 'k-amber' : 'k-grey', 'Средняя загрузка работников по плану, % рабочего дня' + (k.load_horizon_end ? '. План построен до ' + fmtDY(k.load_horizon_end) : ''), `<div class="bar"><i style="width:${Math.min(100, k.load_3m || 0)}%"></i></div>`)}</div>`;
+
+  /* статус заказов: одна таблица, только заказы с плановым сроком завершения в ближайший месяц */
+  h += `<div class="card"><h2>Статус заказов <small class="muted">срок завершения — ближайший месяц</small></h2>${d.orders_month.length ? `<div class="scroll"><table><tr><th>Заказ</th><th>Изделие</th><th>Проект</th><th>Выполнено</th><th>Срок</th><th>Прогноз</th><th>Статус</th></tr>${d.orders_month.map(r => `<tr data-ord="${r.order_line_id}" style="cursor:pointer" title="Открыть статус заказа"><td><b>${esc(r.id)}</b></td><td>${esc(r.product)}</td><td>${esc(r.project)}</td><td class="num">${num(r.progress)}%<div class="bar"><i style="width:${Math.min(100, r.progress)}%"></i></div></td><td class="${r.overdue ? 'err' : ''}">${fmtDY(r.due)}${r.overdue ? ' <small>просрочен</small>' : ''}</td><td class="${r.status === 'Риск опоздания' ? 'err' : ''}">${esc(r.forecast_text || '—')}</td><td>${stBadge(r.status)}</td></tr>`).join('')}</table></div>` : '<p class="muted">Нет заказов со сроком завершения в ближайший месяц.</p>'}</div>`;
 
   /* потребность в ресурсах */
   const R = d.resources;

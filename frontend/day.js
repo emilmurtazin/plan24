@@ -1,5 +1,6 @@
-/* План на день: правка плана вручную, работы вне перечня операций, временные работники, учёт факта.
-   Любая правка закрепляет день работника — перепланирование участка его не меняет. */
+/* План на день (подвкладка «Выполнения»): правка плана вручную, работы вне перечня операций, временные работники, учёт факта.
+   Правки день работника сами не закрепляют: закрепление — отдельная кнопка «Закрепить день»; закреплённый день
+   перепланирование участка не меняет. Кнопка «Перепланировать» — в верхней панели. */
 'use strict';
 
 const DAYC = {};
@@ -23,18 +24,16 @@ SCREENS.day = async (v, day) => {
   S.nav++;
   const [d, reasons] = await Promise.all([GET('/reports/day' + (day ? '?day=' + day : '')), reasonsList()]);
   const worker = S.me.role === 'worker', can = d.can_edit;
-  let h = `<div class="row" style="margin-bottom:10px"><h1 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} <span class="muted" style="font-weight:500">${fmtD(d.date)} ${wd(d.date)}</span></h1>
-    <span class="row noprint">${can ? '<button id="addT">+ Задание</button><button class="secondary" id="addX">+ Работа вне перечня</button><button class="secondary" id="addW">+ Работник</button>' : ''}
-    ${STAFF.includes(S.me.role) ? '<button class="secondary" id="rp">Перепланировать</button>' : ''}<button class="secondary" onclick="print()">Печать</button></span></div>`;
+  let h = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} <span class="muted" style="font-weight:500">${fmtD(d.date)} ${wd(d.date)}</span></h2>
+    <span class="row noprint">${can ? '<button id="addT">+ Задание</button><button class="secondary" id="addX">+ Работа вне перечня</button><button class="secondary" id="addW">+ Работник</button>' : ''}</span></div>`;
   if (!d.plan_id) h += `<div class="banner info">План ещё не построен.</div>`;
   if (d.days.length) h += `<div class="days noprint">${d.days.map(x => `<button data-d="${x}" aria-pressed="${x === d.date}"><b>${fmtD(x)}</b><small>${wd(x)}</small></button>`).join('')}</div>`;
-  if (can && d.workers.length) h += `<p class="hint noprint">Любая правка закрепляет день работника: перепланирование его не меняет. Закрепление можно снять в строке работника.</p>`;
+  if (can && d.workers.length) h += `<p class="hint noprint">Правки день работника не закрепляют. Чтобы перепланирование не меняло задания работника на этот день, закрепите день кнопкой «Закрепить день» в строке работника.</p>`;
   if (!d.workers.length) h += `<div class="card empty">На этот день заданий нет.${can ? ' Добавьте задание кнопкой «+ Задание».' : ''}</div>`;
   else h += `<div class="card flush"><div class="scroll"><table class="dt"><thead><tr><th>Задание</th><th class="num">План</th><th>${d.can_enter ? 'Сделано' : 'Факт'}</th><th>Статус</th>${can ? '<th class="noprint">Задание</th>' : ''}</tr></thead>${d.workers.map(w => workerRows(w, d, reasons, can)).join('')}</table></div></div>`;
   v.innerHTML = h;
   const reload = () => SCREENS.day(v, d.date);
   $$('.days button', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.d));
-  if ($('#rp')) $('#rp').onclick = openReplan;
   if ($('#addT')) { $('#addT').onclick = () => openTaskForm(d, {}, reload); $('#addX').onclick = () => openExtraForm(d, {}, reload); $('#addW').onclick = () => openTempWorker(d, reload); }
   $$('[data-wt]', v).forEach(b => b.onclick = () => openTaskForm(d, { workerId: +b.dataset.wt }, reload));
   $$('[data-wx]', v).forEach(b => b.onclick = () => openExtraForm(d, { workerId: +b.dataset.wx }, reload));
@@ -42,7 +41,8 @@ SCREENS.day = async (v, day) => {
   $$('[data-td]', v).forEach(b => b.onclick = async () => { if (await confirmBox('Убрать это задание из плана дня?')) { try { await DEL('/plan-day/items/' + b.dataset.td); toast('Задание убрано'); reload(); } catch (e) { toast(errText(e), true); } } });
   $$('[data-xe]', v).forEach(b => b.onclick = () => openExtraForm(d, { extra: findExtra(d, b.dataset.xe) }, reload));
   $$('[data-xd]', v).forEach(b => b.onclick = async () => { if (await confirmBox('Убрать эту работу?')) { try { await DEL('/extra-tasks/' + b.dataset.xd); toast('Работа убрана'); reload(); } catch (e) { toast(errText(e), true); } } });
-  $$('[data-unpin]', v).forEach(b => b.onclick = async () => { if (await confirmBox('Снять закрепление? При следующем перепланировании день этого работника рассчитается заново.')) { try { await DEL(`/plan-day/pins?worker_id=${b.dataset.unpin}&plan_date=${d.date}`); toast('Закрепление снято'); reload(); } catch (e) { toast(errText(e), true); } } });
+  $$('[data-pin]', v).forEach(b => b.onclick = async () => { try { await POST('/plan-day/pins', { worker_id: +b.dataset.pin, plan_date: d.date }); toast('День закреплён: перепланирование его не изменит'); reload(); } catch (e) { toast(errText(e), true); } });
+  $$('[data-unpin]', v).forEach(b => b.onclick = async () => { if (await confirmBox('Снять закрепление? При следующем перепланировании день этого работника рассчитается заново, а добавленные вручную задания могут измениться.')) { try { await DEL(`/plan-day/pins?worker_id=${b.dataset.unpin}&plan_date=${d.date}`); toast('Закрепление снято'); reload(); } catch (e) { toast(errText(e), true); } } });
   $$('.fact', v).forEach(box => wireFact(box, d, reload));
   $$('[data-allplan]', v).forEach(b => b.onclick = () => allByPlan(+b.dataset.allplan, d, reload));
 };
@@ -56,7 +56,7 @@ function workerRows(w, d, reasons, can) {
   const cols = can ? 5 : 4, ini = (w.worker || '?').trim().charAt(0).toUpperCase();
   return `<tbody class="wcard"><tr class="grp"><td colspan="${cols}"><div class="gh"><span class="ava" aria-hidden="true">${esc(ini)}</span><h3 class="gn">${esc(w.worker)}</h3>${w.is_temporary ? '<span class="tag">временный</span>' : ''}${w.pinned ? '<span class="tag pin" title="Перепланирование этот день не меняет">день закреплён</span>' : ''}
     ${total ? `<span class="gprog" title="Выполнено заданий"><span class="bar"><i style="width:${Math.round(done / total * 100)}%"></i></span><span class="gc">${done} из ${total}</span></span>` : ''}<span class="grow"></span>
-    <span class="row noprint" style="gap:6px">${can ? `<button class="small" data-wt="${w.worker_id}">+ Задание</button><button class="small secondary" data-wx="${w.worker_id}">+ Работа вне перечня</button>${w.pinned ? `<button class="small secondary" data-unpin="${w.worker_id}">Снять закрепление</button>` : ''}` : ''}
+    <span class="row noprint" style="gap:6px">${can ? `<button class="small" data-wt="${w.worker_id}">+ Задание</button><button class="small secondary" data-wx="${w.worker_id}">+ Работа вне перечня</button>${w.pinned ? `<button class="small secondary" data-unpin="${w.worker_id}">Снять закрепление</button>` : `<button class="small secondary" data-pin="${w.worker_id}" title="Перепланирование не изменит задания работника на этот день">Закрепить день</button>`}` : ''}
     ${d.can_enter && todo.length > 1 ? `<button class="small secondary" data-allplan="${w.worker_id}">Всё по плану (${todo.length})</button>` : ''}</span></div></td></tr>
     ${w.tasks.map(t => taskRow(t, w, d, reasons, can)).join('')}${w.extras.map(x => extraRow(x, w, d, reasons, can)).join('')}
     ${total ? '' : `<tr class="main"><td colspan="${cols}" class="muted">Заданий нет.</td></tr>`}</tbody>`;
@@ -148,7 +148,7 @@ async function openTaskForm(d, { task, workerId }, reload) {
   const values = edit ? { worker_id: wid, plan_date: d.date, project_id: task.project_id, product_id: task.product_id, order_line_id: task.order_line_id, operation_id: task.operation_id, qty: task.plan_qty } : { worker_id: wid, plan_date: d.date, qty: 1 };
   formModal({
     title: edit ? 'Изменить задание' : 'Добавить задание', fields, values, submit: 'Сохранить задание',
-    extra: '<p class="muted" style="font-size:14px">После сохранения день работника закрепляется: перепланирование его не меняет.</p>',
+    extra: '<p class="muted" style="font-size:14px">День работника сам не закрепляется. Чтобы перепланирование не меняло это задание, закрепите день в «Плане на день».</p>',
     onOpen: form => {
       const el = n => form.elements[n]; let tok = 0, first = true;
       const fillOps = async () => {
@@ -173,7 +173,7 @@ async function openTaskForm(d, { task, workerId }, reload) {
       const body = { plan_date: vals.plan_date, worker_id: vals.worker_id, order_line_id: vals.order_line_id, operation_id: vals.operation_id, qty: vals.qty };
       const r = edit ? await PATCH('/plan-day/items/' + task.item_id, body) : await POST('/plan-day/items', body);
       m.close(); toast(r.warnings.length ? 'Сохранено. ' + r.warnings.join('. ') : 'Задание сохранено', r.warnings.length > 0);
-      await SCREENS.day($('#view'), vals.plan_date);
+      await SCREENS.day($('#dt') || $('#view'), vals.plan_date);
     }
   });
 }
@@ -192,7 +192,7 @@ async function openExtraForm(d, { extra, workerId }, reload) {
   const values = edit ? { worker_id: wid, plan_date: d.date, kind: extra.order_line_id ? 'order' : 'other', order_line_id: extra.order_line_id, title: extra.title, hours: extra.hours } : { worker_id: wid, plan_date: d.date, kind: 'order', hours: 1 };
   formModal({
     title: edit ? 'Изменить работу вне перечня' : 'Работа вне перечня операций', fields, values, submit: 'Сохранить работу',
-    extra: '<p class="muted" style="font-size:14px">Учитывается в часах. День работника закрепляется: планировщик ему в этот день ничего не добавит.</p>',
+    extra: '<p class="muted" style="font-size:14px">Учитывается в часах. Планировщик эти часы не учитывает: чтобы он не добавил работнику заданий на этот день, закрепите день в «Плане на день».</p>',
     onOpen: form => {
       const sync = () => { const o = form.elements.order_line_id, on = form.elements.kind.value === 'order'; o.closest('label').hidden = !on; o.required = on; };
       form.elements.kind.onchange = sync; sync();
@@ -201,7 +201,7 @@ async function openExtraForm(d, { extra, workerId }, reload) {
       const order = vals.kind === 'order';
       if (edit) await PATCH('/extra-tasks/' + extra.id, { plan_date: vals.plan_date, worker_id: vals.worker_id, title: vals.title, hours: vals.hours, order_line_id: order ? vals.order_line_id : null, detach_order: !order });
       else await POST('/extra-tasks', { plan_date: vals.plan_date, worker_id: vals.worker_id, title: vals.title, hours: vals.hours, order_line_id: order ? vals.order_line_id : null });
-      m.close(); toast('Работа сохранена'); await SCREENS.day($('#view'), vals.plan_date);
+      m.close(); toast('Работа сохранена'); await SCREENS.day($('#dt') || $('#view'), vals.plan_date);
     }
   });
 }
@@ -215,7 +215,15 @@ async function openTempWorker(d, reload) {
     { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 'any', help: '1 — как у обычного работника' }];
   formModal({
     title: 'Новый работник', fields, values: { skill: 1, perf: 1 }, submit: 'Добавить работника',
-    extra: `${foreman ? `<p class="muted">Участок: <b>${esc(myC?.name || 'ваш')}</b></p>` : ''}<p class="muted" style="font-size:14px">Работник сохраняется в общем списке (Организация → Работники). Заказы ему автоматически не назначаются, пока вы не включите «Участвует в автопланировании» в настройках работника. Давать ему задания вручную можно сразу.</p>`,
+    extra: `${foreman ? `<p class="muted">Участок: <b>${esc(myC?.name || 'ваш')}</b></p>` : ''}<p class="muted" style="font-size:14px">Работник сохраняется в общем списке («Работники → Работники»). Заказы ему автоматически не назначаются, пока вы не включите «Участвует в автопланировании» в настройках работника. Давать ему задания вручную можно сразу.</p>`,
     onSubmit: async (vals, m) => { const w = await POST('/plan-day/workers', foreman ? { name: vals.name, skill: vals.skill, perf: vals.perf } : vals); m.close(); toast(`Работник «${w.name}» добавлен. Теперь ему можно добавить задание`); openTaskForm(d, { workerId: w.id }, reload); }
   });
 }
+
+/* ------------------------------ раздел «Выполнение»: План на день · Загрузка ------------------------------ */
+SCREENS.exec = (v, tab) => {
+  const worker = S.me.role === 'worker', tabs = {};
+  if (STAFF.includes(S.me.role) || worker) tabs.day = { label: worker ? 'Мои задания' : 'План на день', custom: box => SCREENS.day(box) };
+  if (READERS.includes(S.me.role)) tabs.load = { label: 'Загрузка', custom: box => SCREENS.load(box) };
+  return tabsScreen(v, { title: worker ? 'Мои задания' : 'Выполнение', tabs, tab: tab || S.execTab, key: 'execTab', self: SCREENS.exec, def: 'day' });
+};
