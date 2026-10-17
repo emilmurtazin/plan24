@@ -50,7 +50,11 @@ const findTask = (d, key) => { const [w, o, p] = key.split('-').map(Number); ret
 const findExtra = (d, id) => d.workers.flatMap(w => w.extras).find(x => x.id == id);
 
 /* исполнитель = цветной заголовок группы (с прогрессом и своими кнопками) + его строки */
+/* у каждого участка свои причины отклонений; общие (без участка) — для всех */
+const reasonsFor = (reasons, w) => reasons.filter(r => r.work_center_id == null || r.work_center_id === w.work_center_id);
+
 function workerRows(w, d, reasons, can) {
+  reasons = reasonsFor(reasons, w);
   const todo = w.tasks.filter(t => t.plan_qty > 0 && t.fact_qty == null && (t.need_left == null || t.plan_qty <= t.need_left));
   const total = w.tasks.length + w.extras.length, done = w.tasks.filter(t => t.state === 'done').length + w.extras.filter(x => x.fact_hours != null && x.fact_hours >= x.hours).length;
   const cols = can ? 5 : 4, ini = (w.worker || '?').trim().charAt(0).toUpperCase();

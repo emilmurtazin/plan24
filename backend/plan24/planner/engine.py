@@ -161,6 +161,10 @@ def plan(inp: PlanInput) -> PlanResult:
 
     done_map = allocate_fact(fact_by_pio, batches_by_pi, ops_by_product)
 
+    if cfg.cap_load and total_days:                  # сегодняшний факт уже занял часть дня — планируем только остаток
+        for wn, share in today_fact_load.items():
+            if wn in worker_by_name:
+                worker_by_name[wn].free[0] = max(0.0, worker_by_name[wn].free[0] - share)
     loaded_today = [n for n, share in today_fact_load.items() if share >= cfg.today_load_threshold]
     loaded_today_set = set(loaded_today)
 
@@ -226,7 +230,11 @@ def plan(inp: PlanInput) -> PlanResult:
                     break
                 one_op = op_days(op, w)
                 give = math.floor(w.free[day] / one_op + EPS)
-                if give < 1 and w.free[day] >= min(one_op * cfg.min_start_share, cfg.min_start_share) - EPS:
+                if cfg.cap_load:
+                    # не больше остатка дня; единица дольше целого дня не влезает ни в какой день — её начинают только со свободного дня
+                    if give < 1 and one_op > 1 + EPS and w.free[day] >= 1 - EPS:
+                        give = 1
+                elif give < 1 and w.free[day] >= min(one_op * cfg.min_start_share, cfg.min_start_share) - EPS:
                     give = 1
                 give = min(give, remaining)
                 if give <= 0:

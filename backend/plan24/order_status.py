@@ -12,11 +12,11 @@ from collections import Counter, defaultdict
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import distribution
-from .models import (Fact, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings, Product,
+from .models import (DayPlanSnapshot, Fact, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings, Product,
                      Project, Routing, User, WorkCenter, Worker)
 
 FALLBACK_DAYS = 5          # если срок уже прошёл или не задан: «за сколько смен хотим закончить»
@@ -182,3 +182,33 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
                   "bottleneck": (bott["op"].name if bott and own is None else None)},
         "operations": out_ops,
     }
+
+
+def idle_by_order(db: Session, user: User, today: date, order_ids: list, center: Optional[int] = None) -> dict:
+    """«Простой» заказа = недовыполнение плана за прошедшие дни: Σ max(0, план − факт) / Σ план по связкам день × операция ×
+    работник, в нормо-днях (штуки ÷ норма операции за день). Сегодняшний день не закончен — не входит. Нет плана за прошлое
+    (снимки ведутся с момента первого расчёта) — значения нет. center — для бригадира: только план его участка."""
+    if not order_ids:
+        return {}
+    q = select(DayPlanSnapshot).where(DayPlanSnapshot.tenant_id == user.tenant_id, DayPlanSnapshot.plan_date < today,
+                                      DayPlanSnapshot.order_line_id.in_(order_ids))
+    if center is not None:
+        q = q.where(DayPlanSnapshot.work_center_id == center)
+    snaps = list(db.scalars(q))
+    if not snaps:
+        return {}
+    norms = {o.id: o.norm_per_day for o in db.scalars(select(Operation).where(Operation.id.in_({x.operation_id for x in snaps})))}
+    facts = {(d, ol, op, w): v for d, ol, op, w, v in db.execute(
+        select(Fact.fact_date, Fact.order_line_id, Fact.operation_id, Fact.worker_id, func.coalesce(func.sum(Fact.qty), 0.0))
+        .where(Fact.tenant_id == user.tenant_id, Fact.deleted_at.is_(None), Fact.fact_date < today, Fact.order_line_id.in_(order_ids))
+        .group_by(Fact.fact_date, Fact.order_line_id, Fact.operation_id, Fact.worker_id))}
+    plan, short = defaultdict(float), defaultdict(float)
+    for x in snaps:
+        norm = norms.get(x.operation_id)
+        if not norm:
+            continue
+        done = facts.get((x.plan_date, x.order_line_id, x.operation_id, x.worker_id), 0.0)
+        plan[x.order_line_id] += x.qty / norm
+        short[x.order_line_id] += max(0.0, x.qty - done) / norm
+    return {i: {"plan_days": round(plan[i], 2), "short_days": round(short[i], 2), "pct": round(short[i] / plan[i] * 100, 1)}
+            for i in plan if plan[i] > 0}

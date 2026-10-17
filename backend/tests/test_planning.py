@@ -44,7 +44,7 @@ def test_db_plan_equals_reference_plan(env, name):
     s.commit(); s.close()
     env.state["today"] = today
     assert o.replan_all().status_code == 201
-    ref = plan_rows_script_format(run_ref(build_input(ds, today)))
+    ref = plan_rows_script_format(run_ref(build_input(ds, today, cap_load=True)))
     mine = db_rows(o.data["user"]["tenant"]["id"])
     assert ref, "эталонный план пуст — тест бессмысленен"
     assert len(mine) == len(ref)

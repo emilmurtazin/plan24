@@ -367,7 +367,7 @@ def extra_fact(xid: int, body: ExtraFact, user: User = Depends(require(*ENTER)),
     w = get_or_404(db, Worker, x.worker_id, user)
     facts_service.can_touch_worker(user, w)
     if body.reason_id is not None:
-        get_or_404(db, FactReason, body.reason_id, user)
+        facts_service.check_reason(db, user, body.reason_id, db.get(Worker, x.worker_id))
     if body.fact_hours < x.hours and body.reason_id is None and not body.note.strip():
         raise HTTPException(422, f"Сделано меньше запланированного ({body.fact_hours:g} из {x.hours:g} ч) — укажите причину или комментарий")
     old = x.fact_hours

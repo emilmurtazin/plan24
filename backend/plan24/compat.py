@@ -76,7 +76,7 @@ def _fmt_num(x: float):
     return int(x) if float(x).is_integer() else x
 
 
-def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), efficiency: float = 1.0) -> PlanInput:
+def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), efficiency: float = 1.0, cap_load: bool = False) -> PlanInput:
     """ds — словарь формата tools/emulate.js: orders, ops, workers, holidays, facts, settings."""
     s = ds.get("settings") or {}
 
@@ -153,7 +153,7 @@ def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), effici
         today_load_threshold=min(1.0, max(0.0, to_num(s.get("todayThreshold"), 0.6))),
         min_start_share=min(1.0, max(0.1, to_num(s.get("minStartShare"), 0.5))),
         priority_strictness=min(100.0, max(0.0, to_num(s.get("strictness"), 100))),
-        strictness_by_level=by_level,
+        strictness_by_level=by_level, cap_load=cap_load,
     )
     return PlanInput(order_lines=tuple(orders), products=products, workers=tuple(avail),
                      facts=tuple(facts), config=cfg, all_workers_perf=perf_all)

@@ -32,7 +32,42 @@ class NamePatch(BaseModel):
 
 
 make_crud(router, "/work-centers", WorkCenter, NameIn, NamePatch, "work_center")
-make_crud(router, "/fact-reasons", FactReason, NameIn, NamePatch, "fact_reason", read_roles=ALL)   # причины нужны и сборщику при вводе факта
+
+
+class ReasonIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    work_center_id: Optional[int] = None          # участок причины; пусто — общая причина (для всех участков)
+
+
+class ReasonPatch(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=160)
+    work_center_id: Optional[int] = None
+    version: Optional[int] = None
+
+
+def _reason_unique(db, user, name: str, center: Optional[int], skip_id: Optional[int] = None):
+    key = name.strip().casefold()                       # сравнение в Python: lower() в SQLite не знает кириллицы
+    for r in db.scalars(scoped(FactReason, user)):
+        if r.id != skip_id and r.work_center_id == center and r.name.strip().casefold() == key:
+            raise HTTPException(409, "У этого участка уже есть такая причина" if center else "Такая общая причина уже есть")
+
+
+def _reason_before_create(db, user, data):
+    data["name"] = data["name"].strip()
+    _reason_unique(db, user, data["name"], data.get("work_center_id"))
+
+
+def _reason_before_update(db, user, obj, data):
+    name = (data.get("name") or obj.name).strip()
+    center = data["work_center_id"] if "work_center_id" in data else obj.work_center_id
+    if "name" in data:
+        data["name"] = name
+    _reason_unique(db, user, name, center, obj.id)
+
+
+# причины нужны и сборщику при вводе факта; у каждого участка — свои (work_center_id), без участка — общие
+make_crud(router, "/fact-reasons", FactReason, ReasonIn, ReasonPatch, "fact_reason", read_roles=ALL, fk={"work_center_id": WorkCenter},
+          before_create=_reason_before_create, before_update=_reason_before_update)
 
 
 class ProjectIn(BaseModel):

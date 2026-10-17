@@ -167,7 +167,9 @@ class FactReason(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(160))
     version: Mapped[int] = mapped_column(Integer, default=1)
-    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    # у каждого участка свои причины; пусто — «общая» причина (видна всем участкам; так заведены причины по умолчанию)
+    work_center_id: Mapped[Optional[int]] = mapped_column(ForeignKey("work_centers.id"), index=True)
+    __table_args__ = (UniqueConstraint("tenant_id", "work_center_id", "name"),)
 
 
 # ---------------------------------------------------------------- модуль «Производство»

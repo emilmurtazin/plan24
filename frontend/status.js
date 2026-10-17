@@ -2,6 +2,9 @@
    до завершения, дата завершения, узкое место, проблемы и рекомендации. */
 'use strict';
 
+/* простой: те же пороги, что в «Загрузке» — до 5% норма, 5–30% внимание, больше 30% плохо */
+const idleCls = p => p == null ? 'muted' : p > 30 ? 'err' : p >= 5 ? 'warn-t' : 'ok-t';
+
 SCREENS.status = async (v, pick) => {
   S.nav++;
   const { rows } = await GET('/reports/status');
@@ -9,7 +12,7 @@ SCREENS.status = async (v, pick) => {
   let oid = pick || S.stOrder; if (!rows.some(r => r.order_line_id === oid)) oid = null;
   v.innerHTML = `<h1>Статус заказов</h1><h2>Все заказы</h2><div class="card flush scroll" id="all"></div><div id="od" class="od"></div>`;
   const drawAll = () => {
-    $('#all').innerHTML = `<table><tr><th>Заказ</th><th>Проект</th><th>Изделие</th><th class="num">Кол-во</th><th>Прогноз</th><th>Срок</th><th>Статус</th></tr>${rows.map(r => `<tr data-o="${r.order_line_id}" style="cursor:pointer" ${r.order_line_id === oid ? 'aria-selected="true"' : ''}><td><b>${esc(r.id)}</b></td><td>${esc(r.project)}</td><td>${esc(r.product)}</td><td class="num">${num(r.qty)}</td><td>${esc(r.forecast_text)}</td><td>${fmtDY(r.due)}</td><td>${stBadge(r.status)}</td></tr>`).join('')}</table>`;
+    $('#all').innerHTML = `<table><tr><th>Заказ</th><th>Проект</th><th>Изделие</th><th class="num">Кол-во</th><th class="num" title="Доля выполненного объёма заказа">Выполнено, %</th><th class="num" title="Недовыполнение плана за прошедшие дни: (план − факт) / план. Считается по дням, по которым есть план">Простой, % (план − факт)</th><th>Прогноз</th><th>Срок</th><th>Статус</th></tr>${rows.map(r => `<tr data-o="${r.order_line_id}" style="cursor:pointer" ${r.order_line_id === oid ? 'aria-selected="true"' : ''}><td><b>${esc(r.id)}</b></td><td>${esc(r.project)}</td><td>${esc(r.product)}</td><td class="num">${num(r.qty)}</td><td class="num">${num(r.progress)}%<div class="bar"><i style="width:${Math.min(100, r.progress)}%"></i></div></td><td class="num ${idleCls(r.idle_pct)}" title="${r.idle_pct == null ? 'За прошедшие дни плана ещё нет' : 'Недовыполнение плана за прошедшие дни'}">${r.idle_pct == null ? '—' : num(r.idle_pct) + '%'}</td><td>${esc(r.forecast_text)}</td><td>${fmtDY(r.due)}</td><td>${stBadge(r.status)}</td></tr>`).join('')}</table>`;
     $$('#all tr[data-o]').forEach(tr => tr.onclick = () => { oid = +tr.dataset.o; drawAll(); load(true); });
   };
   const load = async scroll => {

@@ -179,6 +179,8 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   if (byText('#view button', 'Печать')) throw new Error('кнопка «Печать» должна быть убрана');
   if (!($('#all').compareDocumentPosition($('#od')) & 4)) throw new Error('таблица «Все заказы» должна быть выше деталей заказа');
   if (!/Выберите заказ/.test($('#od').textContent)) throw new Error('нет подсказки выбрать заказ');
+  for (const h of ['Выполнено, %', 'Простой, % (план − факт)']) if (!$$('#all th').some(x => x.textContent === h)) throw new Error('в сводке заказов нет колонки «' + h + '»');
+  if (!$$('#all tr[data-o] td.num').some(td => /%$/.test(td.textContent))) throw new Error('в сводке не видно процентов');
   const firstRow = $('#all tr[data-o]'); const firstTitle = firstRow.querySelector('td b').textContent; click(firstRow);
   await until(() => $$('#od .stt tr[class]').length >= 2 || $$('#od .stt tr').length > 3, 'операции заказа');
   const opsN = $$('#od .stt tr:not(.det)').length - 1, title0 = $('#od h2').textContent;
@@ -192,11 +194,15 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   await until(() => $('#od h2') && $('#od h2').textContent.includes('Заказ ' + lastTitle), 'выбор заказа из общей таблицы'); step('выбор заказа из таблицы «Все заказы»: ' + $('#od h2').textContent);
   await goExec('Загрузка');
   await until(() => $$('.heat tr').length > 2, 'тепловая карта');
-  const cells = $$('.heat .hc'); if (!cells.length) throw new Error('нет ячеек загрузки');
-  if (cells.some(c => c.textContent && !/^\d+$/.test(c.textContent))) throw new Error('в ячейках должны быть проценты числом');
+  const cells = $$('.heat .lc:not(.hc-none)'); if (!cells.length) throw new Error('нет ячеек загрузки');
+  if (cells.some(c => !/^\d+(\/\d+)?$/.test(c.querySelector('.lt').textContent))) throw new Error('в ячейках должно быть «план» или «план/факт» в процентах');
+  if (cells.some(c => +c.querySelector('.lt').textContent.split('/')[0] > 100)) throw new Error('плановая загрузка работника не должна быть больше 100%');
+  if (!cells.every(c => c.querySelector('.lb'))) throw new Error('в клетке нет полосы плана');
+  for (const h of ['План', 'Факт', 'Отстав.']) if (!$$('.heat th.tt').some(x => x.textContent === h)) throw new Error('нет итоговой колонки «' + h + '»');
+  if (!/план \/ факт/.test($('#view').textContent)) throw new Error('нет пояснения «план / факт»');
   const secs = $$('.lsec h2').map(h => h.textContent); if (!secs.length) throw new Error('работники не разделены по участкам');
   if (byText('#view', 'Печать')) throw new Error('на загрузке нет печати');
-  step('загрузка: подвкладка «Выполнения»; участков ' + secs.length + ' (' + secs.join(', ') + '), ячеек ' + cells.length + ', классов цвета: ' + [...new Set(cells.map(c => c.className.replace('hc ', '')))].join(','));
+  step('загрузка: подвкладка «Выполнения»; участков ' + secs.length + ' (' + secs.join(', ') + '), ячеек ' + cells.length + ', классов цвета: ' + [...new Set(cells.map(c => c.className.replace('lc ', '')))].join(','));
 
   // --- данные ---
   click(byText('#drawer button', 'Проекты и Заказы'));
@@ -283,6 +289,17 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   await until(() => $('#sf'), 'настройки'); 
   setv($('#sf').elements.priority_strictness, '60'); $('#sf').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await until(() => /Настройки сохранены/.test($('#toast').textContent), 'сохранение настроек'); step('настройки сохранены');
+  // --- причины отклонений: у каждого участка свои ---
+  click(byText('#view nav.seg button', 'Причины отклонений')); await until(() => $('[data-sec]'), 'вкладка причин с выбором участка');
+  const secSel = $('[data-sec]'); if (secSel.options.length < 2) throw new Error('нет выбора участка у причин');
+  const firstSec = secSel.options[0].value, secName = secSel.options[0].textContent;
+  click($('[data-add]')); await until(() => $('.modal form') && $('.modal form').elements.work_center_id, 'форма причины');
+  const rf = $('.modal form'); if (String(rf.elements.work_center_id.value) !== String(firstSec)) throw new Error('новая причина должна предлагаться для выбранного участка');
+  setv(rf.elements.name, 'Нет заготовок (смоук)'); rf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => byText('#dt td', 'Нет заготовок (смоук)'), 'причина участка в списке');
+  secSel.value = 'common'; secSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => !byText('#dt td', 'Нет заготовок (смоук)') && $('[data-sec]').value === 'common', 'у общих причин нет причины участка');
+  step('причины отклонений: добавлена причина участка «' + secName + '», в общих списках её нет');
 
   // --- пользователи: создаём бригадира ---
   click(byText('#drawer button', 'Организация')); await until(() => $('#view nav.seg'), 'организация'); click(byText('#view nav.seg button', 'Пользователи'));

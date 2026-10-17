@@ -190,7 +190,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         today_load_threshold=ov.get("today_load_threshold", st.today_load_threshold),
         min_start_share=ov.get("min_start_share", st.min_start_share),
         priority_strictness=float(ov.get("priority_strictness", st.priority_strictness)),
-        strictness_by_level=by_level, freeze_days=freeze_days,
+        strictness_by_level=by_level, freeze_days=freeze_days, cap_load=True,
         fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start))
     inp = PlanInput(order_lines=tuple(porders), products=pproducts, workers=pworkers, facts=facts, config=cfg,
                     all_workers_perf={w.name: w.perf for w in workers_all}, fixed_workers=fixed_names,

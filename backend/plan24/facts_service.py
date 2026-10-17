@@ -86,7 +86,7 @@ def enter(db: Session, actor, *, fact_date: date, order_line_id: int, operation_
     if op.routing_id != ol.routing_id:
         _deny(422, "Операция не входит в маршрут этой позиции")
     if reason_id is not None:
-        get_or_404(db, FactReason, reason_id, actor)
+        check_reason(db, actor, reason_id, worker)
 
     if source == "web" and reason_id is None and not (note or "").strip():
         dev = deviation(db, actor, fact_date=fact_date, ol=ol, op=op, worker=worker, qty=qty)
@@ -139,7 +139,15 @@ def remove(db: Session, actor, fact: Fact):
     audit.log(db, actor, "fact", fact.id, "delete", {"qty": fact.qty})
 
 
+def check_reason(db: Session, actor, reason_id: int, worker: Worker) -> FactReason:
+    """Причина берётся из общих или из причин участка работника: у каждого участка свой список."""
+    r = get_or_404(db, FactReason, reason_id, actor)
+    if r.work_center_id is not None and r.work_center_id != worker.work_center_id:
+        _deny(422, "Эта причина относится к другому участку")
+    return r
+
+
 def set_reason(db: Session, actor, fact: Fact, reason_id: int):
-    get_or_404(db, FactReason, reason_id, actor)
+    check_reason(db, actor, reason_id, db.get(Worker, fact.worker_id))
     fact.reason_id = reason_id
     audit.log(db, actor, "fact", fact.id, "reason", {"reason_id": reason_id})

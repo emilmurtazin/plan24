@@ -135,8 +135,27 @@ const TABS = {
       fields: () => [{ name: 'holiday_date', label: 'Дата', type: 'date', required: true }, { name: 'name', label: 'Название' }], editFields: () => [{ name: 'name', label: 'Название' }]
     }
   },
-  reasons: { label: 'Причины отклонений', cfg: { title: 'Причины отклонений от плана', add: 'Добавить причину', path: '/fact-reasons', cols: () => [{ label: 'Причина', get: x => x.name }], fields: () => [nameField] } },
-};
+  /* Причины отклонений — у каждого участка свои; «общие» видны всем участкам */
+  reasons: { label: 'Причины отклонений', custom: async (box, reload) => {
+    const [centers, all] = await Promise.all([listAll('/work-centers'), listAll('/fact-reasons')]);
+    const COMMON = 'common';
+    let sel = S.reasonCenter; if (sel !== COMMON && !centers.some(c => String(c.id) === String(sel))) sel = centers.length ? centers[0].id : COMMON; S.reasonCenter = sel;
+    const mine = all.filter(r => sel === COMMON ? r.work_center_id == null : String(r.work_center_id) === String(sel));
+    const scopeName = sel === COMMON ? 'общие' : (centers.find(c => String(c.id) === String(sel)) || {}).name;
+    const centerOpts = [{ v: '', l: 'Общая (для всех участков)' }, ...opts(centers)];
+    const fields = [nameField, { name: 'work_center_id', label: 'Участок', type: 'select', options: centerOpts, num: true, help: 'Общие причины предлагаются работникам всех участков.' }];
+    box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Причины отклонений от плана</h2><button data-add>+ Добавить причину</button></div>
+      <div class="row" style="margin-bottom:10px"><label class="f" style="margin:0;min-width:240px">Участок<select data-sec>${centers.map(c => `<option value="${c.id}" ${String(c.id) === String(sel) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}<option value="${COMMON}" ${sel === COMMON ? 'selected' : ''}>Общие (для всех участков)</option></select></label></div>
+      <p class="hint">При вводе факта работнику участка предлагаются причины его участка и общие. Сейчас показаны: ${esc(scopeName || '')}.</p>
+      <div class="card flush scroll">${table([{ label: 'Причина', get: x => x.name }], mine, r => `<button class="small secondary" data-e="${r.id}">Изменить</button> <button class="small danger" data-d="${r.id}">Удалить</button>`)}</div>`;
+    $('[data-sec]', box).onchange = e => { S.reasonCenter = e.target.value === COMMON ? COMMON : +e.target.value; reload(); };
+    const open = row => formModal({ title: row ? 'Изменить причину' : 'Добавить причину', fields, values: row || { work_center_id: sel === COMMON ? '' : sel },
+      onSubmit: async (vals, m) => { const body = { name: vals.name, work_center_id: vals.work_center_id === '' || vals.work_center_id == null ? null : vals.work_center_id };
+        if (row) await PATCH('/fact-reasons/' + row.id, { ...body, version: row.version }); else await POST('/fact-reasons', body); m.close(); toast('Сохранено'); reload(); } });
+    $('[data-add]', box).onclick = () => open(null);
+    $$('[data-e]', box).forEach(b => b.onclick = () => open(all.find(r => r.id == b.dataset.e)));
+    $$('[data-d]', box).forEach(b => b.onclick = async () => { if (!await confirmBox('Удалить причину?')) return; try { await DEL('/fact-reasons/' + b.dataset.d); toast('Удалено'); reload(); } catch (e) { toast(errText(e), true); } });
+  } },};
 
 /* Группа вкладок: шапка + переключатель + контейнер. Вкладка — либо CRUD-таблица из TABS, либо свой экран (custom). */
 function tabsScreen(v, { title, tabs, tab, key, self, def }) {

@@ -196,3 +196,15 @@ table.heat th small{display:block;font-weight:400;opacity:.7}table.heat th.tday{
 .legend i.hc-ok{background:var(--green)}.legend i.hc-warn{background:var(--amber)}.legend i.hc-bad{background:var(--red)}.legend i.hc-plan{background:var(--line)}
 .legend.lg{margin:0 0 12px}
 @media print{.drawer,.scrim{display:none!important}}
+
+.warn-t{color:var(--amber);font-weight:600}.ok-t{color:var(--green)}
+
+/* загрузка: клетка «план / факт» с двумя полосами */
+.lc{display:flex;flex-direction:column;gap:2px;min-width:64px;padding:4px 6px 5px;border-radius:8px;font-variant-numeric:tabular-nums}
+.lc.hc-none{background:transparent;min-height:34px}
+.lc .lt{font-size:13px;line-height:1.1;text-align:center;white-space:nowrap}.lc .lt i{font-style:normal;opacity:.5;margin:0 2px}.lc .lt b{font-weight:700}
+.lc .lb{display:block;height:5px;border-radius:3px;background:rgba(127,127,127,.18);overflow:hidden}
+.lc .lb i{display:block;height:100%;border-radius:3px}
+.lc .bp{background:var(--blue);opacity:.55}.lc.hc-ok .bf{background:var(--green)}.lc.hc-warn .bf{background:var(--amber)}.lc.hc-bad .bf{background:var(--red)}
+table.heat td.tt,table.heat th.tt{text-align:center;white-space:nowrap;padding-left:10px}table.heat td.tt{font-weight:600}
+.lsum{max-width:640px;margin-bottom:12px}

@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -342,7 +342,10 @@ def _save(db, chat_id, actor, task: dict, qty: float, label: str, out: list):
     rows = [[("↩ Отменить", f"u:{f.id}")]]
     if task["plan_qty"] and qty < task["plan_qty"]:
         text += f"\nМеньше плана ({fnum(task['plan_qty'])}). Что помешало?"
-        reasons = db.scalars(select(FactReason).where(FactReason.tenant_id == actor.tenant_id).order_by(FactReason.id).limit(6)).all()
+        wc = db.get(Worker, f.worker_id).work_center_id
+        reasons = db.scalars(select(FactReason).where(FactReason.tenant_id == actor.tenant_id,
+                                                      or_(FactReason.work_center_id.is_(None), FactReason.work_center_id == wc))
+                             .order_by(FactReason.id).limit(6)).all()
         for i in range(0, len(reasons), 2):
             rows.append([(r.name[:28], f"r:{f.id}:{r.id}") for r in reasons[i:i + 2]])
         rows.append([("Без причины", f"r:{f.id}:0")])
