@@ -22,7 +22,7 @@ const table = (cols, rows, actions) => `<table><thead><tr>${cols.map(c => `<th c
 /* Универсальная вкладка «список + добавить/изменить/удалить» */
 async function crudTab(box, cfg, reload) {
   const refs = await loadRefs(), rows = await listAll(cfg.path);
-  const acts = r => `${cfg.extra ? cfg.extra(r) : ''}<button class="small secondary" data-e="${r.id}">Изменить</button> <button class="small danger" data-d="${r.id}">Удалить</button>`;
+  const acts = r => `${cfg.extra ? cfg.extra(r) : ''}<button class="small secondary" data-e="${r.id}">Изменить</button>${cfg.noDelete && cfg.noDelete() ? '' : ` <button class="small danger" data-d="${r.id}">Удалить</button>`}`;
   box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(cfg.title)}</h2>${cfg.headerExtra || ''}${cfg.noAdd ? '' : `<button data-add>+ ${esc(cfg.add)}</button>`}</div>${cfg.hint ? `<p class="hint">${esc(cfg.hint(refs, rows))}</p>` : ''}<div class="card flush scroll">${table(cfg.cols(refs), rows, acts)}</div>`;
   const open = (row) => {
     const fields = (row && cfg.editFields ? cfg.editFields(refs) : cfg.fields(refs));
@@ -107,16 +107,17 @@ const TABS = {
   workers: {
     label: 'Работники', cfg: {
       title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available', auto_plan: true },
-      hint: () => 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
+      noDelete: () => S.me.role === 'foreman',
+      hint: () => (S.me.role === 'foreman' ? 'Вы видите и ведёте работников своего участка: новые работники добавляются на ваш участок, перевести человека на другой участок или удалить может руководитель проекта. ' : '') + 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
       cols: r => [{ label: 'Имя', html: x => esc(x.name) + (x.is_temporary ? ' <span class="badge b-noop">временный</span>' : '') }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
       { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Планирование', html: x => x.auto_plan ? 'автоматически' : '<span class="warn">только вручную</span>' }, { label: 'Статус', html: x => x.status === 'available' ? '<span class="badge b-done">Доступен</span>' : '<span class="badge b-none">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
-      fields: r => [nameField, { name: 'work_center_id', label: 'Участок', type: 'select', options: opts(r.centers), num: true },
+      fields: r => [nameField, ...(S.me.role === 'foreman' ? [] : [{ name: 'work_center_id', label: 'Участок', type: 'select', options: opts(r.centers), num: true }]),
         { name: 'perf', label: 'Производительность', type: 'number', required: true, min: 0.1, max: 10, step: 0.05 },
         { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
         { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] },
         { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Выполнение → План на день». Так добавляются временные работники.' }],
-      extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
+      extra: r => `${S.me.role === 'foreman' ? '' : `<button class="small" data-ac="${r.id}">Допуски</button> `}<button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }
   },
@@ -211,7 +212,7 @@ const ORG_TABS = {
   audit: { label: 'Журнал', custom: box => SCREENS.audit(box) },
 };
 /* Работники: участки (+ настройки планировщика), работники, причины отклонений */
-SCREENS.people = (v, tab) => tabsScreen(v, { title: 'Работники', tabs: { centers: TABS.centers, workers: TABS.workers, reasons: TABS.reasons }, tab, key: 'peopleTab', self: SCREENS.people, def: 'workers' });
+SCREENS.people = (v, tab) => tabsScreen(v, { title: S.me.role === 'foreman' ? 'Работники участка' : 'Работники', tabs: S.me.role === 'foreman' ? { workers: TABS.workers } : { centers: TABS.centers, workers: TABS.workers, reasons: TABS.reasons }, tab, key: 'peopleTab', self: SCREENS.people, def: 'workers' });
 
 SCREENS.org = (v, tab) => {
   const tabs = Object.fromEntries(Object.entries(ORG_TABS).filter(([, t]) => !t.owner || S.me.role === 'owner'));

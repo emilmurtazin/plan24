@@ -25,15 +25,24 @@ SCREENS.day = async (v, day) => {
   const [d, reasons] = await Promise.all([GET('/reports/day' + (day ? '?day=' + day : '')), reasonsList()]);
   const worker = S.me.role === 'worker', can = d.can_edit;
   let h = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${worker ? 'Мои задания' : 'План на день'} <span class="muted" style="font-weight:500">${fmtD(d.date)} ${wd(d.date)}</span></h2>
-    <span class="row noprint">${can ? '<button id="addT">+ Задание</button><button class="secondary" id="addX">+ Работа вне перечня</button><button class="secondary" id="addW">+ Работник</button>' : ''}</span></div>`;
+    <span class="row noprint">${can ? '<button id="addT">+ Задание</button><button class="secondary" id="addX">+ Работа вне перечня</button><button class="secondary" id="addW">+ Работник</button>' : ''}${d.date < d.today && d.can_enter && S.me.role !== 'worker' ? '<button id="addF">+ Факт вне плана</button>' : ''}</span></div>`;
   if (!d.plan_id) h += `<div class="banner info">План ещё не построен.</div>`;
-  if (d.days.length) h += `<div class="days noprint">${d.days.map(x => `<button data-d="${x}" aria-pressed="${x === d.date}"><b>${fmtD(x)}</b><small>${wd(x)}</small></button>`).join('')}</div>`;
+  const past = d.date < d.today, off = !d.is_workday;
+  const dayChips = [...new Set([...d.days, d.date])].sort();
+  h += `<div class="days noprint">${dayChips.map(x => `<button data-d="${x}" aria-pressed="${x === d.date}"><b>${fmtD(x)}</b><small>${wd(x)}</small></button>`).join('')}
+    <label class="dpick" title="Открыть любую дату — прошедшую, чтобы внести факт, или будущую, в том числе выходной">Другая дата <input type="date" id="goDate" value="${d.date}"></label></div>`;
+  if (d.missing && d.missing.length) h += `<div class="banner warn noprint" id="miss"><span><b>Факт не внесён за прошедшие дни:</b> ${d.missing.slice(-10).map(m => `<button class="small secondary" data-md="${m.date}" title="Заданий без факта: ${m.count}, работников: ${m.workers}">${fmtD(m.date)} ${wd(m.date)} · ${m.count}</button>`).join(' ')}${d.missing.length > 10 ? ` и ещё ${d.missing.length - 10}` : ''}</span></div>`;
+  if (off && !past) h += `<div class="banner info noprint"><span><b>Нерабочий день.</b> Планировщик сам в такие дни никого не загружает. Задание, добавленное сюда вручную, закрепляется автоматически — перепланирование его не уберёт.</span></div>`;
+  if (past && d.can_enter) h += `<div class="banner info noprint"><span><b>Прошедший день${off ? ' (нерабочий)' : ''}.</b> Показано, что на него планировалось. Внесите факт по заданиям; если работа была вне плана — кнопка «+ Факт вне плана».</span></div>`;
   if (can && d.workers.length) h += `<p class="hint noprint">Правки день работника не закрепляют. Чтобы перепланирование не меняло задания работника на этот день, закрепите день кнопкой «Закрепить день» в строке работника.</p>`;
-  if (!d.workers.length) h += `<div class="card empty">На этот день заданий нет.${can ? ' Добавьте задание кнопкой «+ Задание».' : ''}</div>`;
+  if (!d.workers.length) h += `<div class="card empty">${past ? 'На этот день ничего не планировалось и факта нет.' : 'На этот день заданий нет.'}${can ? ' Добавьте задание кнопкой «+ Задание».' : ''}${past && d.can_enter ? ' Если работа была — кнопка «+ Факт вне плана».' : ''}</div>`;
   else h += `<div class="card flush"><div class="scroll"><table class="dt"><thead><tr><th>Задание</th><th class="num">План</th><th>${d.can_enter ? 'Сделано' : 'Факт'}</th><th>Статус</th>${can ? '<th class="noprint">Задание</th>' : ''}</tr></thead>${d.workers.map(w => workerRows(w, d, reasons, can)).join('')}</table></div></div>`;
   v.innerHTML = h;
   const reload = () => SCREENS.day(v, d.date);
-  $$('.days button', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.d));
+  $$('.days button[data-d]', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.d));
+  $$('[data-md]', v).forEach(b => b.onclick = () => SCREENS.day(v, b.dataset.md));
+  if ($('#goDate')) $('#goDate').onchange = e => { if (e.target.value) SCREENS.day(v, e.target.value); };
+  if ($('#addF')) $('#addF').onclick = () => openTaskForm(d, { factMode: true }, reload);
   if ($('#addT')) { $('#addT').onclick = () => openTaskForm(d, {}, reload); $('#addX').onclick = () => openExtraForm(d, {}, reload); $('#addW').onclick = () => openTempWorker(d, reload); }
   $$('[data-wt]', v).forEach(b => b.onclick = () => openTaskForm(d, { workerId: +b.dataset.wt }, reload));
   $$('[data-wx]', v).forEach(b => b.onclick = () => openExtraForm(d, { workerId: +b.dataset.wx }, reload));
@@ -46,6 +55,8 @@ SCREENS.day = async (v, day) => {
   $$('.fact', v).forEach(box => wireFact(box, d, reload));
   $$('[data-allplan]', v).forEach(b => b.onclick = () => allByPlan(+b.dataset.allplan, d, reload));
 };
+/* Быстрое переключение даты или раздела: ответ устаревшего запроса отбрасывается молча (его место уже заняла новая отрисовка) */
+{ const render = SCREENS.day; SCREENS.day = async (v, day) => { try { await render(v, day); } catch (e) { if (!(e instanceof Stale)) throw e; } }; }
 const findTask = (d, key) => { const [w, o, p] = key.split('-').map(Number); return d.workers.find(x => x.worker_id === w).tasks.find(t => t.order_line_id === o && t.operation_id === p); };
 const findExtra = (d, id) => d.workers.flatMap(w => w.extras).find(x => x.id == id);
 
@@ -137,22 +148,25 @@ const orderLabel = (o, P, PR) => `${o.ext_id || '#' + o.id} · ${PR[o.product_id
 const dayOptions = d => d.days.filter(x => x >= d.today).map(x => ({ v: x, l: `${fmtD(x)} ${wd(x)}` }));
 const workersFor = (ws) => ws.filter(w => S.me.role !== 'foreman' || w.work_center_id === S.me.work_center_id).map(w => ({ v: w.id, l: w.name + (w.is_temporary ? ' (временный)' : '') }));
 
-async function openTaskForm(d, { task, workerId }, reload) {
+async function openTaskForm(d, { task, workerId, factMode }, reload) {
   const [orders, projects, products, workers] = await Promise.all([listAll('/order-lines'), listAll('/projects'), listAll('/products'), listAll('/workers')]);
   const P = byId(projects), PR = byId(products), W = byId(workers), live = orders.filter(o => o.status === 'planned');
   const edit = !!task, wid = edit ? d.workers.find(w => w.tasks.includes(task)).worker_id : workerId;
   const fields = [
     { name: 'worker_id', label: 'Работник', type: 'select', required: true, num: true, options: workersFor(workers) },
-    { name: 'plan_date', label: 'День', type: 'select', required: true, options: dayOptions(d) },
+    factMode ? { name: 'plan_date', label: 'День', type: 'date', required: true, max: d.today, help: 'Прошедший день, за который вносите факт' }
+      : { name: 'plan_date', label: 'День', type: 'date', required: true, min: d.today, help: 'Можно выбрать любой день, в том числе выходной или праздник — работа в нерабочий день закрепляется автоматически' },
     { name: 'project_id', label: 'Проект', type: 'select', num: true, options: opts(projects), blank: 'Все проекты' },
     { name: 'product_id', label: 'Изделие', type: 'select', num: true, options: opts(products), blank: 'Все изделия' },
     { name: 'order_line_id', label: 'Заказ', type: 'select', required: true, num: true, options: [], help: 'Проект и изделие сужают список заказов' },
     { name: 'operation_id', label: 'Операция', type: 'select', required: true, num: true, options: [], help: 'Только операции, назначенные участку работника' },
-    { name: 'qty', label: 'Количество', type: 'number', required: true, min: 1, step: 1 }];
+    { name: 'qty', label: factMode ? 'Сделано' : 'Количество', type: 'number', required: true, min: factMode ? 0 : 1, step: 1 },
+    ...(factMode ? [{ name: 'note', label: 'Комментарий (необязательно)' }] : [])];
   const values = edit ? { worker_id: wid, plan_date: d.date, project_id: task.project_id, product_id: task.product_id, order_line_id: task.order_line_id, operation_id: task.operation_id, qty: task.plan_qty } : { worker_id: wid, plan_date: d.date, qty: 1 };
   formModal({
-    title: edit ? 'Изменить задание' : 'Добавить задание', fields, values, submit: 'Сохранить задание',
-    extra: '<p class="muted" style="font-size:14px">День работника сам не закрепляется. Чтобы перепланирование не меняло это задание, закрепите день в «Плане на день».</p>',
+    title: factMode ? 'Факт вне плана' : edit ? 'Изменить задание' : 'Добавить задание', fields, values, submit: factMode ? 'Внести факт' : 'Сохранить задание',
+    extra: factMode ? '<p class="muted" style="font-size:14px">Для работы, которой не было в плане этого дня (в том числе в выходной). Если эта операция по этому работнику за день уже внесена, значение заменится.</p>'
+      : '<p class="muted" style="font-size:14px">В рабочий день работник сам не закрепляется: чтобы перепланирование не меняло это задание, закрепите день в «Плане на день». В выходной и праздничный день закрепление происходит автоматически.</p>',
     onOpen: form => {
       const el = n => form.elements[n]; let tok = 0, first = true;
       const fillOps = async () => {
@@ -174,9 +188,13 @@ async function openTaskForm(d, { task, workerId }, reload) {
       fillOrders();
     },
     onSubmit: async (vals, m) => {
+      if (factMode) {
+        await POST('/facts', { fact_date: vals.plan_date, worker_id: vals.worker_id, order_line_id: vals.order_line_id, operation_id: vals.operation_id, qty: vals.qty, note: vals.note || '' });
+        m.close(); toast('Факт внесён'); await SCREENS.day($('#dt') || $('#view'), vals.plan_date); return;
+      }
       const body = { plan_date: vals.plan_date, worker_id: vals.worker_id, order_line_id: vals.order_line_id, operation_id: vals.operation_id, qty: vals.qty };
       const r = edit ? await PATCH('/plan-day/items/' + task.item_id, body) : await POST('/plan-day/items', body);
-      m.close(); toast(r.warnings.length ? 'Сохранено. ' + r.warnings.join('. ') : 'Задание сохранено', r.warnings.length > 0);
+      m.close(); toast((r.warnings.length ? 'Сохранено. ' + r.warnings.join('. ') : 'Задание сохранено') + (r.auto_pinned ? '. Нерабочий день: день работника закреплён, перепланирование задание не уберёт' : ''), r.warnings.length > 0);
       await SCREENS.day($('#dt') || $('#view'), vals.plan_date);
     }
   });
@@ -188,7 +206,7 @@ async function openExtraForm(d, { extra, workerId }, reload) {
   const edit = !!extra, wid = edit ? d.workers.find(w => w.extras.includes(extra)).worker_id : workerId;
   const fields = [
     { name: 'worker_id', label: 'Работник', type: 'select', required: true, num: true, options: workersFor(workers) },
-    { name: 'plan_date', label: 'День', type: 'select', required: true, options: dayOptions(d) },
+    { name: 'plan_date', label: 'День', type: 'date', required: true, min: d.today, help: 'Любой день, в том числе выходной' },
     { name: 'kind', label: 'Тип работы', type: 'select', required: true, options: [{ v: 'order', l: 'Относится к заказу, но нет в перечне операций' }, { v: 'other', l: 'Не относится к заказу (уборка, наладка и т. п.)' }] },
     { name: 'order_line_id', label: 'Заказ', type: 'select', num: true, options: live.map(o => ({ v: o.id, l: orderLabel(o, P, PR) })), required: true },
     { name: 'title', label: 'Что сделать', required: true },
@@ -227,7 +245,7 @@ async function openTempWorker(d, reload) {
 /* ------------------------------ раздел «Выполнение»: План на день · Загрузка ------------------------------ */
 SCREENS.exec = (v, tab) => {
   const worker = S.me.role === 'worker', tabs = {};
-  if (STAFF.includes(S.me.role) || worker) tabs.day = { label: worker ? 'Мои задания' : 'План на день', custom: box => SCREENS.day(box) };
+  if (STAFF.includes(S.me.role) || worker) tabs.day = { label: worker ? 'Мои задания' : 'План на день', custom: box => { const dd = S.dayOpen; S.dayOpen = null; return SCREENS.day(box, dd || undefined); } };
   if (READERS.includes(S.me.role)) tabs.load = { label: 'Загрузка', custom: box => SCREENS.load(box) };
   return tabsScreen(v, { title: worker ? 'Мои задания' : 'Выполнение', tabs, tab: tab || S.execTab, key: 'execTab', self: SCREENS.exec, def: 'day' });
 };

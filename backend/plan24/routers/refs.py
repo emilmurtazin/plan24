@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .. import audit, distribution
 from ..db import DB
@@ -113,8 +113,43 @@ def _worker_level_update(db, user, obj, data):
     check_level(db, user, data.get("skill"), "Квалификация работника")
 
 
+def _own_center(user):
+    """Бригадир (руководитель участка) работает только с работниками своего участка; без участка — ни с кем."""
+    if user.work_center_id is None:
+        raise HTTPException(403, "Вам не назначен участок — обратитесь к администратору")
+    return user.work_center_id
+
+
+def _worker_scope(user, q):
+    return q.where(Worker.work_center_id == _own_center(user)) if user.role == "foreman" else q
+
+
+def _worker_check(user, w):
+    if user.role == "foreman" and w.work_center_id != _own_center(user):
+        raise HTTPException(404, "Не найдено")               # чужой участок для бригадира — как будто записи нет
+
+
+def _worker_create(db, user, data):
+    _worker_level_create(db, user, data)
+    if user.role == "foreman":
+        center = _own_center(user)
+        if data.get("work_center_id") not in (None, center):
+            raise HTTPException(403, "Бригадир добавляет работников только на свой участок")
+        data["work_center_id"] = center                        # новый работник сразу на участке бригадира
+    return data
+
+
+def _worker_update(db, user, obj, data):
+    _worker_level_update(db, user, obj, data)
+    if user.role == "foreman" and "work_center_id" in data and data["work_center_id"] != obj.work_center_id:
+        raise HTTPException(403, "Перевести работника на другой участок может руководитель проекта или администратор")
+    return data
+
+
+# правка работников — руководители и бригадир (только свой участок); удаление — только руководители
 make_crud(router, "/workers", Worker, WorkerIn, WorkerPatch, "worker", fk={"work_center_id": WorkCenter},
-          read_roles=READERS, before_create=_worker_level_create, before_update=_worker_level_update)
+          read_roles=READERS, write_roles=STAFF, delete_roles=MANAGERS, row_scope=_worker_scope, row_check=_worker_check,
+          before_create=_worker_create, before_update=_worker_update)
 
 
 class AbsenceIn(BaseModel):
@@ -137,7 +172,33 @@ class AbsencePatch(BaseModel):
     version: Optional[int] = None
 
 
-make_crud(router, "/absences", WorkerAbsence, AbsenceIn, AbsencePatch, "absence", fk={"worker_id": Worker})
+def _absence_scope(user, q):
+    if user.role != "foreman":
+        return q
+    return q.where(WorkerAbsence.worker_id.in_(select(Worker.id).where(Worker.tenant_id == user.tenant_id,
+                                                                       Worker.work_center_id == _own_center(user))))
+
+
+def _absence_guard(db, user, worker_id):
+    if user.role == "foreman":
+        w = db.get(Worker, worker_id)
+        if w is None or w.tenant_id != user.tenant_id or w.work_center_id != _own_center(user):
+            raise HTTPException(404, "Не найдено")
+
+
+def _absence_check(user, a):
+    if user.role == "foreman":
+        _absence_guard(object_session(a), user, a.worker_id)
+
+
+def _absence_create(db, user, data):
+    _absence_guard(db, user, data["worker_id"])
+    return data
+
+
+# отсутствия: руководители — любые, бригадир — только работников своего участка
+make_crud(router, "/absences", WorkerAbsence, AbsenceIn, AbsencePatch, "absence", fk={"worker_id": Worker},
+          write_roles=STAFF, row_scope=_absence_scope, row_check=_absence_check, before_create=_absence_create)
 
 
 class HolidayIn(BaseModel):

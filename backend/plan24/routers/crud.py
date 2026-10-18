@@ -22,8 +22,18 @@ def make_crud(router: APIRouter, path: str, Model, Create, Patch, entity: str, *
               fk: dict | None = None, read_roles=READERS, write_roles=MANAGERS,
               before_create: Optional[Callable] = None, before_update: Optional[Callable] = None,
               to_out: Callable = row, order_by=None, before_delete: Optional[Callable] = None,
-              after_create: Optional[Callable] = None):
+              after_create: Optional[Callable] = None, delete_roles=None,
+              row_scope: Optional[Callable] = None, row_check: Optional[Callable] = None):
+    """row_scope(user, query) → query — какие записи видит роль (например, бригадир — только свой участок);
+    row_check(user, obj) — проверка доступа к одной записи (поднимает 404/403). delete_roles — если удаление уже, чем правка."""
     fk = fk or {}
+    delete_roles = delete_roles or write_roles
+
+    def one(db, user, oid):
+        obj = get_or_404(db, Model, oid, user)
+        if row_check:
+            row_check(user, obj)
+        return obj
 
     def check_fk(db, user, data):
         for field, model in fk.items():
@@ -32,7 +42,10 @@ def make_crud(router: APIRouter, path: str, Model, Create, Patch, entity: str, *
 
     @router.get(path)
     def list_(limit: int = 200, cursor: int = 0, user: User = Depends(require(*read_roles)), db: Session = DB):
-        q = scoped(Model, user).where(Model.id > cursor).order_by(order_by or Model.id).limit(min(max(limit, 1), 1000) + 1)
+        q = scoped(Model, user).where(Model.id > cursor)
+        if row_scope:
+            q = row_scope(user, q)
+        q = q.order_by(order_by or Model.id).limit(min(max(limit, 1), 1000) + 1)
         rows = list(db.scalars(q))
         lim = min(max(limit, 1), 1000)
         more = len(rows) > lim
@@ -41,7 +54,7 @@ def make_crud(router: APIRouter, path: str, Model, Create, Patch, entity: str, *
 
     @router.get(path + "/{oid}")
     def get_(oid: int, user: User = Depends(require(*read_roles)), db: Session = DB):
-        return to_out(get_or_404(db, Model, oid, user))
+        return to_out(one(db, user, oid))
 
     @router.post(path, status_code=201)
     def create_(body: Create, user: User = Depends(require(*write_roles)), db: Session = DB):
@@ -62,7 +75,7 @@ def make_crud(router: APIRouter, path: str, Model, Create, Patch, entity: str, *
 
     @router.patch(path + "/{oid}")
     def patch_(oid: int, body: Patch, user: User = Depends(require(*write_roles)), db: Session = DB):
-        obj = get_or_404(db, Model, oid, user)
+        obj = one(db, user, oid)
         data = body.model_dump(exclude_unset=True)
         ver = data.pop("version", None)
         if ver is not None and ver != obj.version:
@@ -86,8 +99,8 @@ def make_crud(router: APIRouter, path: str, Model, Create, Patch, entity: str, *
         return to_out(obj)
 
     @router.delete(path + "/{oid}", status_code=204)
-    def delete_(oid: int, user: User = Depends(require(*write_roles)), db: Session = DB):
-        obj = get_or_404(db, Model, oid, user)
+    def delete_(oid: int, user: User = Depends(require(*delete_roles)), db: Session = DB):
+        obj = one(db, user, oid)
         if before_delete:
             before_delete(db, user, obj)
         if hasattr(obj, "deleted_at"):

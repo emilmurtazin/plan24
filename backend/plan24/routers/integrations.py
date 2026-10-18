@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit, config
 from ..db import DB
-from ..deps import MANAGERS, get_or_404, require, scoped
+from ..deps import MANAGERS, STAFF, get_or_404, require, scoped
 from ..models import TelegramCode, TelegramLink, User, Worker, utcnow
 from ..telegram import bot, client
 
@@ -48,11 +48,20 @@ def _identity_name(db, link: TelegramLink) -> tuple:
     return "user", u.name if u else "?"
 
 
+def _foreman_owns(db: Session, user: User, worker_id) -> bool:
+    if worker_id is None or user.work_center_id is None:
+        return False
+    w = db.get(Worker, worker_id)
+    return w is not None and w.tenant_id == user.tenant_id and w.work_center_id == user.work_center_id
+
+
 @router.get("/telegram/status")
-def status(user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def status(user: User = Depends(require(*STAFF)), db: Session = DB):
     cfg = config.telegram_settings()
     links = []
     for l in db.scalars(scoped(TelegramLink, user).order_by(TelegramLink.id)):
+        if user.role == "foreman" and not _foreman_owns(db, user, l.worker_id):      # бригадир видит привязки своих работников
+            continue
         kind, name = _identity_name(db, l)
         links.append({"id": l.id, "kind": kind, "worker_id": l.worker_id, "user_id": l.user_id, "name": name,
                       "linked_at": l.linked_at.isoformat()})
@@ -60,8 +69,10 @@ def status(user: User = Depends(require(*MANAGERS)), db: Session = DB):
 
 
 @router.post("/telegram/codes", status_code=201)
-def issue_code(body: CodeIn, user: User = Depends(require(*MANAGERS)), db: Session = DB):
-    """Руководитель выдаёт одноразовый код исполнителю или бригадиру; человек отправляет его боту."""
+def issue_code(body: CodeIn, user: User = Depends(require(*STAFF)), db: Session = DB):
+    """Руководитель выдаёт одноразовый код исполнителю или бригадиру; бригадир — только исполнителям своего участка."""
+    if user.role == "foreman" and not (body.worker_id is not None and _foreman_owns(db, user, body.worker_id)):
+        raise HTTPException(403, "Бригадир выдаёт коды только работникам своего участка")
     cfg = config.telegram_settings()
     if not cfg["enabled"]:
         raise HTTPException(409, "Telegram-бот не настроен администратором сервиса")
@@ -89,7 +100,9 @@ def issue_code(body: CodeIn, user: User = Depends(require(*MANAGERS)), db: Sessi
 
 
 @router.delete("/telegram/links/{lid}", status_code=204)
-def unlink(lid: int, user: User = Depends(require(*MANAGERS)), db: Session = DB):
+def unlink(lid: int, user: User = Depends(require(*STAFF)), db: Session = DB):
     l = get_or_404(db, TelegramLink, lid, user)
+    if user.role == "foreman" and not _foreman_owns(db, user, l.worker_id):
+        raise HTTPException(404, "Не найдено")
     audit.log(db, user, "telegram", lid, "unlinked")
     db.delete(l)

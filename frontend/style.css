@@ -208,3 +208,7 @@ table.heat th small{display:block;font-weight:400;opacity:.7}table.heat th.tday{
 .lc .bp{background:var(--blue);opacity:.55}.lc.hc-ok .bf{background:var(--green)}.lc.hc-warn .bf{background:var(--amber)}.lc.hc-bad .bf{background:var(--red)}
 table.heat td.tt,table.heat th.tt{text-align:center;white-space:nowrap;padding-left:10px}table.heat td.tt{font-weight:600}
 .lsum{max-width:640px;margin-bottom:12px}
+
+.days .dpick{display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--muted)}
+.days .dpick input{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+#miss button.small{margin:2px 2px 2px 0}

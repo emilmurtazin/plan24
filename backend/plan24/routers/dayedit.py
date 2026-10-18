@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .. import audit, facts_service, snapshots
+from .. import audit, facts_service, planning, snapshots
 from ..db import DB
 from ..deps import STAFF, get_or_404, get_today, require, scoped
 from ..models import (DayPin, ExtraTask, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem,
@@ -54,6 +54,15 @@ def pin_day(db: Session, user: User, plan: Plan, worker_id: int, d: date) -> Non
 def day_pinned(db: Session, user: User, worker_id: int, d: date) -> bool:
     return db.scalar(select(DayPin.worker_id).where(DayPin.tenant_id == user.tenant_id, DayPin.worker_id == worker_id,
                                                     DayPin.plan_date == d)) is not None
+
+
+def _offday_pin(db: Session, user: User, plan, worker_id: int, d: date) -> bool:
+    """Работа в нерабочий день (выходной, праздник): планировщик в такие дни сам ничего не ставит, поэтому добавленное вручную
+    нужно закрепить, иначе перепланирование его бы убрало. Такой день работника закрепляется сразу. → True, если закрепили."""
+    if planning.is_work_day(db, user.tenant_id, d):
+        return False
+    pin_day(db, user, plan, worker_id, d)
+    return True
 
 
 def _check_task(db: Session, user: User, w: Worker, ol: OrderLine, op: Operation) -> list:
@@ -141,10 +150,11 @@ def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = 
     warns = _check_task(db, user, w, ol, op)
     it = _upsert(db, user, plan, body.plan_date, ol.id, op.id, w.id, body.qty)
     db.flush()
+    auto_pinned = _offday_pin(db, user, plan, w.id, body.plan_date)
     audit.log(db, user, "plan_item", it.id, "manual_add", {"date": body.plan_date, "worker_id": w.id, "order_line_id": ol.id,
                                                           "operation_id": op.id, "qty": body.qty})
     snapshots.sync(db, user.tenant_id, plan, today)
-    return {"item": _item_out(it), "warnings": warns + _over_need(db, user, plan, ol, op)}
+    return {"item": _item_out(it), "warnings": warns + _over_need(db, user, plan, ol, op), "auto_pinned": auto_pinned}
 
 
 @router.patch("/plan-day/items/{iid}")
@@ -174,10 +184,11 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
         db.flush()
         res = _upsert(db, user, plan, d, olid, opid, wid, qty)
     db.flush()
+    auto_pinned = _offday_pin(db, user, plan, wid, d)
     audit.log(db, user, "plan_item", res.id, "manual_edit", {"from": [x.isoformat() if isinstance(x, date) else x for x in old],
                                                             "to": [d.isoformat(), wid, olid, opid, qty]})
     snapshots.sync(db, user.tenant_id, plan, today)
-    return {"item": _item_out(res), "warnings": warns + _over_need(db, user, plan, ol, op)}
+    return {"item": _item_out(res), "warnings": warns + _over_need(db, user, plan, ol, op), "auto_pinned": auto_pinned}
 
 
 @router.delete("/plan-day/items/{iid}", status_code=204)

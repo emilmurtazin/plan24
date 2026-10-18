@@ -81,6 +81,7 @@ def build(db: Session, user: User, today: date) -> dict:
         "plan_id": plan.id if plan else None, "today": today.isoformat(),
         "progress": {"percent": prog["percent"], "done": prog["done"], "required": prog["required"], "orders": len(rows)},
         "kpi": kpi, "orders_month": orders_month,
+        "missing_fact": missing_fact_summary(db, user, today),
         "by_status": dict(by_status), "risk": risk[:8], "soonest": soon,
         "workers": _workers(workers, sections, quals, cname),
         "resources": resources, "reasons": reasons, "load": load, "underperformance": under,
@@ -90,6 +91,14 @@ def build(db: Session, user: User, today: date) -> dict:
 
 
 # ------------------------------------------------------------------ части
+def missing_fact_summary(db: Session, user: User, today: date) -> dict:
+    """Невнесённый факт за прошедшие дни (последние 31 день): сколько дней, заданий и самый ранний день — чтобы перейти и внести."""
+    from .reports_service import missing_fact_days
+    days = missing_fact_days(db, user, today)
+    return {"days": len(days), "tasks": sum(d["count"] for d in days), "first": days[0]["date"] if days else None,
+            "last": days[-1]["date"] if days else None}
+
+
 def _kpi(db: Session, t: int, rows: list, per_order: dict, plan: Optional[Plan], today: date, workers: list, own) -> dict:
     """Пять показателей дашборда.
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 import math
@@ -11,7 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .deps import scoped
-from .models import DayPin, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, Product, Project, Worker
+from . import planning
+from .models import DayPin, DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, Product, Project, Worker
 
 
 def active_plan(db: Session, actor) -> Optional[Plan]:
@@ -24,6 +25,29 @@ def visible_workers(actor, workers: list) -> list:
     if actor.role == "foreman":
         return [w for w in workers if w.work_center_id == actor.work_center_id]
     return workers
+
+
+MISSING_DAYS = 31        # за сколько прошедших дней ищем невнесённый факт
+
+
+def missing_fact_days(db: Session, user, today: date) -> list:
+    """Прошедшие дни, на которые по плану были задания, а факт по ним не внесён: [{date, count, workers}].
+    «Не внесён» — нет записи факта по связке день × позиция × операция × работник (внесённый ноль — это внесённый факт).
+    Бригадир видит свой участок; сборщик — только себя."""
+    lo = today - timedelta(days=MISSING_DAYS)
+    snaps = list(db.scalars(scoped(DayPlanSnapshot, user).where(DayPlanSnapshot.plan_date >= lo, DayPlanSnapshot.plan_date < today)))
+    if not snaps:
+        return []
+    workers = {w.id: w for w in db.scalars(scoped(Worker, user))}
+    visible = {w.id for w in visible_workers(user, list(workers.values()))}
+    have = {(f.fact_date, f.order_line_id, f.operation_id, f.worker_id) for f in db.scalars(
+        scoped(Fact, user).where(Fact.fact_date >= lo, Fact.fact_date < today, Fact.deleted_at.is_(None)))}
+    by_day: dict = defaultdict(lambda: [0, set()])
+    for x in snaps:
+        if x.worker_id in visible and x.qty > 0 and (x.plan_date, x.order_line_id, x.operation_id, x.worker_id) not in have:
+            by_day[x.plan_date][0] += 1
+            by_day[x.plan_date][1].add(x.worker_id)
+    return [{"date": d.isoformat(), "count": c, "workers": len(ws)} for d, (c, ws) in sorted(by_day.items())]
 
 
 def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
@@ -49,6 +73,14 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
             t["frozen"] = t["frozen"] or it.is_frozen
             t["locked"] = t["locked"] or it.is_locked
             t["manual"] = t["manual"] or it.reason_code == "MANUAL"
+    if d < today:
+        # прошедший день: активный план начинается с сегодняшнего, а что планировалось на тот день — в снимках плана
+        for x in db.scalars(scoped(DayPlanSnapshot, user).where(DayPlanSnapshot.plan_date == d)):
+            if x.worker_id not in visible or x.qty <= 0:
+                continue
+            t = tasks[x.worker_id].setdefault((x.order_line_id, x.operation_id),
+                                              {"plan_qty": 0, "frozen": False, "locked": False, "manual": False, "item_id": None})
+            t["plan_qty"] += x.qty
     facts = {}
     for f in db.scalars(scoped(Fact, user).where(Fact.fact_date == d, Fact.deleted_at.is_(None))):
         if f.worker_id in visible:
@@ -103,4 +135,5 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
     can_edit = bool(plan) and user.role in ("owner", "manager", "foreman") and d >= today
     days = (plan.summary.get("work_days", [])[:14] if plan else [])
     return {"date": d.isoformat(), "plan_id": plan.id if plan else None, "can_enter": can_enter, "can_edit": can_edit,
-            "workers": out, "days": days, "today": today.isoformat()}
+            "workers": out, "days": days, "today": today.isoformat(), "is_workday": planning.is_work_day(db, user.tenant_id, d),
+            "missing": missing_fact_days(db, user, today) if user.role != "worker" else []}

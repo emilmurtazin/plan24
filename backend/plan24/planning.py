@@ -41,6 +41,14 @@ def _weekdays(s: str) -> tuple:
     return tuple(int(x) for x in s.split(",") if x != "") or (0, 1, 2, 3, 4)
 
 
+def is_work_day(db: Session, tenant_id: int, d: date) -> bool:
+    """Рабочий ли день по календарю организации: рабочие дни недели из настроек и без праздников/нерабочих дат."""
+    st = db.get(PlannerSettings, tenant_id)
+    if d.weekday() not in _weekdays(st.work_weekdays if st else ""):
+        return False
+    return db.scalar(select(Holiday.id).where(Holiday.tenant_id == tenant_id, Holiday.holiday_date == d).limit(1)) is None
+
+
 def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[dict] = None):
     st: PlannerSettings = db.get(PlannerSettings, tenant_id)
     ov = overrides or {}
@@ -58,6 +66,16 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     orders = [o for o in orders if o.product_id in products and o.project_id in projects and o.routing_id in routings
               and routings[o.routing_id].tenant_id == tenant_id and products[o.product_id].tenant_id == tenant_id]
     cal = build_work_calendar(today, [o.due_date for o in orders], holidays, _weekdays(st.work_weekdays))
+    # Работа в нерабочие дни (выходные, праздники), добавленная вручную и закреплённая: эти даты добавляются в календарь движка,
+    # чтобы такие строки не теряли своё место и вычитались из потребности; автопланирование на них ничего не ставит (см. pinned_days).
+    extra_days: list = []
+    if cal:
+        cal_dates = set(cal)
+        lo_extra = cal[0]
+        extra_days = sorted({d for (d,) in db.execute(select(PlanItem.plan_date).join(Plan, Plan.id == PlanItem.plan_id).where(
+            Plan.tenant_id == tenant_id, Plan.status == "active", PlanItem.is_locked.is_(True), PlanItem.plan_date >= lo_extra))
+            if d not in cal_dates})
+    engine_cal = tuple(sorted(set(cal) | set(extra_days)))
 
     # --- исполнители, отсутствия, допуски ---
     absent: dict = defaultdict(set)
@@ -166,16 +184,20 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     # --- закреплённые вручную правки «Плана на день»: остаются как есть при любом перепланировании ---
     fixed_avail = {w.id for w in avail if w.name in fixed_names}          # их будущее и так сохраняется выше (left)
     out_of_scope = {w.id for w in workers_all if scope is not None and w.work_center_id != scope}
-    pinned_days = frozenset((wname[x.worker_id], x.plan_date) for x in db.scalars(q(DayPin).where(DayPin.plan_date >= plan_today))
-                            if x.worker_id in wname and x.worker_id not in out_of_scope)
+    pinned_set = {(wname[x.worker_id], x.plan_date) for x in db.scalars(q(DayPin).where(DayPin.plan_date >= plan_today))
+                  if x.worker_id in wname and x.worker_id not in out_of_scope}
+    pinned_set |= {(w.name, d) for w in avail for d in extra_days}        # в нерабочие дни автопланирование никого не загружает
+    pinned_days = frozenset(pinned_set)
     pinned_list: list = []
     if active_plan is not None:
         for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == active_plan.id, PlanItem.is_locked.is_(True),
-                                                    PlanItem.plan_date >= plan_today).order_by(PlanItem.id)):
+                                                    PlanItem.plan_date >= min(plan_today, today)).order_by(PlanItem.id)):
             if it.worker_id in fixed_avail:
                 continue
-            ctx.carry.append(it)
+            ctx.carry.append(it)                  # в том числе работа «на сегодня», если сегодня нерабочий день (до первого рабочего)
             ctx.pinned_keys.add((it.plan_date, it.order_line_id, it.operation_id, it.worker_id))
+            if it.plan_date < plan_today:
+                continue
             key, opn, wn = ctx.key_by_order_id.get(it.order_line_id), op_names.get(it.operation_id), wname.get(it.worker_id)
             if key is None or opn is None or wn is None:
                 continue
@@ -185,7 +207,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
 
     by_level = {int(k): float(v) for k, v in (ov.get("strictness_by_level", st.strictness_by_level) or {}).items()}
     cfg = PlanConfig(
-        today=plan_today, work_days=cal, efficiency=ov.get("efficiency", st.efficiency),
+        today=plan_today, work_days=engine_cal, efficiency=ov.get("efficiency", st.efficiency),
         max_workers_per_op=ov.get("max_workers_per_op", st.max_workers_per_op),
         today_load_threshold=ov.get("today_load_threshold", st.today_load_threshold),
         min_start_share=ov.get("min_start_share", st.min_start_share),

@@ -118,8 +118,14 @@ def test_bot_disabled_without_token(full_org, monkeypatch):
 def test_only_managers_issue_codes_for_workers_and_foremen(full_org, tg):
     o = full_org
     wid = o.workers[0]["id"]
-    for role in ("foreman", "worker", "viewer"):
+    for role in ("worker", "viewer", "director"):
         assert o.post("/telegram/codes", role, json={"worker_id": wid}).status_code == 403
+    # бригадир — только работникам своего участка (и не бригадирам/пользователям)
+    own = next(w["id"] for w in o.workers if w["work_center_id"] == o.wcs[0]["id"])
+    other = next(w["id"] for w in o.workers if w["work_center_id"] != o.wcs[0]["id"])
+    assert o.post("/telegram/codes", "foreman", json={"worker_id": other}).status_code == 403
+    assert o.post("/telegram/codes", "foreman", json={"worker_id": own}).status_code == 201
+    assert o.post("/telegram/codes", "foreman", json={"user_id": 1}).status_code == 403
     r = o.post("/telegram/codes", "manager", json={"worker_id": wid}).json()
     assert len(r["code"]) == 9 and r["deep_link"].startswith("https://t.me/plan24_test_bot?start=") and "/start" in r["instruction"]
     assert o.post("/telegram/codes", "manager", json={}).status_code == 422
@@ -198,7 +204,9 @@ def test_group_chats_are_ignored_and_unlink_revokes_access(full_org, tg):
              json={"update_id": 9, "message": {"chat": {"id": -100, "type": "group"}, "text": "/tasks"}})
     assert len(tg.sent) == n
     lid = o.get("/telegram/status", "manager").json()["links"][0]["id"]
-    assert o.delete(f"/telegram/links/{lid}", "foreman").status_code == 403
+    assert o.delete(f"/telegram/links/{lid}", "worker").status_code == 403
+    if next(w for w in o.workers if w["id"] == wid)["work_center_id"] != o.wcs[0]["id"]:
+        assert o.delete(f"/telegram/links/{lid}", "foreman").status_code == 404       # привязка работника чужого участка бригадиру не видна
     assert o.delete(f"/telegram/links/{lid}", "manager").status_code == 204
     assert "не привязан" in text(chat.say("/tasks"))
 

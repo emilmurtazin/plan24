@@ -124,7 +124,7 @@ function renderTokenPage(kind, token) {
 const NAV = [
   { id: 'home', label: 'Дашборд', roles: READERS, ico: '▦' },
   { id: 'exec', label: 'Выполнение', roles: EVERYONE, alt: { worker: 'Мои задания' }, ico: '✔' },
-  { id: 'people', label: 'Работники', roles: MANAGERS, ico: '☺' },
+  { id: 'people', label: 'Работники', roles: STAFF, ico: '☺' },       // бригадиру — только работники своего участка
   { id: 'status', label: 'Статус заказов', roles: READERS, ico: '≡' },
   { id: 'catalog', label: 'Каталог изделий', roles: CATALOG, ico: '▣' },
   { id: 'data', label: 'Проекты и Заказы', roles: MANAGERS, ico: '❏' },

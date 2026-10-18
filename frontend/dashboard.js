@@ -50,6 +50,10 @@ async function dashboardView(plan) {
     ${kpiCard(`${k.workers_with_tasks}<small class="muted"> из ${k.workers_total}</small>`, 'работников с заданиями сегодня', 'k-green', 'Работники, у которых на сегодня есть задание или работа вне перечня, из общего числа работников')}
     ${kpiCard(pct(k.load_3m), 'загрузка на ближайшие 3 месяца', k.load_3m >= 100 ? 'k-red' : k.load_3m >= 80 ? 'k-amber' : 'k-grey', 'Средняя загрузка работников по плану, % рабочего дня' + (k.load_horizon_end ? '. План построен до ' + fmtDY(k.load_horizon_end) : ''), `<div class="bar"><i style="width:${Math.min(100, k.load_3m || 0)}%"></i></div>`)}</div>`;
 
+  /* факт за прошедшие дни, который ещё не внесён */
+  const mf = d.missing_fact;
+  if (mf && mf.days && STAFF.includes(S.me.role)) h += `<div class="banner warn"><span><b>Не внесён факт за прошедшие дни:</b> дней — ${mf.days}, заданий — ${mf.tasks} (с ${fmtDY(mf.first)}).</span><button class="small" id="goMiss" data-first="${mf.first}">Внести факт</button></div>`;
+
   /* статус заказов: одна таблица, только заказы с плановым сроком завершения в ближайший месяц */
   h += `<div class="card"><h2>Статус заказов <small class="muted">срок завершения — ближайший месяц</small></h2>${d.orders_month.length ? `<div class="scroll"><table><tr><th>Заказ</th><th>Изделие</th><th>Проект</th><th>Выполнено</th><th>Срок</th><th>Прогноз</th><th>Статус</th></tr>${d.orders_month.map(r => `<tr data-ord="${r.order_line_id}" style="cursor:pointer" title="Открыть статус заказа"><td><b>${esc(r.id)}</b></td><td>${esc(r.product)}</td><td>${esc(r.project)}</td><td class="num">${num(r.progress)}%<div class="bar"><i style="width:${Math.min(100, r.progress)}%"></i></div></td><td class="${r.overdue ? 'err' : ''}">${fmtDY(r.due)}${r.overdue ? ' <small>просрочен</small>' : ''}</td><td class="${r.status === 'Риск опоздания' ? 'err' : ''}">${esc(r.forecast_text || '—')}</td><td>${stBadge(r.status)}</td></tr>`).join('')}</table></div>` : '<p class="muted">Нет заказов со сроком завершения в ближайший месяц.</p>'}</div>`;
 
@@ -80,4 +84,5 @@ async function dashboardView(plan) {
     <p class="muted" style="font-size:14px;margin-bottom:0">Недовыполнение = запланированное на день минус внесённый факт по каждому заданию; если факт не внесён — задание считается невыполненным. ${U.since ? `История планов копится с ${fmtDY(U.since)}.` : 'История планов начнёт копиться с первого построенного плана.'}</p></div>`;
   return h;
 }
-function wireDashboard(v) { $$('[data-ord]', v).forEach(tr => tr.onclick = () => { S.stOrder = +tr.dataset.ord; S.stProduct = ''; show('status'); }); }
+function wireDashboard(v) { const gm = $('#goMiss', v); if (gm) gm.onclick = () => { S.dayOpen = gm.dataset.first; show('day'); };
+  $$('[data-ord]', v).forEach(tr => tr.onclick = () => { S.stOrder = +tr.dataset.ord; S.stProduct = ''; show('status'); }); }

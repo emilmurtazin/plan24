@@ -131,6 +131,24 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   if ($$('.wcard').some(c => /день закреплён/.test(c.textContent))) throw new Error('правка не должна закреплять день автоматически');
   click($('[data-pin]')); await until(() => $$('.wcard').some(c => /день закреплён/.test(c.textContent)), 'день закреплён вручную');
   step('«+ Задание»: добавлено вручную, день сам не закрепился; кнопка «Закрепить день» его закрепила');
+  // --- выходной день: любая дата, нерабочий день, автозакрепление ---
+  const appToday = $$('.days button[data-d]')[0].dataset.d;                     // «сегодня» приложения (у демо — фиксированная дата плана)
+  const addDays = (iso, n) => { const t = new Date(iso + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  { const t0 = new Date(appToday + 'T00:00:00Z'); const dd = new Date(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth(), t0.getUTCDate() + ((6 - t0.getUTCDay() + 7) % 7 || 7)));
+    const sat = dd.toISOString().slice(0, 10);
+    const gd = $('#goDate'); if (!gd) throw new Error('нет выбора произвольной даты'); setv(gd, sat); gd.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => /Нерабочий день/.test($('#view').textContent) && $('#addT'), 'выходной день открыт');
+    click($('#addT')); await until(() => $('.modal form') && $('.modal form').elements.operation_id && $('.modal form').elements.operation_id.value, 'форма задания на выходной');
+    const wf = $('.modal form'); if (wf.elements.plan_date.type !== 'date' || wf.elements.plan_date.value !== sat) throw new Error('в форме не подставилась дата выходного: ' + wf.elements.plan_date.value);
+    setv(wf.elements.qty, '1'); wf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+    await until(() => /закреплён/.test($('#toast').textContent) && $$('.wcard').some(c => /день закреплён/.test(c.textContent)), 'работа в выходной добавлена и закреплена');
+    step('выходной день ' + sat + ': выбрана произвольная дата, задание добавлено, день закреплён автоматически'); }
+  { const ys = addDays(appToday, -1);
+    const gd = $('#goDate'); setv(gd, ys); gd.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => /Прошедший день/.test($('#view').textContent) && $('#addF'), 'прошедший день открыт');
+    step('прошедший день ' + ys + ': подсказка и кнопка «+ Факт вне плана» на месте'); }
+  click(byText('#drawer button', 'Дашборд')); click(byText('#drawer button', 'Выполнение')); await until(() => $$('.wcard').length, 'возврат на сегодня');
+
   click($('[data-te]')); await until(() => $('.modal form') && $('.modal form').elements.operation_id.value, 'форма изменения'); click(byText('.modal button', 'Отмена'));
   // --- работа вне перечня ---
   click($('#addX')); await until(() => $('.modal form'), 'форма работы вне перечня'); const xf = $('.modal form');
@@ -361,6 +379,20 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   const names = $$('.wcard h3').map(h => h.textContent);
   step('бригадир: сразу «План на день», видит ' + names.length + ' исполнителей своего участка (меньше, чем у владельца: ' + cards + ')');
   if (names.length >= cards) throw new Error('бригадир видит всех, а не свой участок');
+
+  // --- бригадир: раздел «Работники» — только свой участок ---
+  if (!nav2.includes('Работники')) throw new Error('бригадиру должен быть доступен раздел «Работники»');
+  click(byText('#drawer button', 'Работники')); await until(() => $('[data-add]') && $$('#dt tbody tr, #dt tr').length > 1, 'работники участка у бригадира');
+  { const rows = $$('#dt tbody tr').length || $$('#dt tr').length - 1;
+    if ($$('#view nav.seg button').length) throw new Error('у бригадира не должно быть подвкладок «Участки»/«Причины»');
+    if (byText('#dt button', 'Удалить')) throw new Error('бригадир не должен удалять работников');
+    if (byText('#dt button', 'Допуски')) throw new Error('бригадиру не нужны «Допуски»');
+    if (!byText('#dt button', 'Отпуска')) throw new Error('у бригадира нет «Отпуска»');
+    click($('[data-add]')); await until(() => $('.modal form'), 'форма работника бригадира');
+    if ($('.modal form').elements.work_center_id) throw new Error('бригадир не выбирает участок — работник идёт на его участок');
+    click(byText('.modal button', 'Отмена'));
+    step('бригадир: «Работники» — ' + rows + ' чел. своего участка, без удаления, допусков и выбора участка'); }
+  click(byText('#drawer button', 'Выполнение')); await until(() => $$('.wcard').length, 'возврат к плану');
 
   // --- бригадир перепланирует только свой участок ---
   click($('#rp')); await until(() => $('.modal #run'), 'окно перепланирования бригадира');
