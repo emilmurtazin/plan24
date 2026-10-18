@@ -29,6 +29,9 @@ services:
       PLAN24_TG_TOKEN: ${PLAN24_TG_TOKEN:-}
       PLAN24_TG_SECRET: ${PLAN24_TG_SECRET:-}
       PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
+      PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}     # в режиме webhook ответы бота отправляет web
+      PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
+      PLAN24_TG_CA_PEM: ${PLAN24_TG_CA_PEM:-}
     depends_on:
       migrate: {condition: service_completed_successfully}
 
@@ -51,6 +54,8 @@ services:
       PLAN24_TG_SECRET: ${PLAN24_TG_SECRET:-}
       PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}
       PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
+      PLAN24_TG_CA_PEM: ${PLAN24_TG_CA_PEM:-}                  # сертификат релея (см. deploy/relay/README.md)
+      PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
       PLAN24_DB_POOL: "2"
       PLAN24_DB_OVERFLOW: "2"
     depends_on:
@@ -70,6 +75,8 @@ services:
       PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
       PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}
       PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
+      PLAN24_TG_CA_PEM: ${PLAN24_TG_CA_PEM:-}                  # сертификат релея (см. deploy/relay/README.md)
+      PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
       PLAN24_DB_POOL: "2"
       PLAN24_DB_OVERFLOW: "2"
     depends_on:

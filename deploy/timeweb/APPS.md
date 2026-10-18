@@ -93,7 +93,7 @@ sh deploy/timeweb/postdeploy-check.sh https://ВАШ_ДОМЕН
 ## Шаг 8. Telegram (необязательно)
 У платформы нет консоли, поэтому доступ к Telegram проверяется через бота:
 1. Установите `PLAN24_TG_TOKEN`, `PLAN24_TG_SECRET`, `PLAN24_TG_BOT_USERNAME`, `PLAN24_TG_MODE=poll` и перезапустите деплой.
-2. В логе сервиса `tg`: тишина — бот опрашивает Telegram; повторяющиеся `getUpdates failed: ConnectError/ConnectTimeout` — доступ закрыт. Тогда релей/прокси за пределами РФ: `PLAN24_TG_API_BASE` или `PLAN24_TG_PROXY`.
+2. В логе сервиса `tg`: тишина — бот опрашивает Telegram; повторяющиеся `getUpdates failed: ConnectError/ConnectTimeout` — доступ закрыт. Тогда релей/прокси за пределами РФ: `PLAN24_TG_API_BASE` (+ `PLAN24_TG_CA_PEM`) или `PLAN24_TG_PROXY` — установка релея: `deploy/relay/README.md`. При старте `tg` и `scheduler` печатают в лог итог проверки связи (`✔ Telegram доступен` или причина).
 3. Режим `webhook` на платформе нужен только если Telegram может достучаться до вашего домена; опрос надёжнее.
 Помните: сборщикам нужен рабочий Telegram на телефонах (см. `README.md`, раздел «Telegram с российских серверов»).
 

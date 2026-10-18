@@ -125,7 +125,7 @@ curl -m 10 -s -o /dev/null -w "%{http_code}\n" https://api.telegram.org/bot0/get
 | Результат | Что делать |
 |---|---|
 | Доступно | Режим вебхука (`docker compose exec web python -m plan24.telegram setup-webhook https://ВАШ_ДОМЕН`) **или** опроса (`--profile telegram-poll`). Опрос не требует входящих соединений от Telegram и надёжнее. |
-| Недоступно | Релей за пределами РФ (небольшой сервер с reverse proxy на `api.telegram.org`) и `PLAN24_TG_API_BASE=https://relay.example.com` + режим опроса; либо прокси `PLAN24_TG_PROXY=socks5://…`. Релей — отдельная инфраструктура на вашей стороне. |
+| Недоступно | Релей за пределами РФ (небольшой сервер с reverse proxy на `api.telegram.org`) и `PLAN24_TG_API_BASE=https://relay.example.com` + режим опроса; либо прокси `PLAN24_TG_PROXY=socks5://…`. Готовый релей для вашего сервера — `deploy/relay/README.md`. |
 | Не хотите зависеть | Не включайте Telegram: сервис полностью работает через веб (интерфейс адаптирован под телефон). |
 
 Важно для бизнеса, а не только для техники: даже при работающем сервере **сборщикам нужен доступ к Telegram на телефонах**; если у вас он нестабилен, бот не решит задачу ввода факта.

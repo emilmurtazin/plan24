@@ -1,0 +1,70 @@
+# Релей Telegram Bot API для Plan 24 — ОТДЕЛЬНЫЙ экземпляр nginx со своим конфигом, портом и пользователем.
+# Не связан с другими nginx/Caddy/сервисами на этом сервере и их настроек не касается. Сгенерировано setup-relay.sh.
+# Пропускает ТОЛЬКО запросы бота с вашим токеном (/bot<токен>/… и /file/bot<токен>/…); всё остальное — 404.
+
+worker_processes 1;
+pid /run/plan24-relay/nginx.pid;
+error_log /var/log/plan24-relay/error.log warn;
+
+events { worker_connections 512; }
+
+http {
+    server_tokens off;
+    access_log off;                       # в URL запросов лежит токен бота — в журнал доступа его не пишем
+    client_body_temp_path /var/lib/plan24-relay/body;
+    proxy_temp_path       /var/lib/plan24-relay/proxy;
+    fastcgi_temp_path     /var/lib/plan24-relay/fastcgi;
+    uwsgi_temp_path       /var/lib/plan24-relay/uwsgi;
+    scgi_temp_path        /var/lib/plan24-relay/scgi;
+
+    limit_req_zone $binary_remote_addr zone=plan24_tg_relay:1m rate=30r/s;
+
+    server {
+        listen 0.0.0.0:@PORT@ ssl;
+        @LISTEN6@
+        server_name _;
+
+        ssl_certificate     @CERT@;
+        ssl_certificate_key @KEY@;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_session_cache   shared:plan24_relay_tls:2m;
+
+        @ALLOW@
+
+        # адреса Telegram меняются: имя резолвится заново каждые 5 минут (без resolver nginx запомнил бы их при запуске)
+        resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;
+        resolver_timeout 5s;
+
+        limit_req zone=plan24_tg_relay burst=60 nodelay;
+        client_max_body_size 20m;
+
+        location = /healthz { default_type text/plain; return 200 "ok\n"; }
+
+        location /bot@TOKEN@/ {
+            set $upstream @UPSTREAM@;
+            proxy_pass $upstream;
+            proxy_http_version 1.1;
+            proxy_ssl_server_name on;
+            proxy_set_header Host @UPSTREAM_HOST@;
+            proxy_set_header Connection "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_connect_timeout 10s;
+            proxy_read_timeout 75s;          # getUpdates держит соединение до 25 с
+            proxy_send_timeout 30s;
+            proxy_buffering off;
+        }
+
+        location /file/bot@TOKEN@/ {
+            set $upstream @UPSTREAM@;
+            proxy_pass $upstream;
+            proxy_http_version 1.1;
+            proxy_ssl_server_name on;
+            proxy_set_header Host @UPSTREAM_HOST@;
+            proxy_set_header Connection "";
+            proxy_read_timeout 60s;
+        }
+
+        location / { return 404; }
+    }
+}

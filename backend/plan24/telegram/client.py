@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import ssl
 from typing import Optional
 
 import httpx
@@ -14,16 +15,21 @@ API = "https://api.telegram.org"
 
 class TelegramClient:
     def __init__(self, token: str, transport: Optional[httpx.BaseTransport] = None, timeout: float = 10.0,
-                 api_base: str = API, proxy: Optional[str] = None):
+                 api_base: str = API, proxy: Optional[str] = None, ca_pem: Optional[str] = None):
         self._token = token
         self._base = api_base.rstrip("/")
         kw = {"proxy": proxy} if proxy else {}
+        if ca_pem:                          # релей по IP с самоподписанным сертификатом: доверяем только ему (закрепление сертификата)
+            kw["verify"] = ssl.create_default_context(cadata=ca_pem)
         self._http = httpx.Client(timeout=timeout, transport=transport, **kw)
 
     def _call(self, method: str, payload: dict, timeout: Optional[float] = None) -> dict:
         r = self._http.post(f"{self._base}/bot{self._token}/{method}", json=payload,
                             **({"timeout": timeout} if timeout else {}))
-        data = r.json()
+        try:
+            data = r.json()
+        except ValueError:                  # релей/прокси вернул не JSON (502 Bad Gateway и т. п.)
+            raise RuntimeError(f"telegram {method}: {r.status_code} (ответ не от Telegram — релей не смог дойти до api.telegram.org?)") from None
         if not data.get("ok"):
             raise RuntimeError(f"telegram {method}: {data.get('error_code')}")
         return data["result"]
@@ -36,6 +42,12 @@ class TelegramClient:
 
     def answer_callback(self, callback_id: str, text: Optional[str] = None):
         return self._call("answerCallbackQuery", {"callback_query_id": callback_id, **({"text": text[:190]} if text else {})})
+
+    def get_me(self):
+        return self._call("getMe", {})
+
+    def get_webhook_info(self):
+        return self._call("getWebhookInfo", {})
 
     def set_webhook(self, url: str, secret_token: str):
         return self._call("setWebhook", {"url": url, "secret_token": secret_token, "allowed_updates": ["message", "callback_query"]})
@@ -61,7 +73,7 @@ def get_client():
     if _override is not None:
         return _override
     cfg = config.telegram_settings()
-    return TelegramClient(cfg["token"], api_base=cfg["api_base"], proxy=cfg["proxy"]) if cfg["enabled"] else None
+    return TelegramClient(cfg["token"], api_base=cfg["api_base"], proxy=cfg["proxy"], ca_pem=cfg["ca_pem"]) if cfg["enabled"] else None
 
 
 def deliver(outbox: list):

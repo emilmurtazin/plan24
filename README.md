@@ -21,7 +21,7 @@ python3 -m uvicorn plan24.app:app --port 8000        # интерфейс http:/
 | `PLAN24_BASE_URL` | публичный адрес сервиса для ссылок в письмах (`https://plan.example.com`) |
 | `PLAN24_SMTP_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_SECURITY` (`starttls`/`ssl`/`none`), `PLAN24_MAIL_FROM` | отправка писем; без `PLAN24_SMTP_HOST` письма пишутся в файлы `data/outbox` (только разработка) |
 | `PLAN24_TG_TOKEN`, `PLAN24_TG_SECRET`, `PLAN24_TG_BOT_USERNAME` | Telegram-бот (токен от @BotFather, случайный секрет вебхука, имя бота) |
-| `PLAN24_TG_API_BASE`, `PLAN24_TG_PROXY` | адрес API Telegram (релей) и прокси — если `api.telegram.org` недоступен с вашего сервера |
+| `PLAN24_TG_API_BASE`, `PLAN24_TG_PROXY`, `PLAN24_TG_CA_PEM` | адрес API Telegram (релей), прокси и сертификат релея (PEM или base64) — если `api.telegram.org` недоступен с вашего сервера |
 | `PLAN24_TG_MODE` | режим бота в App Platform: `off` (по умолчанию) / `poll` / `webhook` |
 | `PLAN24_DOCS=1` | опубликовать описание API (`/api/docs`) в prod; по умолчанию в prod скрыто |
 | `PLAN24_TG_MORNING_AT`, `PLAN24_TG_EVENING_AT` | время утренних заданий и вечернего напоминания, по часовому поясу организации (07:30 / 17:30) |
@@ -29,6 +29,7 @@ python3 -m uvicorn plan24.app:app --port 8000        # интерфейс http:/
 
 ### Подключение Telegram-бота
 1. Создайте бота у @BotFather, задайте `PLAN24_TG_TOKEN`, `PLAN24_TG_SECRET` (длинная случайная строка), `PLAN24_TG_BOT_USERNAME`.
+**Если `api.telegram.org` недоступен с вашего сервера — используйте релей на сервере за пределами РФ: готовый набор и пошаговая инструкция — `deploy/relay/README.md` (`setup-relay.sh`, `relay-check.sh`; связь основного сервера с релеем закрепляется сертификатом, `PLAN24_TG_CA_PEM`). Проверка связи: `python -m plan24.telegram check`.**
 2. Сервис должен быть доступен по HTTPS: `python -m plan24.telegram setup-webhook https://plan.example.com`
    (без публичного адреса: `python -m plan24.telegram poll` — бот сам опрашивает Telegram).
 3. Напоминания: `python -m plan24.telegram scheduler` (отдельный процесс) или `notify` по cron каждые 5–10 минут.

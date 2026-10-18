@@ -80,6 +80,27 @@ EMAIL_TOKEN_TTL = {"verify": 3 * 24 * 3600, "reset": 3600, "invite": 7 * 24 * 36
 
 
 # ---- Telegram ----
+def tg_relay_ca() -> "str | None":
+    """Сертификат релея: PLAN24_TG_CA_PEM (PEM — в том числе с «\\n» вместо переводов строк — или base64 от PEM одной строкой)
+    либо PLAN24_TG_CA_FILE (путь к файлу)."""
+    import base64
+    raw = (os.environ.get("PLAN24_TG_CA_PEM") or "").strip()
+    if not raw and os.environ.get("PLAN24_TG_CA_FILE"):
+        with open(os.environ["PLAN24_TG_CA_FILE"], encoding="ascii") as f:
+            raw = f.read().strip()
+    if not raw:
+        return None
+    raw = raw.replace("\\n", "\n")
+    if "BEGIN CERTIFICATE" not in raw:
+        try:
+            raw = base64.b64decode("".join(raw.split()), validate=True).decode("ascii")
+        except Exception as e:                                               # noqa: BLE001
+            raise ValueError("PLAN24_TG_CA_PEM: ожидается сертификат в формате PEM или его base64 в одну строку") from e
+    if "BEGIN CERTIFICATE" not in raw:
+        raise ValueError("PLAN24_TG_CA_PEM: в значении нет сертификата (BEGIN CERTIFICATE)")
+    return raw
+
+
 def telegram_settings() -> dict:
     """Бот включается, когда заданы токен и секрет вебхука. Секрет в URL + отдельный секрет в заголовке (подпись)."""
     import hashlib
@@ -92,6 +113,9 @@ def telegram_settings() -> dict:
         # (PLAN24_TG_API_BASE=https://relay.example.com) или прокси (PLAN24_TG_PROXY=http://host:port, socks5://host:port)
         "api_base": os.environ.get("PLAN24_TG_API_BASE", "https://api.telegram.org").rstrip("/"),
         "proxy": os.environ.get("PLAN24_TG_PROXY") or None,
+        # сертификат релея, которому доверяем (релей по IP-адресу с самоподписанным сертификатом): PEM, тот же PEM в base64
+        # одной строкой (удобно для переменных окружения) или путь к файлу. Если задан — других сертификатов клиент не принимает.
+        "ca_pem": tg_relay_ca(),
         "morning_at": os.environ.get("PLAN24_TG_MORNING_AT", "07:30"),
         "evening_at": os.environ.get("PLAN24_TG_EVENING_AT", "17:30"),
     }
