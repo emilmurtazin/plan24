@@ -31,7 +31,8 @@ class TelegramClient:
         except ValueError:                  # релей/прокси вернул не JSON (502 Bad Gateway и т. п.)
             raise RuntimeError(f"telegram {method}: {r.status_code} (ответ не от Telegram — релей не смог дойти до api.telegram.org?)") from None
         if not data.get("ok"):
-            raise RuntimeError(f"telegram {method}: {data.get('error_code')}")
+            # описание ошибки Telegram (например, «message is not modified») — служебный текст без данных пользователей
+            raise RuntimeError(f"telegram {method}: {data.get('error_code')} {str(data.get('description') or '')[:80]}".rstrip())
         return data["result"]
 
     def send_message(self, chat_id: int, text: str, reply_markup: Optional[dict] = None):
@@ -39,6 +40,21 @@ class TelegramClient:
         if reply_markup:
             p["reply_markup"] = reply_markup
         return self._call("sendMessage", p)
+
+    def edit_message(self, chat_id: int, message_id: int, text: str, reply_markup: Optional[dict] = None):
+        p = {"chat_id": chat_id, "message_id": message_id, "text": text[:4000]}
+        if reply_markup:
+            p["reply_markup"] = reply_markup
+        return self._call("editMessageText", p)
+
+    def copy_message(self, chat_id: int, from_chat_id: int, message_id: int):
+        """Переслать чужое сообщение (фото, голос, файл) без подписи «Переслано от»."""
+        return self._call("copyMessage", {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id})
+
+    def set_commands(self, chat_id: int, commands: list):
+        """Меню команд (кнопка «/» рядом с полем ввода) — своё для каждого чата, по роли."""
+        return self._call("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in commands],
+                                            "scope": {"type": "chat", "chat_id": chat_id}})
 
     def answer_callback(self, callback_id: str, text: Optional[str] = None):
         return self._call("answerCallbackQuery", {"callback_query_id": callback_id, **({"text": text[:190]} if text else {})})
@@ -87,5 +103,16 @@ def deliver(outbox: list):
                 c.send_message(item["chat_id"], item["text"], item.get("markup"))
             elif item["kind"] == "answer":
                 c.answer_callback(item["callback_id"], item.get("text"))
+            elif item["kind"] == "edit":
+                try:
+                    c.edit_message(item["chat_id"], item["message_id"], item["text"], item.get("markup"))
+                except RuntimeError as e:
+                    if "not modified" in str(e):
+                        continue                                            # тот же текст — менять нечего
+                    c.send_message(item["chat_id"], item["text"], item.get("markup"))    # сообщение устарело/удалено — шлём новое
+            elif item["kind"] == "copy":
+                c.copy_message(item["chat_id"], item["from_chat_id"], item["message_id"])
+            elif item["kind"] == "commands":
+                c.set_commands(item["chat_id"], item["commands"])
         except Exception as e:                                     # noqa: BLE001
             log.error("telegram delivery failed: %s", type(e).__name__)

@@ -17,13 +17,23 @@ _ids = itertools.count(1000)
 
 class FakeTG:
     def __init__(self):
-        self.sent, self.answers = [], []
+        self.sent, self.answers, self.answer_texts, self.copies, self.commands = [], [], [], [], {}
 
     def send_message(self, chat_id, text, reply_markup=None):
-        self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup})
+        self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup, "kind": "message"})
+
+    def edit_message(self, chat_id, message_id, text, reply_markup=None):
+        self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup, "kind": "edit", "message_id": message_id})
+
+    def copy_message(self, chat_id, from_chat_id, message_id):
+        self.copies.append((chat_id, from_chat_id, message_id))
+
+    def set_commands(self, chat_id, commands):
+        self.commands[chat_id] = commands
 
     def answer_callback(self, cid, text=None):
         self.answers.append(cid)
+        self.answer_texts.append(text)
 
 
 @pytest.fixture()
@@ -55,7 +65,12 @@ class Chat:
     def press(self, data, **kw):
         return self._post({"update_id": kw.pop("update_id", next(_ids)),
                            "callback_query": {"id": f"cb{next(_ids)}", "data": data,
-                                              "message": {"chat": {"id": self.chat_id, "type": "private"}}}}, **kw)
+                                              "message": {"message_id": kw.pop("mid", 50000 + next(_ids)),
+                                                          "chat": {"id": self.chat_id, "type": "private"}}}}, **kw)
+
+    def send(self, **fields):
+        """Сообщение с произвольными полями (фото, подпись…)."""
+        return self._post({"update_id": next(_ids), "message": {"message_id": next(_ids), "chat": {"id": self.chat_id, "type": "private"}, **fields}})
 
 
 def buttons(msgs):
@@ -64,6 +79,16 @@ def buttons(msgs):
 
 def find(msgs, prefix):
     return next(b["callback_data"] for b in buttons(msgs) if b["text"].startswith(prefix))
+
+
+def toasts(tg):
+    return " | ".join(t for t in tg.answer_texts if t)
+
+
+def number_key(chat):
+    """Кнопка «✏ Ввести число» из карточки первого задания."""
+    card = chat.press(find(chat.say("/tasks"), "🔢 №1"))
+    return find(card, "✏ Ввести число")
 
 
 def text(msgs):
@@ -220,7 +245,7 @@ def test_tasks_show_only_own_work_with_buttons(full_org, tg):
     assert "Задания на 02.10 (пт)" in t and name in t and "план" in t
     mine = [x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == wid][0]["tasks"]
     assert len([l for l in t.splitlines() if l[:2].strip(". ").isdigit()]) == min(len(mine), bot.PAGE)
-    assert find(msgs, "✔ №1 всё").startswith("d:") and find(msgs, "✏ №1").startswith("n:")
+    assert find(msgs, "✔ №1 всё").startswith("d:") and find(msgs, "🔢 №1").startswith("k:")
     others = {w["worker"] for w in o.get("/reports/day").json()["workers"]} - {name}
     assert not any(n in t for n in others)                                         # чужих заданий нет
 
@@ -231,7 +256,8 @@ def test_done_button_saves_plan_qty_as_fact_via_telegram(full_org, tg):
     msgs = chat.say("/tasks")
     key = find(msgs, "✔ №1 всё")
     reply = chat.press(key)
-    assert "Записано" in text(reply) and find(reply, "↩ Отменить").startswith("u:")
+    assert reply[0]["kind"] == "edit"                                               # список переписан на месте, а не новое сообщение
+    assert "Записано" in toasts(tg) and find(reply, "↩ Отменить последнее").startswith("u:")
     f = facts_of(o, wid)
     assert len(f) == 1 and f[0]["source"] == "telegram" and f[0]["status"] == "confirmed"
     assert tg.answers                                                                # спиннер кнопки погашен
@@ -244,19 +270,20 @@ def test_done_button_saves_plan_qty_as_fact_via_telegram(full_org, tg):
 def test_custom_number_needs_confirmation_and_accepts_comma(full_org, tg):
     o = full_org
     chat, wid, _ = link_worker(o)
-    key = find(chat.say("/tasks"), "✏ №1")
+    key = number_key(chat)
     assert "Сколько сделано" in text(chat.press(key))
     assert "Нужно число" in text(chat.say("много"))
     assert "Нужно число" in text(chat.say("-3"))
     ask = chat.say("2,5")
     assert "Записать 2,5" in text(ask) and facts_of(o, wid) == []                     # пока ничего не записано
-    assert "Записано" in text(chat.press("y")) and facts_of(o, wid)[0]["qty"] == 2.5
+    done = chat.press("y")
+    assert "Записано" in toasts(tg) and "Сделано: 2,5" in text(done) and facts_of(o, wid)[0]["qty"] == 2.5
 
 
 def test_decline_confirmation_writes_nothing_and_cancel_works(full_org, tg):
     o = full_org
     chat, wid, _ = link_worker(o)
-    key = find(chat.say("/tasks"), "✏ №1")
+    key = number_key(chat)
     chat.press(key); chat.say("4")
     assert "ничего не записано" in text(chat.press("x")) and facts_of(o, wid) == []
     chat.press(key)
@@ -269,15 +296,17 @@ def test_partial_entry_asks_for_reason_and_stores_it(full_org, tg):
     chat, wid, _ = link_worker(o)
     msgs = chat.say("/tasks")
     plan = [t for t in [x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == wid][0]["tasks"] if t["plan_qty"]][0]["plan_qty"]
-    chat.press(find(msgs, "✏ №1")); chat.say("1")
+    chat.press(find(chat.press(find(msgs, "🔢 №1")), "✏ Ввести число")); chat.say("1")
     reply = chat.press("y")
     assert "Что помешало" in text(reply)
     rid = find(reply, "Нет материала")
     assert rid.startswith("r:")
-    assert "Причина сохранена" in text(chat.press(rid))
+    chat.press(rid)
+    assert "Причина сохранена" in toasts(tg)
     reasons = {r["id"]: r["name"] for r in o.get("/fact-reasons").json()["items"]}
     assert reasons[facts_of(o, wid)[0]["reason_id"]] == "Нет материала"
-    assert "Хорошо" in text(chat.press(find(reply, "Без причины")))
+    chat.press(find(reply, "Без причины"))
+    assert "Хорошо, без причины" in toasts(tg)
 
 
 def test_undo_restores_previous_value_or_removes_new_entry(full_org, tg):
@@ -285,12 +314,12 @@ def test_undo_restores_previous_value_or_removes_new_entry(full_org, tg):
     chat, wid, _ = link_worker(o)
     key = find(chat.say("/tasks"), "✔ №1 всё")
     reply = chat.press(key)                                                           # новая запись
-    assert "Ввод отменён" in text(chat.press(find(reply, "↩ Отменить")))
+    chat.press(find(reply, "↩ Отменить"))
+    assert "Ввод отменён" in toasts(tg)
     assert facts_of(o, wid) == []
     chat.press(key)                                                                   # снова записали план
     first = facts_of(o, wid)[0]["qty"]
-    msgs = chat.say("/tasks")
-    chat.press(find(msgs, "✏ №1")); chat.say("1"); chat.press("y")                    # изменили на 1
+    chat.press(number_key(chat)); chat.say("1"); chat.press("y")                      # изменили на 1
     assert facts_of(o, wid)[0]["qty"] == 1
     assert "Возвращено прежнее" in text(chat.say("/undo"))
     assert facts_of(o, wid)[0]["qty"] == first
@@ -329,7 +358,7 @@ def test_unavailable_worker_keeps_his_tasks_but_deactivated_foreman_loses_access
     me = next(u for u in o.get("/users").json() if u["role"] == "foreman")
     fchat = Chat(o, 6101)
     fchat.say("/start " + issue(o, user_id=me["id"]))
-    assert "Задания на" in text(fchat.say("/tasks"))
+    assert "Участок" in text(fchat.say("/tasks"))
     o.patch(f"/users/{me['id']}", json={"is_active": False})
     assert "Доступ закрыт" in text(fchat.say("/tasks"))
     assert "Доступ закрыт" in text(fchat.press("l"))
@@ -358,9 +387,10 @@ def test_foreman_sees_center_tasks_and_enters_for_workers(foreman_chat):
     t = text(msgs)
     center_names = {w["name"] for w in o.workers if w["work_center_id"] == me["work_center_id"]}
     other_names = {w["name"] for w in o.workers if w["work_center_id"] != me["work_center_id"]}
-    assert any(n in t for n in center_names) and not any(n in t for n in other_names)
-    reply = chat.press(find(msgs, "✔ №1 всё"))
-    assert "Записано" in text(reply)
+    assert "Участок" in t and any(n in t for n in center_names) and not any(n in t for n in other_names)      # экран «по людям»
+    person = chat.press(find(msgs, "•") if any(b["text"].startswith("•") for b in buttons(msgs)) else buttons(msgs)[0]["callback_data"])
+    reply = chat.press(find(person, "✔ №1 всё"))
+    assert "Записано" in toasts(o.fake)
     fs = o.get("/facts").json()["items"]
     assert fs and fs[0]["source"] == "telegram" and fs[0]["status"] == "confirmed"
 
@@ -381,8 +411,8 @@ def test_confirmation_queue_for_foreman(foreman_chat):
     tasks = [x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == wid]
     assert tasks, "у исполнителя участка бригадира нет заданий в демо-данных"
     worker_chat.say("/start " + issue(o, worker_id=wid))
-    reply = worker_chat.press(find(worker_chat.say("/tasks"), "✔ №1 всё"))
-    assert "Бригадир подтвердит" in text(reply)
+    worker_chat.press(find(worker_chat.say("/tasks"), "✔ №1 всё"))
+    assert "Бригадир подтвердит" in toasts(o.fake)
     assert o.get("/facts").json()["items"][0]["status"] == "submitted"
     q = chat.say("/queue")
     assert "Ждёт подтверждения" in text(q)
@@ -484,7 +514,7 @@ def test_delivery_failure_does_not_break_webhook_and_is_logged_without_content(f
 
 def test_handler_exception_is_contained_and_user_gets_apology(full_org, tg, monkeypatch):
     chat, wid, _ = link_worker(full_org)
-    monkeypatch.setattr(bot, "_tasks", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(bot, "_open", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert "Что-то пошло не так" in text(chat.say("/tasks"))
     monkeypatch.undo()
 

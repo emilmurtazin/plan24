@@ -4,13 +4,14 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import facts_service
+from ..telegram import client as tgclient, events as tgevents
 from ..db import DB
 from ..deps import STAFF, MANAGERS, get_or_404, get_today, require, scoped
 from ..models import (Fact, FactReason, IdempotencyKey, Operation, OrderLine, PlannerSettings, Routing, User, Worker,
@@ -38,7 +39,7 @@ def out(f: Fact) -> dict:
 
 
 @router.post("")
-def enter_fact(body: FactIn, user: User = Depends(require(*ENTER)), db: Session = DB,
+def enter_fact(body: FactIn, bg: BackgroundTasks, user: User = Depends(require(*ENTER)), db: Session = DB,
                today: date = Depends(get_today), idempotency_key: Optional[str] = Header(None)):
     if idempotency_key:
         k = db.get(IdempotencyKey, (user.tenant_id, idempotency_key))
@@ -47,6 +48,11 @@ def enter_fact(body: FactIn, user: User = Depends(require(*ENTER)), db: Session 
     f, old = facts_service.enter(db, user, fact_date=body.fact_date, order_line_id=body.order_line_id,
                                  operation_id=body.operation_id, worker_id=body.worker_id, qty=body.qty,
                                  today=today, reason_id=body.reason_id, note=body.note)
+    if tgevents.enabled():                      # меньше плана — бригадир участка узнаёт сразу (в Telegram)
+        msgs: list = []
+        tgevents.alert_shortfall(db, f, msgs, skip_user_id=user.id if user.role == "foreman" else None)
+        if msgs:
+            bg.add_task(tgclient.deliver, msgs)
     resp = {**out(f), "replaced": old is not None, "previous_qty": old}
     if idempotency_key:
         try:

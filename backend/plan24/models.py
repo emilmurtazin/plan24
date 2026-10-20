@@ -387,6 +387,8 @@ class TelegramLink(Base):
     worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), unique=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), unique=True)
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # личные настройки уведомлений: {"m_on": bool, "m_at": "07:30", "e_on": bool, "e_at": "17:30", "alerts": bool}; пусто — по умолчанию
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class TelegramCode(Base):

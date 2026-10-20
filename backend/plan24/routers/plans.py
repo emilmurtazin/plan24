@@ -1,10 +1,10 @@
 """Планы: перепланирование, снапшоты, откат, сравнение жёсткости (FR-15…FR-17, BR-13, BR-20)."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from ..db import DB
 from ..deps import ALL, MANAGERS, READERS, STAFF, get_or_404, get_today, require, scoped
 from ..models import DayPin, Plan, PlanItem, User, WorkCenter
 from ..planner.compare import compare_strictness
+from ..telegram import client as tgclient, events as tgevents
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -85,10 +86,12 @@ def _meta(db, user, p: Plan, today: date, with_warnings: bool) -> dict:
 
 
 @router.post("/replan", status_code=201)
-def replan(body: RunIn = RunIn(), user: User = Depends(require(*STAFF)), db: Session = DB,
+def replan(bg: BackgroundTasks, body: RunIn = RunIn(), user: User = Depends(require(*STAFF)), db: Session = DB,
            today: date = Depends(get_today)):
     """Синхронный расчёт (на ТЗ-объёмах доли секунды). Асинхронный job — когда понадобится очередь (этап E)."""
     scope = _scope(db, user, body)
+    tg_days = [today, today + timedelta(days=1)]
+    tg_before = tgevents.plan_state(db, user.tenant_id, tg_days) if tgevents.enabled() else None
     try:
         # одно перепланирование организации за раз; чтения — один согласованный снимок; фиксация — до снятия блокировки
         with dbm.tenant_plan_lock(user.tenant_id):
@@ -98,6 +101,13 @@ def replan(body: RunIn = RunIn(), user: User = Depends(require(*STAFF)), db: Ses
             db.commit()
     except planning.NoActivePlan:
         raise HTTPException(409, "Сначала нужен общий план организации — его строит руководитель")
+    if tg_before is not None:                  # работникам в Telegram — что изменилось в их плане на сегодня/завтра
+        msgs: list = []
+        tgevents.notify_plan_changes(db, user.tenant_id, tg_before, tgevents.plan_state(db, user.tenant_id, tg_days), msgs, today,
+                                     who="Бригадир" if user.role == "foreman" else "Руководитель")
+        if msgs:
+            db.commit()
+            bg.add_task(tgclient.deliver, msgs)
     return _meta(db, user, p, today, True)
 
 

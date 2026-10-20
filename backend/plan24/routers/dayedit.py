@@ -8,12 +8,13 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .. import audit, facts_service, planning, snapshots
+from ..telegram import client as tgclient, events as tgevents
 from ..db import DB
 from ..deps import STAFF, get_or_404, get_today, require, scoped
 from ..models import (DayPin, ExtraTask, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem,
@@ -54,6 +55,21 @@ def pin_day(db: Session, user: User, plan: Plan, worker_id: int, d: date) -> Non
 def day_pinned(db: Session, user: User, worker_id: int, d: date) -> bool:
     return db.scalar(select(DayPin.worker_id).where(DayPin.tenant_id == user.tenant_id, DayPin.worker_id == worker_id,
                                                     DayPin.plan_date == d)) is not None
+
+
+def _tg_before(db: Session, user: User, days: list, worker_ids: list):
+    """Состояние плана работников до правки — чтобы потом сообщить им в Telegram, что изменилось (только если бот включён)."""
+    return tgevents.plan_state(db, user.tenant_id, days, worker_ids) if tgevents.enabled() else None
+
+
+def _tg_after(db: Session, user: User, before, days: list, worker_ids: list, today: date, bg: BackgroundTasks):
+    if before is None:
+        return
+    out: list = []
+    tgevents.notify_plan_changes(db, user.tenant_id, before, tgevents.plan_state(db, user.tenant_id, days, worker_ids), out, today, who="Руководитель"
+                                 if user.role != "foreman" else "Бригадир")
+    if out:
+        bg.add_task(tgclient.deliver, out)
 
 
 def _offday_pin(db: Session, user: User, plan, worker_id: int, d: date) -> bool:
@@ -140,7 +156,7 @@ class ItemPatch(BaseModel):
 
 
 @router.post("/plan-day/items", status_code=201)
-def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
+def add_item(body: ItemIn, bg: BackgroundTasks, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
     """Добавить задание на день (можно несколько операций одному работнику). День работника не закрепляется сам."""
     plan = _plan(db, user)
     _future(body.plan_date, today)
@@ -148,17 +164,19 @@ def add_item(body: ItemIn, user: User = Depends(require(*STAFF)), db: Session = 
     ol = get_or_404(db, OrderLine, body.order_line_id, user)
     op = get_or_404(db, Operation, body.operation_id, user)
     warns = _check_task(db, user, w, ol, op)
+    tg = _tg_before(db, user, [body.plan_date], [w.id])
     it = _upsert(db, user, plan, body.plan_date, ol.id, op.id, w.id, body.qty)
     db.flush()
     auto_pinned = _offday_pin(db, user, plan, w.id, body.plan_date)
     audit.log(db, user, "plan_item", it.id, "manual_add", {"date": body.plan_date, "worker_id": w.id, "order_line_id": ol.id,
                                                           "operation_id": op.id, "qty": body.qty})
     snapshots.sync(db, user.tenant_id, plan, today)
+    _tg_after(db, user, tg, [body.plan_date], [w.id], today, bg)
     return {"item": _item_out(it), "warnings": warns + _over_need(db, user, plan, ol, op), "auto_pinned": auto_pinned}
 
 
 @router.patch("/plan-day/items/{iid}")
-def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)), db: Session = DB,
+def patch_item(iid: int, body: ItemPatch, bg: BackgroundTasks, user: User = Depends(require(*STAFF)), db: Session = DB,
                today: date = Depends(get_today)):
     """Изменить задание: количество, работника, заказ (а с ним изделие и проект), операцию или день."""
     plan = _plan(db, user)
@@ -176,6 +194,8 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
     ol = get_or_404(db, OrderLine, olid, user)
     op = get_or_404(db, Operation, opid, user)
     warns = _check_task(db, user, w, ol, op)
+    tg_days, tg_workers = [old[0], d], [old[1], wid]
+    tg = _tg_before(db, user, tg_days, tg_workers)
     if (d, wid, olid, opid) == old[:4]:                       # тот же ключ: меняется только количество
         it.qty, it.is_locked, it.reason_code, it.is_frozen = qty, day_pinned(db, user, wid, d), "MANUAL", False
         res = it
@@ -188,11 +208,12 @@ def patch_item(iid: int, body: ItemPatch, user: User = Depends(require(*STAFF)),
     audit.log(db, user, "plan_item", res.id, "manual_edit", {"from": [x.isoformat() if isinstance(x, date) else x for x in old],
                                                             "to": [d.isoformat(), wid, olid, opid, qty]})
     snapshots.sync(db, user.tenant_id, plan, today)
+    _tg_after(db, user, tg, tg_days, tg_workers, today, bg)
     return {"item": _item_out(res), "warnings": warns + _over_need(db, user, plan, ol, op), "auto_pinned": auto_pinned}
 
 
 @router.delete("/plan-day/items/{iid}", status_code=204)
-def delete_item(iid: int, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
+def delete_item(iid: int, bg: BackgroundTasks, user: User = Depends(require(*STAFF)), db: Session = DB, today: date = Depends(get_today)):
     """Убрать задание. Чтобы перепланирование не вернуло его обратно, день работника нужно закрепить вручную."""
     plan = _plan(db, user)
     it = db.scalar(scoped(PlanItem, user).where(PlanItem.id == iid, PlanItem.plan_id == plan.id))
@@ -201,11 +222,13 @@ def delete_item(iid: int, user: User = Depends(require(*STAFF)), db: Session = D
     _future(it.plan_date, today)
     _worker(db, user, it.worker_id)
     wid, d = it.worker_id, it.plan_date
+    tg = _tg_before(db, user, [d], [wid])
     audit.log(db, user, "plan_item", it.id, "manual_delete", {"date": d, "worker_id": wid, "order_line_id": it.order_line_id,
                                                               "operation_id": it.operation_id, "qty": it.qty})
     db.delete(it)
     db.flush()
     snapshots.sync(db, user.tenant_id, plan, today)
+    _tg_after(db, user, tg, [d], [wid], today, bg)
 
 
 class PinIn(BaseModel):
