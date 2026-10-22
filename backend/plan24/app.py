@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, dayedit, demo, dev, facts, integrations, plans, refs, reports, users
+from .routers import auth, dayedit, demo, dev, facts, integrations, plans, refs, reports, tgapp, users
 
 STATIC = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -44,10 +44,16 @@ def create_app() -> FastAPI:
         resp = await call_next(request)
         h = resp.headers
         h["X-Content-Type-Options"] = "nosniff"
-        h["X-Frame-Options"] = "DENY"
         h["Referrer-Policy"] = "same-origin"
-        h["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                                        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+        in_telegram = request.url.path == "/tg" or request.url.path.startswith(("/tg/", "/static/tgapp/"))
+        # Обычный интерфейс нельзя встраивать никуда. Мини-приложение Telegram — можно только в окна Telegram (веб-клиенты показывают его в iframe).
+        if not in_telegram:
+            h["X-Frame-Options"] = "DENY"
+        h["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                                        "connect-src 'self'; base-uri 'self'; frame-ancestors "
+                                        + ("https://web.telegram.org https://webk.telegram.org https://webz.telegram.org" if in_telegram else "'none'"))
+        if in_telegram:
+            h["Cache-Control"] = "no-store"
         if config.env() == "prod":
             h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"      # по HTTP браузеры его игнорируют
         if request.url.path.startswith("/api/"):
@@ -75,13 +81,18 @@ def create_app() -> FastAPI:
         except Exception as e:                                       # noqa: BLE001
             return problem(503, "База данных недоступна", type(e).__name__)
 
-    for r in (auth.router, users.router, refs.router, plans.router, dayedit.router, facts.router, reports.router, demo.router, dev.router, integrations.router):
+    for r in (auth.router, users.router, refs.router, plans.router, dayedit.router, facts.router, reports.router, demo.router, dev.router, integrations.router, tgapp.router):
         app.include_router(r, prefix="/api/v1")
 
     if STATIC.exists():
         @app.get("/", include_in_schema=False)
         def index():
             return FileResponse(STATIC / "index.html")
+        @app.get("/tg", include_in_schema=False)
+        @app.get("/tg/", include_in_schema=False)
+        def tg_app():
+            """Мини-приложение Telegram (страница открывается кнопкой бота; вход — по подписи Telegram, без пароля)."""
+            return FileResponse(STATIC / "tgapp" / "index.html")
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 

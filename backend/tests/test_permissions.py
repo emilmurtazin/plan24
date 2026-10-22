@@ -112,6 +112,8 @@ def test_every_route_is_covered_by_matrix(full_org):
     for path, ops in paths.items():
         if not path.startswith("/api/v1") or "openapi" in path:
             continue
+        if path.startswith("/api/v1/tgapp/"):
+            continue                                  # свой вход (подпись Telegram → токен сессии); закрытость проверяет test_tgapp
         for m in {k.upper() for k in ops} - {"HEAD", "OPTIONS"}:
             norm = re.sub(r"\{[^}]+\}", "{}", path)
             if (m, path) in open_routes:

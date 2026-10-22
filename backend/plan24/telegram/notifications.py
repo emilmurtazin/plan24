@@ -11,10 +11,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import reports_service
+from .. import config, reports_service
 from .. import db as dbm
 from ..models import TelegramLink, Tenant
 from . import bot, events
+from .ui import app_button
 
 WINDOW_HOURS = 3        # не «догонять» уведомление позже чем через 3 часа после его времени
 
@@ -56,7 +57,11 @@ def run_due(db: Session, now_utc: datetime) -> list:
             for kind in due:
                 msg = _compose(db, actor, name, kind, day)
                 if msg and _first_time(db, tid, kind, str(link.id), day):
-                    bot.say(out, link.chat_id, msg[0], msg[1])
+                    markup = msg[1]
+                    url = config.tgapp_url()
+                    if url and markup:                                   # в каждое напоминание — кнопка запуска приложения
+                        markup["inline_keyboard"].append([app_button(url)])
+                    bot.say(out, link.chat_id, msg[0], markup)
     return out
 
 

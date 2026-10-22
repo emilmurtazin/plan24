@@ -30,7 +30,18 @@ def copy_message(out: list, chat_id: int, from_chat_id: int, message_id: int):
 
 
 def kb(rows: list) -> dict:
-    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]}
+    """Кнопки под сообщением: (текст, callback_data) или готовый словарь кнопки (например, web_app)."""
+    return {"inline_keyboard": [[b if isinstance(b, dict) else {"text": b[0], "callback_data": b[1]} for b in row] for row in rows]}
+
+
+def app_button(url: str, text: str = "📱 Открыть приложение") -> dict:
+    """Кнопка запуска мини-приложения Telegram (передаёт приложению подписанные данные пользователя)."""
+    return {"text": text, "web_app": {"url": url}}
+
+
+def menu_button(out: list, chat_id: int, url: str):
+    """Синяя кнопка «Приложение» рядом с полем ввода — для этого чата."""
+    out.append({"kind": "menu_button", "chat_id": chat_id, "url": url, "text": "Приложение"})
 
 
 def fnum(x) -> str:

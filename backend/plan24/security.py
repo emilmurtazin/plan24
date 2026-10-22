@@ -47,6 +47,22 @@ def decode_access(token: str) -> tuple | None:
         return None
 
 
+def make_tgapp(link_id: int, tenant_id: int) -> str:
+    """Короткоживущий токен мини-приложения Telegram: привязка чата (link) и организация. Живёт, пока привязка существует."""
+    now = datetime.now(timezone.utc)
+    return jwt.encode({"sub": str(link_id), "tid": tenant_id, "typ": "tgapp", "iat": now,
+                       "exp": now + timedelta(minutes=config.TGAPP_TTL_MIN)}, config.secret_key(), algorithm=ALGO)
+
+
+def decode_tgapp(token: str) -> tuple | None:
+    """→ (id привязки, id организации) или None. Токен веб-входа сюда не подходит (другой typ), и наоборот."""
+    try:
+        d = jwt.decode(token, config.secret_key(), algorithms=[ALGO])
+        return (int(d["sub"]), int(d["tid"])) if d.get("typ") == "tgapp" else None
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return None
+
+
 def _h(t: str) -> str:
     return hashlib.sha256(t.encode()).hexdigest()
 
@@ -152,6 +168,7 @@ class RateLimiter:
 
 
 login_limiter = RateLimiter("login")
+tgapp_limiter = RateLimiter("tgapp", 20, 300)         # неудачные входы в мини-приложение: 20 за 5 минут на IP
 forgot_limiter = RateLimiter("forgot", 3, 3600)        # запросы сброса пароля: 3 в час на e-mail+IP
 resend_limiter = RateLimiter("resend", 1, 60)          # повторная отправка подтверждения: 1 в минуту на пользователя
 

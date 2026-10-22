@@ -31,6 +31,10 @@ class FakeTG:
     def set_commands(self, chat_id, commands):
         self.commands[chat_id] = commands
 
+    def set_menu_button(self, chat_id, url, text="Приложение"):
+        self.menu_buttons = getattr(self, "menu_buttons", {})
+        self.menu_buttons[chat_id] = url
+
     def answer_callback(self, cid, text=None):
         self.answers.append(cid)
         self.answer_texts.append(text)

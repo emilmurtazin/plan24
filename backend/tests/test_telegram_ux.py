@@ -151,8 +151,8 @@ def test_evening_messages_have_action_buttons(full_org, tg):
     out = run_notifications(at_local("17:40"))
     for_f = [m for m in out if m["chat_id"] == fchat.chat_id]
     for_w = [m for m in out if m["chat_id"] == wchat.chat_id]
-    assert for_f and {"rem", "cd:0"} <= {b["callback_data"] for m in for_f for row in m["markup"]["inline_keyboard"] for b in row}
-    assert for_w and "cd:0" in {b["callback_data"] for m in for_w for row in m["markup"]["inline_keyboard"] for b in row}
+    assert for_f and {"rem", "cd:0"} <= {b.get("callback_data") for m in for_f for row in m["markup"]["inline_keyboard"] for b in row}
+    assert for_w and "cd:0" in {b.get("callback_data") for m in for_w for row in m["markup"]["inline_keyboard"] for b in row}
 
 
 # ------------------------------------------------------------------ отклонения → бригадиру

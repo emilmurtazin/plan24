@@ -20,42 +20,27 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, config
 from .. import db as dbm
 from .. import facts_service, planning, reports_service, security
 from ..facts_service import Actor, FactError
 from ..models import (Fact, FactReason, TelegramCode, TelegramLink, TelegramState, TelegramUpdate, Tenant, User,
                       Worker, WorkerAbsence, utcnow)
 from ..timeutil import today_in
-from . import events
-from .ui import (MAX_QTY, WD, answer, copy_message, fday, fnum, kb, menu_action, menu_keyboard, parse_qty, say, set_commands,
+from . import core, events
+from .core import (ABS_PERIODS, ABS_REASONS, NUDGE_EVERY, PROBLEMS, flat_tasks as _flat_tasks, find_task as _find_task, get_state,
+                   pending as _pending, put_state, reasons_for as _reasons_for, resolve_actor, role_of as _role, rows as _rows,
+                   task_key as _key, task_label as _label, tenant_today)
+from .ui import (MAX_QTY, WD, answer, app_button, menu_button, copy_message, fday, fnum, kb, menu_action, menu_keyboard, parse_qty, say, set_commands,
                  show)
 
 log = logging.getLogger("plan24.telegram")
 PAGE = 6
 bind_limiter = security.RateLimiter("bind", 5, 900)      # неверные коды привязки: 5 за 15 минут на чат (общий для процессов)
-NUDGE_EVERY = timedelta(hours=1)                        # «Напомнить» — не чаще раза в час
-PROBLEMS = {"mat": "📦 Нет материала", "tool": "🔧 Поломка, инструмент", "bad": "✖ Брак", "oth": "💬 Другое"}
-ABS_PERIODS = {"t": "сегодня", "m": "завтра", "tm": "сегодня и завтра", "w7": "7 дней"}
-ABS_REASONS = {"ill": "Болезнь", "vac": "Отпуск", "fam": "Личные обстоятельства", "oth": "Другое"}
 MEDIA = ("photo", "voice", "video", "video_note", "document", "audio", "animation")
 
 
 # ------------------------------------------------------------------ состояние диалога
-def get_state(db: Session, chat_id: int) -> dict:
-    row = db.get(TelegramState, chat_id)
-    return dict(row.state) if row else {}
-
-
-def put_state(db: Session, chat_id: int, state: dict):
-    row = db.get(TelegramState, chat_id)
-    if row is None:
-        db.add(TelegramState(chat_id=chat_id, state=state, tenant_id=db.info["tenant_id"]))
-    else:
-        row.state = state
-        row.updated_at = utcnow()
-
-
 def _clear_pending(db: Session, chat_id: int):
     st = get_state(db, chat_id)
     for k in ("await", "confirm", "problem"):
@@ -64,23 +49,6 @@ def _clear_pending(db: Session, chat_id: int):
 
 
 # ------------------------------------------------------------------ личность
-def resolve_actor(db: Session, link: TelegramLink):
-    """Кто пишет: исполнитель без учётной записи (роль worker) или пользователь-бригадир. None — доступ закрыт."""
-    if link.worker_id:
-        w = db.get(Worker, link.worker_id)
-        return (Actor(tenant_id=link.tenant_id, worker_id=w.id), w.name) if w and w.tenant_id == link.tenant_id else (None, "")
-    u = db.get(User, link.user_id)
-    return (u, u.name) if u and u.is_active and u.tenant_id == link.tenant_id and u.role == "foreman" else (None, "")
-
-
-def _role(actor) -> str:
-    return "foreman" if getattr(actor, "role", "") == "foreman" else "worker"
-
-
-def tenant_today(db: Session, tenant_id: int) -> date:
-    return today_in(db.get(Tenant, tenant_id).timezone)
-
-
 # ------------------------------------------------------------------ точка входа
 def handle_update(db: Session, upd: dict, out: list) -> None:
     uid = upd.get("update_id")
@@ -194,8 +162,20 @@ def _help(db, chat_id, actor, name, out):
                   "✅ Закрыть день — внести плановое по всем заданиям одним нажатием",
                   "⚠ Проблема — сообщить бригадиру (можно с фото)", "🤒 Не выйду — предупредить, что не сможете выйти"]
     lines += ["📅 Завтра — что планируется завтра", "↩ /undo — отменить последний ввод", "⚙ Настройки — время и вид уведомлений"]
+    url = config.tgapp_url()
+    if url:
+        lines += ["", "📱 Приложение — те же задания с крупными кнопками (кнопка «Приложение» слева от поля ввода)"]
     say(out, chat_id, "\n".join(lines), menu_keyboard(role))
     set_commands(out, chat_id, role)
+    _offer_app(out, chat_id)
+
+
+def _offer_app(out: list, chat_id: int):
+    """Мини-приложение: кнопка рядом с полем ввода и кнопка под сообщением (только при HTTPS-адресе сервиса)."""
+    url = config.tgapp_url()
+    if url:
+        menu_button(out, chat_id, url)
+        say(out, chat_id, "Откройте приложение — крупные кнопки вместо ввода команд:", kb([[app_button(url)]]))
 
 
 # ------------------------------------------------------------------ привязка
@@ -231,48 +211,10 @@ def _link(db: Session, chat_id: int, raw: str, out: list):
     say(out, chat_id, f"Готово! Вы — {name}. Теперь здесь можно смотреть задания и вносить факт.\nПароль не нужен.\n"
                       "Всё нужное — в меню внизу экрана.", menu_keyboard(role))
     set_commands(out, chat_id, role)
+    _offer_app(out, chat_id)
 
 
 # ------------------------------------------------------------------ задания: экраны
-def _flat_tasks(report: dict) -> list:
-    rows = []
-    for w in report["workers"]:
-        for t in w["tasks"]:
-            rows.append({**t, "worker_id": w["worker_id"], "worker": w["worker"]})
-    return rows
-
-
-def _rows(db, actor, wid: Optional[int] = None, day: Optional[date] = None) -> list:
-    today = tenant_today(db, actor.tenant_id)
-    rows = _flat_tasks(reports_service.day_report(db, actor, day or today, today))
-    return [t for t in rows if not wid or t["worker_id"] == wid]
-
-
-def _key(t: dict) -> str:
-    return f"{t['order_line_id']}:{t['operation_id']}:{t['worker_id']}"
-
-
-def _find_task(db, actor, key: str):
-    """Задание строго из отчёта актора: подделанные идентификаторы чужих задач не пройдут."""
-    try:
-        ol, op, wk = (int(x) for x in key.split(":"))
-    except ValueError:
-        return None
-    for t in _rows(db, actor):
-        if (t["order_line_id"], t["operation_id"], t["worker_id"]) == (ol, op, wk):
-            return t
-    return None
-
-
-def _label(t: dict) -> str:
-    return f"{t['worker']} · {t['operation']} · {t['product']} · {t['order']}"
-
-
-def _pending(rows: list, wid: int = 0) -> list:
-    """Задания, по которым факта ещё нет, а на сегодня что-то запланировано."""
-    return [t for t in rows if t["plan_qty"] and t["fact_qty"] is None and (not wid or t["worker_id"] == wid)]
-
-
 def _footer(st: dict, rows: list, role: str, wid: int) -> list:
     out = []
     if _pending(rows, wid):
@@ -388,14 +330,6 @@ def _open(db, chat_id, mid, actor, name, view: dict, out: list):
     show(out, chat_id, mid, text, markup)
 
 
-def _reasons_for(db, tenant_id: int, worker_id: int) -> list:
-    wc = db.get(Worker, worker_id).work_center_id
-    rs = db.scalars(select(FactReason).where(FactReason.tenant_id == tenant_id,
-                                             or_(FactReason.work_center_id.is_(None), FactReason.work_center_id == wc))
-                    .order_by(FactReason.id).limit(6)).all()
-    return [{"id": r.id, "name": r.name} for r in rs]
-
-
 def _rerender(db, chat_id, mid, actor, name, out):
     st = get_state(db, chat_id)
     _open(db, chat_id, mid, actor, name, st.get("view") or {"s": "list"}, out)
@@ -403,10 +337,7 @@ def _rerender(db, chat_id, mid, actor, name, out):
 
 # ------------------------------------------------------------------ запись факта
 def _write(db, chat_id, actor, task: dict, qty: float):
-    today = tenant_today(db, actor.tenant_id)
-    f, old = facts_service.enter(db, actor, fact_date=today, order_line_id=task["order_line_id"],
-                                 operation_id=task["operation_id"], worker_id=task["worker_id"], qty=qty,
-                                 today=today, source="telegram")
+    f, old = core.write_fact(db, actor, task, qty)
     st = get_state(db, chat_id)
     st.pop("await", None); st.pop("confirm", None)
     st["last"] = {"fact_id": f.id, "previous": old, "label": _label(task)}
@@ -590,51 +521,25 @@ def _closeday_ask(db, chat_id, mid, actor, wid: int, out: list):
 
 
 def _closeday_do(db, chat_id, mid, actor, name, wid: int, out: list):
-    role = _role(actor)
-    pend = _pending(_rows(db, actor, wid or None) if role == "foreman" else _rows(db, actor))
-    ok, fails = 0, []
-    for t in pend:
-        try:
-            _write(db, chat_id, actor, t, t["plan_qty"])
-            ok += 1
-        except FactError as e:
-            fails.append(f"{t['operation']}: {e.detail}")
-    st = get_state(db, chat_id); st.pop("last", None); put_state(db, chat_id, st)            # групповую запись одной кнопкой не откатить
-    text = f"✔ Внесено по плану: {ok}." + ("" if not fails else "\nНе внесено:\n" + "\n".join(fails[:5]))
+    r = core.close_day(db, actor, wid)
+    st = get_state(db, chat_id); st.pop("last", None); st.pop("await", None); st.pop("confirm", None); put_state(db, chat_id, st)   # групповую запись не откатить
+    text = f"✔ Внесено по плану: {r['ok']}." + ("" if not r["fails"] else "\nНе внесено:\n" + "\n".join(r["fails"][:5]))
     show(out, chat_id, mid, text, kb([[("📋 Задания", "l")]]))
-    return f"Внесено: {ok}"
+    return f"Внесено: {r['ok']}"
 
 
 # ------------------------------------------------------------------ бригадир: напомнить не внёсшим
 def _remind(db, chat_id, mid, actor, out: list):
-    if _role(actor) != "foreman":
+    r = core.remind(db, actor, chat_id, out)
+    if r["status"] == "denied":
         return None
-    st = get_state(db, chat_id)
-    last = st.get("nudge")
-    if last:
-        ago = utcnow() - datetime.fromisoformat(last)
-        if ago < NUDGE_EVERY:
-            return f"Напоминали {max(1, int(ago.total_seconds() // 60))} мин назад — подождите."
-    pend = _pending(_rows(db, actor))
-    if not pend:
+    if r["status"] == "throttled":
+        return f"Напоминали {r['minutes']} мин назад — подождите."
+    if r["status"] == "nobody":
         return "У всех факт внесён ✔"
-    by: dict = {}
-    for t in pend:
-        by.setdefault(t["worker_id"], [t["worker"], 0])[1] += 1
-    links = {l.worker_id: l for l in db.scalars(select(TelegramLink).where(TelegramLink.tenant_id == actor.tenant_id,
-                                                                          TelegramLink.worker_id.in_(list(by))))}
-    sent, nolink = 0, []
-    for wid, (nm, n) in by.items():
-        if wid in links:
-            say(out, links[wid].chat_id, f"🔔 {nm}, внесите, пожалуйста, факт: заданий без факта — {n}.",
-                kb([[("📋 Задания", "l"), ("✅ Закрыть день", "cd:0")]]))
-            sent += 1
-        else:
-            nolink.append(nm)
-    st["nudge"] = utcnow().isoformat(); put_state(db, chat_id, st)
-    text = f"🔔 Напоминание отправлено: {sent} из {len(by)}."
-    if nolink:
-        text += "\nНет Telegram у: " + ", ".join(nolink[:10]) + " — скажите лично."
+    text = f"🔔 Напоминание отправлено: {r['sent']} из {r['total']}."
+    if r["nolink"]:
+        text += "\nНет Telegram у: " + ", ".join(r["nolink"][:10]) + " — скажите лично."
     say(out, chat_id, text)
     return "Отправлено"
 
@@ -691,30 +596,15 @@ def _problem_send(db, chat_id, actor, st: dict, comment: str, media_message_id: 
     p = st.get("problem")
     if not p or _role(actor) != "worker":
         return None
-    w = db.get(Worker, actor.worker_id)
-    links = events.foreman_links(db, actor.tenant_id, w.work_center_id, only_alerts=False)       # о проблеме сообщаем всегда
     st.pop("problem", None); put_state(db, chat_id, st)
-    audit.log(db, actor, "problem", w.id, "report", {"type": p["type"], "media": media_message_id is not None, "comment": comment[:200]})
-    if not links:
+    n = core.send_problem(db, actor, chat_id, p["type"], comment, media_message_id, out)
+    if not n:
         return say(out, chat_id, "Бригадир участка пока не подключён к Telegram — позвоните ему или скажите лично.", menu_keyboard("worker"))
-    tasks = [t for t in _rows(db, actor) if t["plan_qty"]][:4]
-    text = f"⚠ Проблема: {PROBLEMS[p['type']]}\nОт: {w.name}" + (f"\n{comment}" if comment else "") + \
-        ("\nСегодня у него: " + "; ".join(f"{t['operation']} · {t['order']}" for t in tasks) if tasks else "")
-    for l in links:
-        say(out, l.chat_id, text, kb([[("👍 Принял", f"ak:{w.id}"), (f"👤 {w.name[:24]}", f"w:{w.id}")]]))
-        if media_message_id:
-            copy_message(out, l.chat_id, chat_id, media_message_id)
-    say(out, chat_id, f"Передал бригадиру ({len(links)}). Если срочно — позвоните.", menu_keyboard("worker"))
+    say(out, chat_id, f"Передал бригадиру ({n}). Если срочно — позвоните.", menu_keyboard("worker"))
 
 
 def _ack_problem(db, chat_id, mid, actor, name, worker_id: int, out: list):
-    w = db.get(Worker, worker_id)
-    if w is None or w.tenant_id != actor.tenant_id or w.work_center_id != actor.work_center_id:
-        return "Это работник другого участка"
-    l = events.worker_link(db, actor.tenant_id, worker_id)
-    if l:
-        say(out, l.chat_id, f"👍 {name} принял ваше сообщение и в курсе.")
-    return "Работник уведомлён" if l else "Принято (у работника нет Telegram)"
+    return core.ack_problem(db, actor, name, worker_id, out)
 
 
 # ------------------------------------------------------------------ отсутствие (сборщик «не выйду», бригадир «отметить»)
@@ -746,54 +636,26 @@ def _absent_reason(chat_id, mid, period: str, out: list, worker_id: int):
 
 
 def _absent_create(db, chat_id, mid, actor, worker_id: int, period: str, reason: str, out: list):
-    if period not in ABS_PERIODS or reason not in ABS_REASONS:
-        return None
-    w = db.get(Worker, worker_id)
-    role = _role(actor)
-    if w is None or w.tenant_id != actor.tenant_id or (role == "worker" and w.id != actor.worker_id) \
-            or (role == "foreman" and w.work_center_id != actor.work_center_id):
-        return "Нет доступа к этому работнику"
-    today = tenant_today(db, actor.tenant_id)
-    d1, d2 = {"t": (today, today), "m": (today + timedelta(days=1),) * 2, "tm": (today, today + timedelta(days=1)),
-              "w7": (today, today + timedelta(days=6))}[period]
-    a = WorkerAbsence(tenant_id=actor.tenant_id, worker_id=w.id, date_from=d1, date_to=d2, reason=ABS_REASONS[reason])
-    db.add(a)
-    db.flush()
-    audit.log(db, actor, "absence", a.id, "create", {"worker": w.name, "from": d1, "to": d2, "reason": a.reason, "source": "telegram"})
-    when = ABS_PERIODS[period]
-    if role == "worker":
-        show(out, chat_id, mid, f"Записал: вы не выйдете {when} ({ABS_REASONS[reason].lower()}). Бригадир предупреждён. Выздоравливайте!" if reason == "ill"
-             else f"Записал: вы не выйдете {when} ({ABS_REASONS[reason].lower()}). Бригадир предупреждён.")
-        for l in events.foreman_links(db, actor.tenant_id, w.work_center_id, only_alerts=False):
-            say(out, l.chat_id, f"🤒 {w.name}: не выйдет {when} ({ABS_REASONS[reason].lower()}).\nЗадания этого работника в плане остались — перепланируйте участок.",
-                kb([[("🔄 Перепланировать участок", "rp"), ("Позже", "x")]]))
+    r = core.create_absence(db, actor, worker_id, period, reason, out)
+    if "error" in r:
+        return r["error"]
+    if _role(actor) == "worker":
+        show(out, chat_id, mid, f"Записал: вы не выйдете {r['when']} ({r['reason']}). Бригадир предупреждён." + (" Выздоравливайте!" if r["ill"] else ""))
     else:
-        show(out, chat_id, mid, f"✔ Отмечено: {w.name} не выйдет {when} ({ABS_REASONS[reason].lower()}).\nПерепланировать участок сейчас?",
+        show(out, chat_id, mid, f"✔ Отмечено: {r['worker']} не выйдет {r['when']} ({r['reason']}).\nПерепланировать участок сейчас?",
              kb([[("🔄 Перепланировать участок", "rp"), ("Позже", "x")]]))
-        l = events.worker_link(db, actor.tenant_id, w.id)
-        if l:
-            say(out, l.chat_id, f"Бригадир отметил ваше отсутствие: {when} ({ABS_REASONS[reason].lower()}).")
     return "Записано"
 
 
 # ------------------------------------------------------------------ перепланирование участка из бота
 def _replan(db, chat_id, mid, actor, out: list):
-    today = tenant_today(db, actor.tenant_id)
-    track = events.enabled()
-    before = events.plan_state(db, actor.tenant_id, [today, today + timedelta(days=1)]) if track else {}
     try:
-        with dbm.tenant_plan_lock(actor.tenant_id):
-            p = planning.run_and_save(db, actor, today, {"scope_center_id": actor.work_center_id})
-            audit.log(db, actor, "plan", p.id, "replan", {**p.params, "source": "telegram"})
+        r = core.replan_center(db, actor, out)
     except planning.NoActivePlan:
         return show(out, chat_id, mid, "Сначала нужен общий план организации — его строит руководитель проекта.")
-    if track:
-        events.notify_plan_changes(db, actor.tenant_id, before, events.plan_state(db, actor.tenant_id, [today, today + timedelta(days=1)]),
-                                   out, today, who="Бригадир")
-    rows = [t for t in _rows(db, actor) if t["plan_qty"]]
-    text = f"✔ План участка пересчитан.\nСегодня: заданий — {len(rows)}, работников — {len({t['worker_id'] for t in rows})}."
-    if p.warnings:
-        text += f"\nПредупреждений планировщика: {len(p.warnings)} (подробно — в веб-версии)."
+    text = f"✔ План участка пересчитан.\nСегодня: заданий — {r['tasks']}, работников — {r['workers']}."
+    if r["warnings"]:
+        text += f"\nПредупреждений планировщика: {r['warnings']} (подробно — в веб-версии)."
     show(out, chat_id, mid, text, kb([[("👥 По людям", "l")]]))
     return "План пересчитан"
 
@@ -840,12 +702,7 @@ def _settings(db, chat_id, mid, link, actor, out: list, op: str = ""):
 
 
 # ------------------------------------------------------------------ очередь подтверждений бригадира (FR-22a)
-def _queue_rows(db, actor):
-    ws = {w.id: w.name for w in db.scalars(select(Worker).where(Worker.tenant_id == actor.tenant_id,
-                                                                  Worker.work_center_id == actor.work_center_id))}
-    fs = db.scalars(select(Fact).where(Fact.tenant_id == actor.tenant_id, Fact.status == "submitted",
-                                       Fact.deleted_at.is_(None), Fact.worker_id.in_(ws or [0])).order_by(Fact.id).limit(30)).all()
-    return fs, ws
+_queue_rows = core.queue_rows
 
 
 def _queue(db, chat_id, actor, out: list):

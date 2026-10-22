@@ -56,6 +56,9 @@ class TelegramClient:
         return self._call("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in commands],
                                             "scope": {"type": "chat", "chat_id": chat_id}})
 
+    def set_menu_button(self, chat_id: int, url: str, text: str = "Приложение"):
+        return self._call("setChatMenuButton", {"chat_id": chat_id, "menu_button": {"type": "web_app", "text": text, "web_app": {"url": url}}})
+
     def answer_callback(self, callback_id: str, text: Optional[str] = None):
         return self._call("answerCallbackQuery", {"callback_query_id": callback_id, **({"text": text[:190]} if text else {})})
 
@@ -114,5 +117,7 @@ def deliver(outbox: list):
                 c.copy_message(item["chat_id"], item["from_chat_id"], item["message_id"])
             elif item["kind"] == "commands":
                 c.set_commands(item["chat_id"], item["commands"])
+            elif item["kind"] == "menu_button":
+                c.set_menu_button(item["chat_id"], item["url"], item.get("text", "Приложение"))
         except Exception as e:                                     # noqa: BLE001
             log.error("telegram delivery failed: %s", type(e).__name__)

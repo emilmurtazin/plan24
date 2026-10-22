@@ -9,3 +9,4 @@ PID=$!
 trap 'kill $PID 2>/dev/null; rm -rf "$D"' EXIT
 i=0; until curl -sf http://127.0.0.1:8765/api/v1/health >/dev/null; do i=$((i+1)); [ $i -gt 40 ] && { echo "сервер не поднялся"; exit 1; }; sleep 0.5; done
 node smoke.js
+node tgapp.js

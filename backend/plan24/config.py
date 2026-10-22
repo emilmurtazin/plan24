@@ -122,3 +122,18 @@ def telegram_settings() -> dict:
 
 
 TG_CODE_TTL = 24 * 3600
+TGAPP_TTL_MIN = 480                               # сессия мини-приложения: 8 часов (смена)
+
+
+def tgapp_max_age() -> int:
+    """Насколько свежими должны быть данные запуска из Telegram (сек.)."""
+    return int(os.environ.get("PLAN24_TGAPP_MAX_AGE", "86400"))
+
+
+def tgapp_url() -> "str | None":
+    """Адрес мини-приложения для кнопок бота. Telegram принимает только HTTPS: пока PLAN24_BASE_URL не https — кнопок нет.
+    Выключить приложение можно PLAN24_TGAPP=off."""
+    if os.environ.get("PLAN24_TGAPP", "on").lower() in ("off", "0", "no") or not telegram_settings()["enabled"]:
+        return None
+    base = base_url()
+    return base + "/tg/" if base.startswith("https://") else None

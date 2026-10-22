@@ -32,6 +32,8 @@ services:
       PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}     # в режиме webhook ответы бота отправляет web
       PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
       PLAN24_TG_CA_PEM: ${PLAN24_TG_CA_PEM:-}
+      PLAN24_TGAPP: ${PLAN24_TGAPP:-on}                       # мини-приложение Telegram (страница /tg/ и API /tgapp)
+      PLAN24_TGAPP_MAX_AGE: ${PLAN24_TGAPP_MAX_AGE:-86400}
     depends_on:
       migrate: {condition: service_completed_successfully}
 
@@ -55,6 +57,8 @@ services:
       PLAN24_TG_API_BASE: ${PLAN24_TG_API_BASE:-https://api.telegram.org}
       PLAN24_TG_PROXY: ${PLAN24_TG_PROXY:-}
       PLAN24_TG_CA_PEM: ${PLAN24_TG_CA_PEM:-}                  # сертификат релея (см. deploy/relay/README.md)
+      PLAN24_BASE_URL: ${PLAN24_BASE_URL:?}                    # адрес мини-приложения в кнопках уведомлений
+      PLAN24_TGAPP: ${PLAN24_TGAPP:-on}
       PLAN24_TG_BOT_USERNAME: ${PLAN24_TG_BOT_USERNAME:-}
       PLAN24_DB_POOL: "2"
       PLAN24_DB_OVERFLOW: "2"
