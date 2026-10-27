@@ -98,8 +98,9 @@ def _workers_out(rep: dict, only_planned: bool = False) -> list:
     out = []
     for w in rep["workers"]:
         tasks = [_task_out(t) for t in w["tasks"] if (t["plan_qty"] or not only_planned)]
-        if tasks or not only_planned:
-            out.append({"worker_id": w["worker_id"], "worker": w["worker"], "tasks": tasks})
+        extras = [] if only_planned else [{k: x.get(k) for k in ("id", "title", "hours", "fact_hours", "order", "project", "product")} for x in w["extras"]]
+        if tasks or extras or not only_planned:
+            out.append({"worker_id": w["worker_id"], "worker": w["worker"], "tasks": tasks, "extras": extras})
     return out
 
 
@@ -275,3 +276,62 @@ def confirm(body: ConfirmIn, c: Ctx = Depends(tg_ctx)):
         return {"confirmed": len(fs)}
     facts_service.confirm(c.db, c.actor, facts_service.own_fact(c.db, c.actor, body.fact_id))
     return {"confirmed": 1}
+
+
+# ------------------------------------------------------------------ другая работа (смена проекта, изделия, операции) и работа вне перечня
+@router.get("/catalog")
+def catalog(c: Ctx = Depends(tg_ctx)):
+    """Позиции заказов в работе: на любую из них работника могли переключить. Выбор — проект → заказ → операция."""
+    return {"orders": core.work_orders(c.db, c.actor)}
+
+
+@router.get("/catalog/ops")
+def catalog_ops(order_line_id: int, c: Ctx = Depends(tg_ctx)):
+    return {"operations": core.order_operations(c.db, c.actor, order_line_id)}
+
+
+class OtherFactIn(BaseModel):
+    order_line_id: int
+    operation_id: int
+    worker_id: Optional[int] = None            # сборщик — себе (поле игнорируется); бригадир — работнику своего участка
+    qty: float = Field(ge=0, le=1_000_000)
+
+
+@router.post("/fact/other")
+def other_fact(body: OtherFactIn, c: Ctx = Depends(tg_ctx)):
+    """Факт по любой операции любой позиции — в том числе не из плана. Можно вносить несколько операций подряд."""
+    if c.role == "foreman" and not body.worker_id:
+        raise HTTPException(422, "Выберите работника")
+    f, old = core.write_fact_any(c.db, c.actor, body.worker_id or 0, body.order_line_id, body.operation_id, body.qty)
+    return {"fact_id": f.id, "qty": f.qty, "previous": old, "status": f.status, "worker_id": f.worker_id}
+
+
+class ExtraIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    hours: float = Field(gt=0, le=24)
+    order_line_id: Optional[int] = None        # None — работа не относится к заказу
+    worker_id: Optional[int] = None
+
+
+class ExtraHoursIn(BaseModel):
+    fact_hours: float = Field(ge=0, le=24)
+
+
+def _extra_json(x) -> dict:
+    return {"id": x.id, "title": x.title, "hours": x.hours, "fact_hours": x.fact_hours, "worker_id": x.worker_id, "order_line_id": x.order_line_id}
+
+
+@router.post("/extra", status_code=201)
+def add_extra(body: ExtraIn, c: Ctx = Depends(tg_ctx)):
+    return _extra_json(core.add_extra(c.db, c.actor, body.worker_id, body.title, body.hours, body.order_line_id))
+
+
+@router.put("/extra/{xid}")
+def put_extra(xid: int, body: ExtraHoursIn, c: Ctx = Depends(tg_ctx)):
+    return _extra_json(core.set_extra_hours(c.db, c.actor, xid, body.fact_hours))
+
+
+@router.delete("/extra/{xid}")
+def del_extra(xid: int, c: Ctx = Depends(tg_ctx)):
+    core.delete_extra(c.db, c.actor, xid)
+    return {"removed": True}

@@ -8,14 +8,19 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import or_, select
+import math
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import audit
 from .. import db as dbm
 from .. import facts_service, planning, reports_service
 from ..facts_service import Actor, FactError
-from ..models import (Fact, FactReason, TelegramLink, TelegramState, Tenant, User, Worker, WorkerAbsence, utcnow)
+from fastapi import HTTPException
+from ..deps import get_or_404
+from ..models import (ExtraTask, Fact, FactReason, Operation, OrderLine, Product, Project, TelegramLink, TelegramState, Tenant, User, Worker,
+                      WorkerAbsence, utcnow)
 from ..timeutil import today_in
 from . import events
 from .ui import copy_message, fnum, kb, say
@@ -244,3 +249,94 @@ def queue_rows(db: Session, actor):
     fs = db.scalars(select(Fact).where(Fact.tenant_id == actor.tenant_id, Fact.status == "submitted", Fact.deleted_at.is_(None),
                                        Fact.worker_id.in_(ws or [0])).order_by(Fact.id).limit(30)).all()
     return fs, ws
+
+
+# ------------------------------------------------------------------ другая работа: смена проекта, изделия, операции
+def work_orders(db: Session, actor) -> list:
+    """Все позиции заказов в работе: работник мог быть переключён на любой проект, изделие и операцию. По проектам и номерам."""
+    q = (select(OrderLine, Project.name, Product.name).join(Project, Project.id == OrderLine.project_id)
+         .join(Product, Product.id == OrderLine.product_id)
+         .where(OrderLine.tenant_id == actor.tenant_id, OrderLine.status == "planned", OrderLine.deleted_at.is_(None))
+         .order_by(Project.name, OrderLine.ext_id, OrderLine.id).limit(400))
+    return [{"order_line_id": ol.id, "project_id": ol.project_id, "project": pj, "order": ol.ext_id or f"№{ol.id}", "product": pr, "qty": ol.qty}
+            for ol, pj, pr in db.execute(q)]
+
+
+def order_operations(db: Session, actor, order_line_id: int) -> list:
+    """Операции маршрута позиции: что нужно, сколько уже сделано."""
+    ol = get_or_404(db, OrderLine, order_line_id, actor)
+    if ol.status != "planned":
+        raise HTTPException(422, "По этой позиции факт вносить нельзя (черновик, отменена или завершена)")
+    out = []
+    for op in db.scalars(select(Operation).where(Operation.routing_id == ol.routing_id).order_by(Operation.sequence, Operation.id)):
+        done = db.scalar(select(func.coalesce(func.sum(Fact.qty), 0.0)).where(
+            Fact.tenant_id == actor.tenant_id, Fact.order_line_id == ol.id, Fact.operation_id == op.id, Fact.deleted_at.is_(None))) or 0
+        out.append({"operation_id": op.id, "name": op.name, "required": math.ceil(ol.qty * op.per_item - 1e-9), "done": done})
+    return out
+
+
+def write_fact_any(db: Session, actor, worker_id: int, order_line_id: int, operation_id: int, qty: float):
+    """Факт по любой операции любой позиции (не обязательно из плана): работника могли переключить на другую работу.
+    Права и проверки — те же, что у обычного ввода: сборщик — только за себя и за сегодня, бригадир — за работников своего участка."""
+    if role_of(actor) == "worker":
+        worker_id = actor.worker_id
+    today = tenant_today(db, actor.tenant_id)
+    return facts_service.enter(db, actor, fact_date=today, order_line_id=order_line_id, operation_id=operation_id,
+                               worker_id=worker_id, qty=qty, today=today, source="telegram")
+
+
+# ------------------------------------------------------------------ работа вне перечня операций (в часах)
+def _extra_worker(db: Session, actor, worker_id: Optional[int], existing: bool = False) -> Worker:
+    """Работник, за которого вносится работа вне перечня. При создании сборщик всегда работает за себя (переданный id игнорируется);
+    для уже существующей записи (existing=True) её владелец проверяется строго — чужую запись сборщик не увидит."""
+    if role_of(actor) == "worker" and not existing:
+        worker_id = actor.worker_id
+    w = get_or_404(db, Worker, worker_id, actor)
+    facts_service.can_touch_worker(actor, w)                 # сборщик — только себя, бригадир — работников своего участка
+    return w
+
+
+def add_extra(db: Session, actor, worker_id: Optional[int], title: str, hours: float, order_line_id: Optional[int] = None) -> ExtraTask:
+    """Сегодняшняя работа вне перечня, уже выполненная: работник сразу вносит часы (план = факт). Не относится к заказу — order_line_id=None."""
+    title = (title or "").strip()
+    if not title or len(title) > 200:
+        raise HTTPException(422, "Опишите работу коротко (до 200 символов)")
+    if not (0 < hours <= 24):
+        raise HTTPException(422, "Часы — от 0,1 до 24")
+    w = _extra_worker(db, actor, worker_id)
+    if order_line_id is not None:
+        ol = get_or_404(db, OrderLine, order_line_id, actor)
+        if ol.status == "cancelled" or ol.deleted_at is not None:
+            raise HTTPException(422, "Позиция отменена")
+    today = tenant_today(db, actor.tenant_id)
+    x = ExtraTask(tenant_id=actor.tenant_id, plan_date=today, worker_id=w.id, order_line_id=order_line_id, title=title,
+                  hours=hours, fact_hours=hours, created_by=getattr(actor, "id", None) if role_of(actor) == "foreman" else None)
+    db.add(x)
+    db.flush()
+    audit.log(db, actor, "extra_task", x.id, "create", {"date": today, "worker_id": w.id, "title": x.title, "hours": hours,
+                                                      "order_line_id": order_line_id, "source": "telegram"})
+    return x
+
+
+def _own_extra(db: Session, actor, extra_id: int) -> ExtraTask:
+    x = get_or_404(db, ExtraTask, extra_id, actor)
+    _extra_worker(db, actor, x.worker_id, existing=True)
+    if x.plan_date != tenant_today(db, actor.tenant_id):
+        raise HTTPException(403, "Работу вне перечня можно менять только в день, на который она внесена")
+    return x
+
+
+def set_extra_hours(db: Session, actor, extra_id: int, hours: float) -> ExtraTask:
+    x = _own_extra(db, actor, extra_id)
+    if not (0 <= hours <= 24):
+        raise HTTPException(422, "Часы — от 0 до 24")
+    old = x.fact_hours
+    x.fact_hours = hours
+    audit.log(db, actor, "extra_task", x.id, "fact", {"hours": [old, hours], "source": "telegram"})
+    return x
+
+
+def delete_extra(db: Session, actor, extra_id: int):
+    x = _own_extra(db, actor, extra_id)
+    audit.log(db, actor, "extra_task", x.id, "delete", {"title": x.title, "source": "telegram"})
+    db.delete(x)

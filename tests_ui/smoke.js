@@ -148,6 +148,26 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
     await until(() => /Прошедший день/.test($('#view').textContent) && $('#addF'), 'прошедший день открыт');
     step('прошедший день ' + ys + ': подсказка и кнопка «+ Факт вне плана» на месте'); }
   click(byText('#drawer button', 'Дашборд')); click(byText('#drawer button', 'Выполнение')); await until(() => $$('.wcard').length, 'возврат на сегодня');
+  // --- «Назначение»: операции заказа × дни × работники ---
+  await goExec('Назначение');
+  await until(() => $('table.gridt') && $$('table.gridt tr').length > 1, 'таблица назначения');
+  { const opsN = $$('table.gridt tr').length - 1, cols = $$('table.gridt th').length - 1;
+    if (cols !== 7) throw new Error('в таблице должно быть 7 дней, а их ' + cols);
+    if ($$('table.gridt th.off').length < 1) throw new Error('выходные дни не помечены');
+    if (!$('#gord') || $('#gord').options.length < 1) throw new Error('нет выбора заказа');
+    const cellSel = $$('table.gridt td.gcell:not(.off) select.gadd')[3] || $('table.gridt td.gcell:not(.off) select.gadd');
+    const td0 = cellSel.closest('td'), rowIdx = [...$$('table.gridt tr')].indexOf(td0.closest('tr')), colIdx = [...td0.closest('tr').children].indexOf(td0);
+    const mine = () => $$('table.gridt tr')[rowIdx].children[colIdx].querySelectorAll('.gchip');
+    const had = mine().length, total0 = $$('.gchip').length;
+    const opt = [...cellSel.options].find(o => o.value);
+    cellSel.value = opt.value; cellSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => mine().length === had + 1 && $$('.gchip').length === total0 + 1, 'назначенный работник в ячейке');
+    const chip = mine()[mine().length - 1], q = +chip.querySelector('input.gq').value, who = chip.querySelector('.gn').textContent;
+    if (!(q >= 1)) throw new Error('норма не подтянулась: ' + q);
+    step(`«Назначение»: заказ целиком — ${opsN} операций × 7 дней; выбор работника «${who}» подтянул норму: ${q}`);
+    click(chip.querySelector('.gx')); await until(() => mine().length === had && $$('.gchip').length === total0, 'назначение снято');
+    step('«×» снимает назначение'); }
+  click(byText('#drawer button', 'Дашборд')); click(byText('#drawer button', 'Выполнение')); await goExec('План на день'); await until(() => $$('.wcard').length, 'возврат к плану дня');
 
   click($('[data-te]')); await until(() => $('.modal form') && $('.modal form').elements.operation_id.value, 'форма изменения'); click(byText('.modal button', 'Отмена'));
   // --- работа вне перечня ---
@@ -385,13 +405,13 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('#drawer button', 'Работники')); await until(() => $('[data-add]') && $$('#dt tbody tr, #dt tr').length > 1, 'работники участка у бригадира');
   { const rows = $$('#dt tbody tr').length || $$('#dt tr').length - 1;
     if ($$('#view nav.seg button').length) throw new Error('у бригадира не должно быть подвкладок «Участки»/«Причины»');
-    if (byText('#dt button', 'Удалить')) throw new Error('бригадир не должен удалять работников');
-    if (byText('#dt button', 'Допуски')) throw new Error('бригадиру не нужны «Допуски»');
+    if (!byText('#dt button', 'Удалить')) throw new Error('у бригадира — полный доступ к работникам участка: нужна кнопка «Удалить»');
+    if (!byText('#dt button', 'Допуски')) throw new Error('у бригадира должны быть «Допуски» к заказам');
     if (!byText('#dt button', 'Отпуска')) throw new Error('у бригадира нет «Отпуска»');
     click($('[data-add]')); await until(() => $('.modal form'), 'форма работника бригадира');
     if ($('.modal form').elements.work_center_id) throw new Error('бригадир не выбирает участок — работник идёт на его участок');
     click(byText('.modal button', 'Отмена'));
-    step('бригадир: «Работники» — ' + rows + ' чел. своего участка, без удаления, допусков и выбора участка'); }
+    step('бригадир: «Работники» — ' + rows + ' чел. своего участка, с допусками и удалением, без выбора участка'); }
   click(byText('#drawer button', 'Выполнение')); await until(() => $$('.wcard').length, 'возврат к плану');
 
   // --- бригадир перепланирует только свой участок ---

@@ -146,9 +146,10 @@ def _worker_update(db, user, obj, data):
     return data
 
 
-# правка работников — руководители и бригадир (только свой участок); удаление — только руководители
+# работники: руководители — все, бригадир — полный доступ к работникам своего участка (создание, правка, удаление, допуски, отсутствия);
+# перевести работника на другой участок бригадир не может — это право руководителя проекта
 make_crud(router, "/workers", Worker, WorkerIn, WorkerPatch, "worker", fk={"work_center_id": WorkCenter},
-          read_roles=READERS, write_roles=STAFF, delete_roles=MANAGERS, row_scope=_worker_scope, row_check=_worker_check,
+          read_roles=READERS, write_roles=STAFF, row_scope=_worker_scope, row_check=_worker_check,
           before_create=_worker_create, before_update=_worker_update)
 
 
@@ -638,20 +639,43 @@ class AccessIn(BaseModel):
     order_line_ids: list[int]
 
 
+def _access_worker(db, user, wid: int) -> Worker:
+    w = get_or_404(db, Worker, wid, user)
+    _worker_check(user, w)                                   # бригадиру чужой работник «не существует»
+    return w
+
+
+def _selectable_orders(db, user) -> Optional[set]:
+    """Позиции, к которым можно допускать: руководителю — любые, бригадиру — те, где есть операции его участка."""
+    return distribution.order_ids_of_center(db, user, user.work_center_id) if user.role == "foreman" else None
+
+
 @router.get("/workers/{wid}/access")
 def get_access(wid: int, user: User = Depends(require(*READERS)), db: Session = DB):
-    get_or_404(db, Worker, wid, user)
+    _access_worker(db, user, wid)
     ids = db.scalars(select(WorkerOrderLine.order_line_id).where(
         WorkerOrderLine.tenant_id == user.tenant_id, WorkerOrderLine.worker_id == wid))
-    return {"order_line_ids": sorted(ids), "note": "Пусто — допущен ко всем позициям"}
+    sel = _selectable_orders(db, user)
+    return {"order_line_ids": sorted(ids), "note": "Пусто — допущен ко всем позициям",
+            "selectable_ids": None if sel is None else sorted(sel)}               # None — можно выбирать любые
 
 
 @router.put("/workers/{wid}/access")
-def put_access(wid: int, body: AccessIn, user: User = Depends(require(*MANAGERS)), db: Session = DB):
-    get_or_404(db, Worker, wid, user)
-    ids = sorted(set(body.order_line_ids))
+def put_access(wid: int, body: AccessIn, user: User = Depends(require(*STAFF)), db: Session = DB):
+    """Допуски работника к позициям (пусто — ко всем). Бригадир задаёт допуски своих работников только по позициям своего участка;
+    допуски к другим позициям (их ставит руководитель) он не видит и не меняет."""
+    _access_worker(db, user, wid)
+    ids = set(body.order_line_ids)
     for i in ids:
         get_or_404(db, OrderLine, i, user)
+    sel = _selectable_orders(db, user)
+    existing = set(db.scalars(select(WorkerOrderLine.order_line_id).where(WorkerOrderLine.tenant_id == user.tenant_id,
+                                                                          WorkerOrderLine.worker_id == wid)))
+    if sel is not None:
+        if ids - sel:
+            raise HTTPException(403, "Бригадир допускает работников только к позициям своего участка")
+        ids |= existing - sel                                # чужие допуски сохраняются как есть
+    ids = sorted(ids)
     db.execute(delete(WorkerOrderLine).where(WorkerOrderLine.tenant_id == user.tenant_id, WorkerOrderLine.worker_id == wid))
     for i in ids:
         db.add(WorkerOrderLine(tenant_id=user.tenant_id, worker_id=wid, order_line_id=i))

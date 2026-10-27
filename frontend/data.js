@@ -107,8 +107,7 @@ const TABS = {
   workers: {
     label: 'Работники', cfg: {
       title: 'Работники', add: 'Добавить работника', path: '/workers', defaults: { perf: 1, skill: 1, status: 'available', auto_plan: true },
-      noDelete: () => S.me.role === 'foreman',
-      hint: () => (S.me.role === 'foreman' ? 'Вы видите и ведёте работников своего участка: новые работники добавляются на ваш участок, перевести человека на другой участок или удалить может руководитель проекта. ' : '') + 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
+      hint: () => (S.me.role === 'foreman' ? 'Вы ведёте работников своего участка: добавляете, правите, допускаете к заказам, отмечаете отпуска. Перевести человека на другой участок может руководитель проекта. ' : '') + 'Производительность: 1 — норма, 1,2 — на 20% быстрее. Квалификация — допуск к операциям с требуемым уровнем. «Допуски» ограничивают позиции, к которым допущен человек (пусто = ко всем). Укажите участок: перепланирование идёт по участкам, и работник без участка в него не попадает.',
       cols: r => [{ label: 'Имя', html: x => esc(x.name) + (x.is_temporary ? ' <span class="badge b-noop">временный</span>' : '') }, { label: 'Участок', get: x => r.C[x.work_center_id]?.name || '—' }, { label: 'Производит.', cls: 'num', get: x => num(x.perf) },
       { label: 'Квалификация', get: x => qn(r.quals, x.skill) }, { label: 'Планирование', html: x => x.auto_plan ? 'автоматически' : '<span class="warn">только вручную</span>' }, { label: 'Статус', html: x => x.status === 'available' ? '<span class="badge b-done">Доступен</span>' : '<span class="badge b-none">Недоступен</span>' },
       { label: 'Telegram', html: x => r.TGW[x.id] ? '<span class="ok">✔ привязан</span>' : '<span class="muted">—</span>' }],
@@ -117,7 +116,7 @@ const TABS = {
         { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
         { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] },
         { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Выполнение → План на день». Так добавляются временные работники.' }],
-      extra: r => `${S.me.role === 'foreman' ? '' : `<button class="small" data-ac="${r.id}">Допуски</button> `}<button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
+      extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
       after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }
   },
@@ -290,8 +289,8 @@ async function openDistribution(order, refs, onClose) {
 
 /* ---------- допуски и отпуска исполнителя ---------- */
 async function openAccess(w, refs) {
-  const { order_line_ids: cur } = await GET(`/workers/${w.id}/access`), set = new Set(cur), planned = refs.orders.filter(o => o.status !== 'cancelled');
-  const m = modal(`<h2>Допуски: ${esc(w.name)}</h2><p class="muted">Отметьте позиции, к которым допущен исполнитель. Если ничего не отмечено — допущен ко всем.</p>
+  const { order_line_ids: cur, selectable_ids: sel } = await GET(`/workers/${w.id}/access`), set = new Set(cur), planned = refs.orders.filter(o => o.status !== 'cancelled' && (!sel || sel.includes(o.id)));
+  const m = modal(`<h2>Допуски: ${esc(w.name)}</h2><p class="muted">Отметьте позиции, к которым допущен исполнитель. Если ничего не отмечено — допущен ко всем.${sel ? ' Показаны позиции вашего участка.' : ''}</p>
     <div style="max-height:50vh;overflow:auto">${planned.map(o => `<label class="chk"><input type="checkbox" value="${o.id}" ${set.has(o.id) ? 'checked' : ''}> <span>${esc(o.ext_id || '#' + o.id)} — ${esc(refs.PR[o.product_id]?.name)} (${esc(refs.P[o.project_id]?.name)})</span></label>`).join('') || '<p class="muted">Позиций нет</p>'}</div>
     <div class="row"><button data-s>Сохранить</button><button class="secondary" data-x>Отмена</button></div>`);
   $('[data-x]', m.el).onclick = m.close;

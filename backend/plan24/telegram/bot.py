@@ -43,7 +43,7 @@ MEDIA = ("photo", "voice", "video", "video_note", "document", "audio", "animatio
 # ------------------------------------------------------------------ состояние диалога
 def _clear_pending(db: Session, chat_id: int):
     st = get_state(db, chat_id)
-    for k in ("await", "confirm", "problem"):
+    for k in ("await", "confirm", "problem", "extra"):
         st.pop(k, None)
     put_state(db, chat_id, st)
 
@@ -89,7 +89,7 @@ def _chat_id(upd: dict) -> Optional[int]:
 # ------------------------------------------------------------------ сообщения
 SLASH = {"/start": "help", "/help": "help", "/tasks": "tasks", "/zadaniya": "tasks", "/people": "tasks", "/undo": "undo",
          "/cancel": "cancel", "/queue": "queue", "/closeday": "closeday", "/problem": "problem", "/absent": "absent",
-         "/tomorrow": "tomorrow", "/settings": "settings"}
+         "/tomorrow": "tomorrow", "/settings": "settings", "/other": "other"}
 
 
 def _on_message(db: Session, msg: dict, chat_id: int, out: list, link: Optional[TelegramLink]):
@@ -120,6 +120,8 @@ def _on_message(db: Session, msg: dict, chat_id: int, out: list, link: Optional[
         return _problem_message(db, chat_id, msg, actor, st, out)
     if st.get("await") and text:
         return _number(db, chat_id, actor, st, text, out)
+    if st.get("extra") and text:
+        return _extra_text(db, chat_id, actor, st, text, out)
     if any(k in msg for k in MEDIA):
         return say(out, chat_id, "Фото и файлы я принимаю только в разделе «⚠ Проблема».", menu_keyboard(_role(actor)))
     say(out, chat_id, "Не понял. Выберите действие в меню внизу.", menu_keyboard(_role(actor)))
@@ -145,6 +147,8 @@ def _dispatch(db, chat_id, actor, name, link, action: str, out: list):
         return _absent_start(db, chat_id, actor, out)
     if action == "tomorrow":
         return _tomorrow(db, chat_id, actor, name, out)
+    if action == "other":
+        return _other_start(db, chat_id, None, actor, out)
     if action == "settings":
         return _settings(db, chat_id, None, link, actor, out)
 
@@ -237,10 +241,12 @@ def _screen(db, actor, name, view: dict, st: dict):
             return _card(t, st, role)
         s, wid = ("list", 0) if role == "worker" else ("people", 0)
     rows = _rows(db, actor, wid or None)
+    extras = _extras_lines(db, actor, wid) if (role == "worker" or wid) else []
     if not rows:
         if wid:
-            return f"У этого работника на сегодня, {fday(today)}, заданий нет.", kb([[("◀ К участку", "l")]])
-        return f"На сегодня, {fday(today)}, заданий нет.", None
+            return f"У этого работника на сегодня, {fday(today)}, заданий нет." + ("\n" + "\n".join(extras) if extras else ""), kb([[("◀ К участку", "l")]])
+        return f"На сегодня, {fday(today)}, заданий нет." + ("\n" + "\n".join(extras) if extras else ""), \
+            (kb([[("➕ Другая работа", "ow:0")]]) if role == "worker" else None)
     if s == "people":
         return _people(rows, today, st, role)
     page = int(view.get("page") or 0)
@@ -267,6 +273,10 @@ def _screen(db, actor, name, view: dict, st: dict):
         nav.append(("Дальше ▶", f"p:{page + 1}:{wid}"))
     if nav:
         buttons.append(nav)
+    if extras:
+        lines += ["", "Вне перечня:"] + extras
+    if role == "worker":
+        buttons.append([("➕ Другая работа", "ow:0")])
     return "\n".join(lines), kb(buttons + _footer(st, rows, role, wid))
 
 
@@ -405,6 +415,8 @@ def _route(db, chat_id, mid, actor, name, link, kind: str, rest: str, out: list)
         st = get_state(db, chat_id); c = st.pop("confirm", None); put_state(db, chat_id, st)
         if not c:
             return say(out, chat_id, "Нечего подтверждать.")
+        if c.get("other"):
+            return _other_write(db, chat_id, mid, actor, name, c, out)
         t = _find_task(db, actor, c["key"])
         if t is None:
             return say(out, chat_id, gone)
@@ -436,6 +448,8 @@ def _route(db, chat_id, mid, actor, name, link, kind: str, rest: str, out: list)
         return _closeday_do(db, chat_id, mid, actor, name, int(rest or 0), out)
     if kind == "rem":
         return _remind(db, chat_id, mid, actor, out)
+    if kind in ("ow", "op", "oo", "ox", "oe") and role == "worker":
+        return _other_route(db, chat_id, mid, actor, kind, rest, out)
     if kind == "pb":
         return _problem_type(db, chat_id, mid, rest, out)
     if kind == "pn":
@@ -471,7 +485,7 @@ def _number(db, chat_id, actor, st: dict, text: str, out: list):
     if q is None:
         return say(out, chat_id, "Нужно число от 0, например 12 или 7,5. Отмена: /cancel")
     aw = st.pop("await")
-    st["confirm"] = {"key": aw["key"], "qty": q, "label": aw["label"]}
+    st["confirm"] = {"qty": q, "label": aw["label"], **({"other": aw["other"]} if aw.get("other") else {"key": aw["key"]})}
     put_state(db, chat_id, st)
     say(out, chat_id, f"Записать {fnum(q)}?\n{aw['label']}" + (f"\n(план {fnum(aw['plan'])})" if aw.get("plan") else ""),
         kb([[("✔ Да, записать", "y"), ("✖ Нет", "x")]]))
@@ -728,3 +742,95 @@ def _confirm(db, chat_id, actor, rest: str, out: list):
     f = facts_service.own_fact(db, actor, int(rest))
     facts_service.confirm(db, actor, f)
     say(out, chat_id, f"✔ Подтверждено: {fnum(f.qty)}.")
+
+
+# ------------------------------------------------------------------ другая работа: сменили проект, изделие или операцию
+OTHER_PAGE = 8
+
+
+def _extras_lines(db, actor, wid: int = 0) -> list:
+    today = tenant_today(db, actor.tenant_id)
+    rep = reports_service.day_report(db, actor, today, today)
+    return [f"🛠 {x['title']} — {fnum(x['fact_hours'] if x['fact_hours'] is not None else x['hours'])} ч"
+            for w in rep["workers"] if not wid or w["worker_id"] == wid for x in w["extras"]]
+
+
+def _paged(buttons: list, page: int, prefix: str) -> list:
+    """Кнопки по одной в ряд, по OTHER_PAGE на страницу, и «◀ ▶»."""
+    pages = max(1, (len(buttons) + OTHER_PAGE - 1) // OTHER_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows = [[b] for b in buttons[page * OTHER_PAGE:(page + 1) * OTHER_PAGE]]
+    nav = ([("◀", f"{prefix}:{page - 1}")] if page > 0 else []) + ([("▶", f"{prefix}:{page + 1}")] if page < pages - 1 else [])
+    return rows + ([nav] if nav else [])
+
+
+def _other_start(db, chat_id, mid, actor, out: list, page: int = 0):
+    if _role(actor) != "worker":
+        return say(out, chat_id, "Другую работу вносит сборщик. Бригадир может сделать это за работника в мини-приложении или в веб-версии.", menu_keyboard("foreman"))
+    orders = core.work_orders(db, actor)
+    if not orders:
+        return show(out, chat_id, mid, "Сейчас нет заказов в работе.", None)
+    projects = list(dict.fromkeys((o["project_id"], o["project"]) for o in orders))
+    btns = [(name[:40], f"op:{pid}:0") for pid, name in projects]
+    show(out, chat_id, mid, "Вы переключились на другую работу? Выберите проект:",
+         kb(_paged(btns, page, "ow") + [[("🛠 Вне перечня операций", "oe")], [("✖ Отмена", "pc")]]))
+
+
+def _other_route(db, chat_id, mid, actor, kind: str, rest: str, out: list):
+    if kind == "ow":
+        return _other_start(db, chat_id, mid, actor, out, int(rest or 0))
+    if kind == "oe":
+        st = get_state(db, chat_id); st["extra"] = {"step": "title"}; st.pop("await", None); st.pop("confirm", None); put_state(db, chat_id, st)
+        return show(out, chat_id, mid, "🛠 Работа вне перечня операций. Что делали? Напишите коротко (например: уборка, помощь на другом участке).",
+                    kb([[("✖ Отмена", "pc")]]))
+    if kind == "op":
+        pid, _, page = rest.partition(":")
+        orders = [o for o in core.work_orders(db, actor) if o["project_id"] == int(pid)]
+        if not orders:
+            return "В этом проекте нет заказов в работе"
+        btns = [(f"{o['order']} · {o['product']} · {fnum(o['qty'])} шт"[:50], f"oo:{o['order_line_id']}") for o in orders]
+        return show(out, chat_id, mid, f"{orders[0]['project']}\nВыберите заказ:", kb(_paged(btns, int(page or 0), f"op:{pid}") + [[("◀ К проектам", "ow:0")]]))
+    if kind == "oo":
+        ops = core.order_operations(db, actor, int(rest))
+        ol = next((o for o in core.work_orders(db, actor) if o["order_line_id"] == int(rest)), None)
+        btns = [(f"{x['name']} ({fnum(x['done'])}/{fnum(x['required'])})"[:50], f"ox:{rest}:{x['operation_id']}") for x in ops]
+        head = f"{ol['project']} · {ol['order']} · {ol['product']}\n" if ol else ""
+        return show(out, chat_id, mid, head + "Выберите операцию (сделано/нужно):", kb(_paged(btns, 0, f"oo") + ([[("◀ К заказам", f"op:{ol['project_id']}:0")]] if ol else [])))
+    if kind == "ox":
+        ol_id, _, op_id = rest.partition(":")
+        op = next((x for x in core.order_operations(db, actor, int(ol_id)) if x["operation_id"] == int(op_id)), None)
+        ol = next((o for o in core.work_orders(db, actor) if o["order_line_id"] == int(ol_id)), None)
+        if op is None or ol is None:
+            return "Операция недоступна"
+        label = f"{op['name']} · {ol['product']} · {ol['order']}"
+        st = get_state(db, chat_id); st["await"] = {"other": {"ol": int(ol_id), "op": int(op_id)}, "label": label}; st.pop("confirm", None); put_state(db, chat_id, st)
+        return show(out, chat_id, mid, f"{label}\nСколько сделано? Отправьте число (например 12 или 7,5).", kb([[("✖ Отмена", "pc")]]))
+    return None
+
+
+def _other_write(db, chat_id, mid, actor, name, c: dict, out: list):
+    f, old = core.write_fact_any(db, actor, actor.worker_id, c["other"]["ol"], c["other"]["op"], c["qty"])
+    st = get_state(db, chat_id)
+    key = f"{c['other']['ol']}:{c['other']['op']}:{actor.worker_id}"
+    st["last"] = {"fact_id": f.id, "previous": old, "label": c["label"]}
+    put_state(db, chat_id, st)
+    _open(db, chat_id, mid, actor, name, {"s": "card", "key": key}, out)
+    return f"Записано: {fnum(c['qty'])}" + (". Бригадир подтвердит" if f.status == "submitted" else "")
+
+
+def _extra_text(db, chat_id, actor, st: dict, text: str, out: list):
+    """Работа вне перечня: сначала описание, затем часы."""
+    ex = st["extra"]
+    if ex["step"] == "title":
+        if len(text) > 200:
+            return say(out, chat_id, "Слишком длинно — до 200 символов. Опишите короче.")
+        st["extra"] = {"step": "hours", "title": text}
+        put_state(db, chat_id, st)
+        return say(out, chat_id, f"«{text}»\nСколько часов? Например 1 или 1,5.", kb([[("✖ Отмена", "pc")]]))
+    h = parse_qty(text)
+    if h is None or not (0 < h <= 24):
+        return say(out, chat_id, "Нужно число часов от 0,1 до 24, например 1,5. Отмена: /cancel")
+    st.pop("extra", None)
+    put_state(db, chat_id, st)
+    core.add_extra(db, actor, None, ex["title"], h)
+    say(out, chat_id, f"✔ Записано: {ex['title']} — {fnum(h)} ч.", menu_keyboard("worker"))

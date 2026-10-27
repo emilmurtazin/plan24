@@ -180,9 +180,10 @@ def test_foreman_manages_own_workers_only(full_org):
     # чужого не видит и не правит
     foreign = next(w for w in o.get("/workers").json()["items"] if w["work_center_id"] == other_c)
     assert o.patch(f"/workers/{foreign['id']}", "foreman", json={"perf": 2}).status_code == 404
-    # удаляет только руководство
-    assert o.delete(f"/workers/{wid}", "foreman").status_code == 403
-    assert o.delete(f"/workers/{wid}").status_code == 204
+    # удаляет своего (полный доступ к работникам участка)
+    assert o.delete(f"/workers/{wid}", "foreman").status_code == 204
+    foreign_w = next(w for w in o.get("/workers").json()["items"] if w["work_center_id"] == other_c)
+    assert o.delete(f"/workers/{foreign_w['id']}", "foreman").status_code == 404
 
 
 def test_foreman_absences_and_telegram_only_for_own_workers(full_org):
@@ -205,3 +206,34 @@ def test_foreman_absences_and_telegram_only_for_own_workers(full_org):
     assert o.post("/telegram/codes", "foreman", json={"worker_id": mine["id"]}).status_code in (201, 409)     # 409 — бот не настроен
     assert o.get("/telegram/status", "foreman").status_code == 200
     assert o.get("/telegram/status", "worker").status_code == 403
+
+
+def test_foreman_manages_access_of_own_workers_within_own_orders(full_org):
+    """Допуски к заказам: бригадир ставит их своим работникам и только по позициям своего участка; чужие допуски не трогает."""
+    o = full_org
+    own_c, other_c = o.wcs[0]["id"], o.wcs[1]["id"]
+    mine = next(w for w in o.get("/workers").json()["items"] if w["work_center_id"] == own_c)
+    foreign = next(w for w in o.get("/workers").json()["items"] if w["work_center_id"] == other_c)
+    lines = [x["id"] for x in o.get("/order-lines").json()["items"]]
+    outside_id = lines[-1]                                                                          # эту позицию целиком отдаём другому участку
+    ops = o.get(f"/order-lines/{outside_id}/operations").json()["items"]
+    assert o.put(f"/order-lines/{outside_id}/operations", json={"assignments": [
+        {"operation_id": x["operation_id"], "work_center_ids": [other_c]} for x in ops]}).status_code == 200
+    g = o.get(f"/workers/{mine['id']}/access", "foreman").json()
+    sel = set(g["selectable_ids"])
+    assert sel and outside_id not in sel and sel < set(lines)                                       # только позиции его участка, не все
+    assert o.get(f"/workers/{mine['id']}/access").json()["selectable_ids"] is None                  # у руководителя ограничения нет
+    outside = outside_id
+    one = sorted(sel)[0]
+    # руководитель ранее допустил работника к позиции вне участка бригадира — она сохранится
+    assert o.put(f"/workers/{mine['id']}/access", json={"order_line_ids": [outside]}).status_code == 200
+    r = o.put(f"/workers/{mine['id']}/access", "foreman", json={"order_line_ids": [one]})
+    assert r.status_code == 200 and set(r.json()["order_line_ids"]) == {one, outside}
+    assert o.put(f"/workers/{mine['id']}/access", "foreman", json={"order_line_ids": [outside]}).status_code == 403
+    # снятие своих допусков не стирает чужие
+    r = o.put(f"/workers/{mine['id']}/access", "foreman", json={"order_line_ids": []})
+    assert r.json()["order_line_ids"] == [outside]
+    # чужой работник недоступен
+    assert o.get(f"/workers/{foreign['id']}/access", "foreman").status_code == 404
+    assert o.put(f"/workers/{foreign['id']}/access", "foreman", json={"order_line_ids": [one]}).status_code == 404
+    assert o.put(f"/workers/{mine['id']}/access", "worker", json={"order_line_ids": []}).status_code == 403

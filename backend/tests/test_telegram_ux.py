@@ -374,3 +374,81 @@ def test_forged_foreman_buttons_do_nothing_for_workers_and_other_centers(full_or
     fchat.press(f"fr:{foreign['worker_id']}:t:ill")
     assert len(o.get("/absences").json()["items"]) == before
     assert not any(f["worker_id"] == foreign["worker_id"] for f in o.get("/facts").json()["items"])
+
+
+# ------------------------------------------------------------------ другая работа (бот)
+def test_other_work_flow_any_project_order_operation(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    assert "➕ Другая работа" in [b["text"] for row in wchat.say("/help")[0]["markup"]["keyboard"] for b in row]
+    start = wchat.say("➕ Другая работа")
+    assert "Выберите проект" in text(start) and any(b["callback_data"].startswith("op:") for b in buttons(start))
+    planned_ols = {t["order_line_id"] for t in w["tasks"]}
+    orders = o.get("/order-lines").json()["items"]
+    # выбираем проект и заказ, которых нет в плане работника
+    target = next(x for x in orders if x["id"] not in planned_ols)
+    proj_cb = f"op:{target['project_id']}:0"
+    lst = wchat.press(proj_cb)
+    assert "Выберите заказ" in text(lst)
+    ops_msg = wchat.press(f"oo:{target['id']}")
+    assert "Выберите операцию" in text(ops_msg)
+    op_buttons = [b for b in buttons(ops_msg) if b["callback_data"].startswith("ox:")]
+    assert len(op_buttons) >= 2                                                             # все операции маршрута
+    assert "Сколько сделано" in text(wchat.press(op_buttons[0]["callback_data"]))
+    assert "Нужно число" in text(wchat.say("много"))
+    assert "Записать 3" in text(wchat.say("3"))
+    card = wchat.press("y")
+    assert "Сделано: 3" in text(card) and "вне плана" in text(card)
+    fs = [f for f in o.get("/facts").json()["items"] if f["worker_id"] == w["worker_id"]]
+    assert len(fs) == 1 and fs[0]["qty"] == 3 and fs[0]["order_line_id"] == target["id"] and fs[0]["source"] == "telegram"
+    # вторая операция того же заказа — подряд
+    wchat.press(f"oo:{target['id']}")
+    wchat.press(op_buttons[1]["callback_data"]); wchat.say("2"); wchat.press("y")
+    assert len([f for f in o.get("/facts").json()["items"] if f["worker_id"] == w["worker_id"]]) == 2
+    # отменить последний ввод можно, как и обычный
+    assert "Ввод отменён" in text(wchat.say("/undo"))
+    assert len([f for f in o.get("/facts").json()["items"] if f["worker_id"] == w["worker_id"]]) == 1
+
+
+def test_other_work_extra_outside_operations_flow(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    assert "Что делали" in text(wchat.press("oe"))
+    assert "Сколько часов" in text(wchat.say("Уборка участка"))
+    assert "Нужно число часов" in text(wchat.say("0"))
+    assert "Нужно число часов" in text(wchat.say("25"))
+    done = wchat.say("1,5")
+    assert "Записано: Уборка участка — 1,5 ч" in text(done)
+    extras = next(x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == w["worker_id"])["extras"]
+    assert [(x["title"], x["fact_hours"]) for x in extras] == [("Уборка участка", 1.5)]
+    assert "Уборка участка — 1,5 ч" in text(wchat.say("📋 Задания"))                          # видно в списке дня
+    # слишком длинное описание отклоняется; меню прерывает ввод
+    wchat.press("oe")
+    assert "до 200" in text(wchat.say("я" * 201))
+    assert "Задания на" in text(wchat.say("📋 Задания"))
+    wchat.say("это уже не описание")
+    assert len(next(x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == w["worker_id"])["extras"]) == 1
+
+
+def test_other_work_is_for_workers_only(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    assert "сборщик" in text(fchat.say("/other")).lower()
+    n = len([f for f in o.get("/facts").json()["items"]])
+    for data in ("ow:0", "op:1:0", "oo:1", "ox:1:1", "oe"):
+        fchat.press(data)                                                                       # кнопки сборщика бригадиру недоступны
+    assert len(o.get("/facts").json()["items"]) == n
+    # поддельные идентификаторы у сборщика не ломают бота и не пишут данные
+    for data in ("op:99999:0", "oo:99999", "ox:1:99999", "ox:abc"):
+        wchat.press(data)
+    assert not [f for f in o.get("/facts").json()["items"] if f["worker_id"] == w["worker_id"]]
+
+
+def test_paging_helper():
+    from plan24.telegram.bot import _paged
+    btns = [(f"П{i}", f"x:{i}") for i in range(20)]
+    p0 = _paged(btns, 0, "ow")
+    assert len([r for r in p0 if r[0][1].startswith("x:")]) == 8 and p0[-1] == [("▶", "ow:1")]
+    p2 = _paged(btns, 2, "ow")
+    assert p2[-1] == [("◀", "ow:1")] and len(p2) == 5                                           # 4 кнопки + навигация
+    assert _paged(btns, 99, "ow")[-1][0][0] == "◀"                                              # страница за пределом — последняя

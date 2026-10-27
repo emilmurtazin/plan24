@@ -5,7 +5,7 @@
 
 const API = '/api/v1/tgapp';
 const $ = id => document.getElementById(id);
-const S = { token: null, me: null, data: null, tab: null, wid: null, undo: null, tm: null };
+const S = { token: null, me: null, data: null, tab: null, wid: null, undo: null, tm: null, catalog: null };
 
 /* ---------------- построение DOM ---------------- */
 function h(tag, attrs, ...kids) {
@@ -86,6 +86,12 @@ function ask(text, ok = 'Да') {
       h('button', { class: 'ghost grow', onclick: () => done(false) }, 'Нет'), h('button', { class: 'grow', onclick: () => done(true) }, ok))));
     sh.onclick = e => { if (e.target === sh) done(false); };
   });
+}
+function openSheet(box, onClose) {                 // нижний лист с произвольным содержимым; закрывается по тапу на фон
+  const sh = $('sheet'); sh.hidden = false;
+  const close = () => { sh.hidden = true; sh.replaceChildren(); sh.onclick = null; if (onClose) onClose(); };
+  sh.replaceChildren(h('div', { class: 'box tall' }, box)); sh.onclick = e => { if (e.target === sh) close(); };
+  return close;
 }
 async function act(btn, fn) {                       // кнопка действия: блокируется на время запроса, ошибка — в тосте
   btn.disabled = true;
@@ -179,6 +185,89 @@ function taskCard(w, t, canEnter, onChange) {
   return el;
 }
 
+/* ---------------- работа вне перечня: карточка часов ---------------- */
+function extraCard(w, x, canEnter, onChange) {
+  const el = h('div', { class: 'card done' });
+  let busy = false;
+  const draw = () => {
+    el.replaceChildren(h('div', { class: 'row' }, h('div', { class: 'grow' }, h('h3', { text: '🛠 ' + x.title }),
+      h('div', { class: 'meta', text: x.order ? `${x.project} · ${x.order} · ${x.product}` : 'не относится к заказу' })),
+      canEnter ? h('button', { class: 'chip', 'aria-label': 'Удалить работу', onclick: e => act(e.currentTarget, async () => {
+        if (!await ask(`Удалить «${x.title}»?`, 'Удалить')) return; await api('DELETE', `/extra/${x.id}`); w.extras.splice(w.extras.indexOf(x), 1); onChange && onChange(true); }) }, '✕') : null),
+      h('div', { class: 'counter' }, canEnter ? h('button', { class: 'sq ghost', disabled: busy || !(x.fact_hours > 0), onclick: () => step(-0.5) }, '−') : null,
+        h('div', { class: 'grow center', style: 'font-size:24px;font-weight:700', text: `${fnum(x.fact_hours)} ч` }),
+        canEnter ? h('button', { class: 'sq', disabled: busy, onclick: () => step(0.5) }, '+') : null));
+  };
+  async function step(dh) {
+    const v = Math.max(0, Math.min(24, Math.round(((x.fact_hours || 0) + dh) * 10) / 10)); busy = true; draw();
+    try { const r = await api('PUT', `/extra/${x.id}`, { fact_hours: v }); x.fact_hours = r.fact_hours; } catch (e) { toast(errText(e), { err: true }); }
+    busy = false; draw();
+  }
+  draw(); return el;
+}
+
+/* ---------------- «Другая работа»: сменили проект, изделие или операцию ---------------- */
+async function otherWork(worker, refresh) {
+  if (!S.catalog) S.catalog = (await api('GET', '/catalog')).orders;
+  const cat = S.catalog;
+  let tab = 'op', project = null, order = null, op = null, qty = 1, hours = 1, ops = [], added = 0;
+  const body = h('div');
+  const close = openSheet(body, () => { if (added) refresh(); });
+  const projects = [...new Map(cat.map(o => [o.project_id, o.project])).entries()];
+  const drawOp = () => {
+    const pSel = h('select', { 'aria-label': 'Проект', onchange: e => { project = +e.target.value || null; order = null; op = null; ops = []; drawOp(); } },
+      h('option', { value: '' }, 'Выберите проект…'), projects.map(([id, name]) => h('option', { value: id, selected: id === project }, name)));
+    const orders = cat.filter(o => o.project_id === project);
+    const oSel = h('select', { 'aria-label': 'Заказ и изделие', disabled: !project, onchange: async e => {
+      order = +e.target.value || null; op = null; ops = []; drawOp();
+      if (order) { try { ops = (await api('GET', `/catalog/ops?order_line_id=${order}`)).operations; } catch (er) { toast(errText(er), { err: true }); } drawOp(); } } },
+      h('option', { value: '' }, 'Заказ и изделие…'), orders.map(o => h('option', { value: o.order_line_id, selected: o.order_line_id === order }, `${o.order} · ${o.product} · ${fnum(o.qty)} шт`)));
+    const opSel = h('select', { 'aria-label': 'Операция', disabled: !ops.length, onchange: e => { op = +e.target.value || null; drawOp(); } },
+      h('option', { value: '' }, 'Операция…'), ops.map(x => h('option', { value: x.operation_id, selected: x.operation_id === op }, `${x.name} · нужно ${fnum(x.required)}, сделано ${fnum(x.done)}`)));
+    const input = h('input', { type: 'text', inputmode: 'decimal', value: String(qty), 'aria-label': 'Сделано', style: 'flex:1;min-width:0;height:54px;text-align:center;font-size:26px;font-weight:700;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text)' });
+    input.addEventListener('change', () => { const v = parseFloat(String(input.value).replace(',', '.')); qty = isFinite(v) && v >= 0 ? v : qty; input.value = String(qty); });
+    const save = h('button', { class: 'wide', disabled: !(project && order && op), onclick: e => act(e.currentTarget, async () => {
+      qty = parseFloat(String(input.value).replace(',', '.')); if (!isFinite(qty) || qty < 0) throw new Error('Введите количество');
+      await api('POST', '/fact/other', { order_line_id: order, operation_id: op, worker_id: worker.worker_id, qty });
+      added++; toast(`Записано: ${fnum(qty)}. Можно добавить следующую операцию`); op = null; qty = 1; ops = ops.map(x => x); drawOp(); }) }, 'Записать');
+    body.replaceChildren(head(), h('label', { text: 'Проект' }), pSel, h('label', { text: 'Заказ и изделие' }), oSel, h('label', { text: 'Операция' }), opSel,
+      h('label', { text: 'Сколько сделано' }), h('div', { class: 'counter' }, h('button', { class: 'sq ghost', onclick: () => { qty = Math.max(0, (parseFloat(input.value.replace(',', '.')) || 0) - 1); input.value = String(qty); } }, '−'), input,
+        h('button', { class: 'sq', onclick: () => { qty = (parseFloat(input.value.replace(',', '.')) || 0) + 1; input.value = String(qty); } }, '+')),
+      h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'ghost grow', onclick: () => close() }, added ? 'Готово' : 'Закрыть'), save));
+  };
+  const drawExtra = () => {
+    const title = h('input', { type: 'text', maxlength: '200', placeholder: 'Например: уборка, помощь на другом участке', 'aria-label': 'Что делали', style: 'width:100%;height:48px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit' });
+    const hin = h('input', { type: 'text', inputmode: 'decimal', value: String(hours).replace('.', ','), 'aria-label': 'Часы', style: 'flex:1;min-width:0;height:54px;text-align:center;font-size:26px;font-weight:700;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text)' });
+    const oSel = h('select', { 'aria-label': 'Заказ' }, h('option', { value: '' }, 'Не относится к заказу'), cat.map(o => h('option', { value: o.order_line_id }, `${o.project} · ${o.order} · ${o.product}`)));
+    const val = () => { const v = parseFloat(String(hin.value).replace(',', '.')); return isFinite(v) ? v : 0; };
+    body.replaceChildren(head(), h('label', { text: 'Что делали' }), title, h('label', { text: 'Сколько часов' }),
+      h('div', { class: 'counter' }, h('button', { class: 'sq ghost', onclick: () => { hin.value = String(Math.max(0, Math.round((val() - 0.5) * 10) / 10)).replace('.', ','); } }, '−'), hin,
+        h('button', { class: 'sq', onclick: () => { hin.value = String(Math.round((val() + 0.5) * 10) / 10).replace('.', ','); } }, '+')),
+      h('label', { text: 'К какому заказу (необязательно)' }), oSel,
+      h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'ghost grow', onclick: () => close() }, added ? 'Готово' : 'Закрыть'),
+        h('button', { class: 'grow', onclick: e => act(e.currentTarget, async () => {
+          if (!title.value.trim()) throw new Error('Опишите, что делали'); if (!(val() > 0)) throw new Error('Укажите часы');
+          await api('POST', '/extra', { title: title.value.trim(), hours: val(), order_line_id: +oSel.value || null, worker_id: worker.worker_id });
+          added++; toast('Работа добавлена'); title.value = ''; }) }, 'Добавить')));
+  };
+  function head() {
+    return h('div', null, h('h3', { text: 'Другая работа' + (S.me.role === 'foreman' ? ` — ${worker.worker}` : '') }),
+      h('div', { class: 'row', style: 'margin:8px 0' },
+        h('button', { class: 'chip grow' + (tab === 'op' ? ' on' : ''), onclick: () => { tab = 'op'; draw(); } }, 'Операция заказа'),
+        h('button', { class: 'chip grow' + (tab === 'extra' ? ' on' : ''), onclick: () => { tab = 'extra'; draw(); } }, 'Вне перечня')));
+  }
+  const draw = () => (tab === 'op' ? drawOp() : drawExtra());
+  draw();
+}
+function workBlocks(w, canEnter, onChange, refresh) {
+  const cards = w.tasks.filter(t => t.plan_qty || t.fact_qty != null).map(t => taskCard(w, t, canEnter, onChange));
+  const extras = (w.extras || []).map(x => extraCard(w, x, canEnter, ch => { ch ? refresh() : onChange && onChange(); }));
+  const out = [...cards, ...extras];
+  if (!out.length) out.push(h('div', { class: 'empty', text: 'На сегодня заданий нет' }));
+  if (canEnter) out.push(h('button', { class: 'wide ghost', onclick: () => otherWork(w, refresh) }, '➕ Другая работа (другой проект, операция, вне перечня)'));
+  return out;
+}
+
 /* ---------------- экраны ---------------- */
 const main = () => $('main');
 function header(title, sub, prog) {
@@ -230,7 +319,7 @@ async function tasksScreen() {                                 // сборщик
   const upd = () => header('Мои задания', fday(d.date), progress(d.workers));
   upd();
   const pend = w.tasks.some(t => t.plan_qty && t.fact_qty == null);
-  main().replaceChildren(...tasksList(d.workers, w, d.can_enter, upd),
+  main().replaceChildren(...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
     pend && d.can_enter ? h('button', { class: 'wide okb', onclick: e => act(e.currentTarget, () => closeDay(0)) }, '✅ Закрыть день по плану') : null);
 }
 
@@ -241,7 +330,7 @@ async function peopleScreen() {                                // бригади
     if (!w) { S.wid = null; return peopleScreen(); }
     const upd = () => header(w.worker, 'Задания на ' + fday(d.date), progress([w]));
     upd();
-    main().replaceChildren(h('button', { class: 'ghost wide', onclick: () => go('people') }, '◀ К участку'), ...tasksList(d.workers, w, d.can_enter, upd),
+    main().replaceChildren(h('button', { class: 'ghost wide', onclick: () => go('people') }, '◀ К участку'), ...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
       w.tasks.some(t => t.plan_qty && t.fact_qty == null) ? h('button', { class: 'wide okb', onclick: e => act(e.currentTarget, () => closeDay(w.worker_id, w.worker)) }, `✅ Закрыть день: ${w.worker}`) : null);
     return;
   }

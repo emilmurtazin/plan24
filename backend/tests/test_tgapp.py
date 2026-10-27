@@ -47,6 +47,12 @@ class App:
     def post(self, path, body=None, **kw):
         return self.call("POST", path, body if body is not None else {}, **kw)
 
+    def put(self, path, body=None, **kw):
+        return self.call("PUT", path, body if body is not None else {}, **kw)
+
+    def delete(self, path, **kw):
+        return self.call("DELETE", path, **kw)
+
 
 def open_app(org, chat_id):
     a = App(org, chat_id)
@@ -324,3 +330,112 @@ def test_every_app_route_is_closed_without_a_session(full_org, tg):
         for hdr in ({}, {"Authorization": "Bearer " + web}):
             r = o.c.request(m, path, json={}, headers=hdr)
             assert r.status_code == 401, (m, path, r.status_code)
+
+
+# ------------------------------------------------------------------ другая работа и работа вне перечня
+def test_worker_enters_fact_for_any_project_order_operation(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    a = open_app(o, wchat.chat_id)
+    cat = a.get("/catalog").json()["orders"]
+    assert len(cat) >= 3 and {"order_line_id", "project", "order", "product", "qty"} <= set(cat[0])
+    planned_ols = {t["order_line_id"] for t in w["tasks"]}
+    other = next(x for x in cat if x["order_line_id"] not in planned_ols)                  # заказ, которого в плане работника нет
+    ops = a.get(f"/catalog/ops?order_line_id={other['order_line_id']}").json()["operations"]
+    assert len(ops) >= 2 and {"operation_id", "name", "required", "done"} <= set(ops[0])
+    # несколько операций подряд + другой заказ
+    r1 = a.post("/fact/other", {"order_line_id": other["order_line_id"], "operation_id": ops[0]["operation_id"], "qty": 3})
+    r2 = a.post("/fact/other", {"order_line_id": other["order_line_id"], "operation_id": ops[1]["operation_id"], "qty": 2})
+    assert r1.status_code == r2.status_code == 200 and r1.json()["worker_id"] == w["worker_id"]
+    second = next(x for x in cat if x["order_line_id"] not in planned_ols and x["order_line_id"] != other["order_line_id"])
+    ops2 = a.get(f"/catalog/ops?order_line_id={second['order_line_id']}").json()["operations"]
+    assert a.post("/fact/other", {"order_line_id": second["order_line_id"], "operation_id": ops2[0]["operation_id"], "qty": 1}).status_code == 200
+    fs = [f for f in o.get("/facts").json()["items"] if f["worker_id"] == w["worker_id"]]
+    assert len(fs) == 3 and all(f["source"] == "telegram" for f in fs)
+    # на экране дня они — карточки «вне плана», редактируются обычным «＋/−»
+    day = a.get("/day").json()["workers"][0]["tasks"]
+    extra_cards = [t for t in day if t["order_line_id"] in (other["order_line_id"], second["order_line_id"])]
+    assert len(extra_cards) == 3 and all(not t["plan_qty"] and t["fact_qty"] is not None for t in extra_cards)
+    # повторный ввод по той же операции заменяет значение
+    again = a.post("/fact/other", {"order_line_id": other["order_line_id"], "operation_id": ops[0]["operation_id"], "qty": 5}).json()
+    assert again["previous"] == 3 and again["qty"] == 5
+    # чужой worker_id игнорируется: факт пишется только себе
+    a.post("/fact/other", {"order_line_id": second["order_line_id"], "operation_id": ops2[1]["operation_id"], "qty": 1, "worker_id": 999})
+    assert {f["worker_id"] for f in o.get("/facts").json()["items"]} == {w["worker_id"]}
+
+
+def test_other_fact_validation(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    a = open_app(o, wchat.chat_id)
+    cat = a.get("/catalog").json()["orders"]
+    ops = a.get(f"/catalog/ops?order_line_id={cat[0]['order_line_id']}").json()["operations"]
+    base = {"order_line_id": cat[0]["order_line_id"], "operation_id": ops[0]["operation_id"]}
+    assert a.post("/fact/other", {**base, "qty": -1}).status_code == 422
+    assert a.post("/fact/other", {**base, "qty": 10 ** 9}).status_code == 422
+    diff = next((x for x in cat if x["product"] != cat[0]["product"]), None)                       # другое изделие — другой маршрут операций
+    if diff:
+        other_ops = a.get(f"/catalog/ops?order_line_id={diff['order_line_id']}").json()["operations"]
+        assert a.post("/fact/other", {"order_line_id": cat[0]["order_line_id"], "operation_id": other_ops[0]["operation_id"], "qty": 1}).status_code == 422   # операция чужого маршрута
+    assert a.post("/fact/other", {"order_line_id": 999999, "operation_id": 1, "qty": 1}).status_code == 404
+    assert a.get("/catalog/ops?order_line_id=999999").status_code == 404
+    # отменённая позиция — факт вносить нельзя
+    assert o.patch(f"/order-lines/{cat[0]['order_line_id']}", json={"status": "cancelled"}).status_code == 200
+    assert a.post("/fact/other", {**base, "qty": 1}).status_code == 422
+    assert cat[0]["order_line_id"] not in [x["order_line_id"] for x in a.get("/catalog").json()["orders"]]
+
+
+def test_foreman_enters_other_fact_for_own_workers_only(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    f = open_app(o, fchat.chat_id)
+    cat = f.get("/catalog").json()["orders"]
+    ops = f.get(f"/catalog/ops?order_line_id={cat[0]['order_line_id']}").json()["operations"]
+    body = {"order_line_id": cat[0]["order_line_id"], "operation_id": ops[0]["operation_id"], "qty": 2}
+    assert f.post("/fact/other", body).status_code == 422                                  # не выбран работник
+    assert f.post("/fact/other", {**body, "worker_id": w["worker_id"]}).status_code == 200
+    foreign = next(x for x in o.workers if x["work_center_id"] != me["work_center_id"])
+    assert f.post("/fact/other", {**body, "worker_id": foreign["id"]}).status_code == 403
+    assert not [x for x in o.get("/facts").json()["items"] if x["worker_id"] == foreign["id"]]
+
+
+def test_extra_work_outside_operations(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    a = open_app(o, wchat.chat_id)
+    r = a.post("/extra", {"title": "Уборка участка", "hours": 1.5})
+    assert r.status_code == 201 and r.json()["fact_hours"] == 1.5 and r.json()["worker_id"] == w["worker_id"]
+    xid = r.json()["id"]
+    day = a.get("/day").json()["workers"][0]
+    assert [(x["title"], x["fact_hours"]) for x in day["extras"]] == [("Уборка участка", 1.5)]
+    assert a.put(f"/extra/{xid}", {"fact_hours": 2}).json()["fact_hours"] == 2
+    cat = a.get("/catalog").json()["orders"]
+    with_order = a.post("/extra", {"title": "Переналадка станка", "hours": 0.5, "order_line_id": cat[0]["order_line_id"]})
+    assert with_order.status_code == 201 and with_order.json()["order_line_id"] == cat[0]["order_line_id"]
+    assert a.post("/extra", {"title": "", "hours": 1}).status_code == 422
+    assert a.post("/extra", {"title": "x", "hours": 0}).status_code == 422
+    assert a.post("/extra", {"title": "x", "hours": 25}).status_code == 422
+    assert a.put(f"/extra/{xid}", {"fact_hours": 30}).status_code == 422
+    assert a.post("/extra", {"title": "x", "hours": 1, "order_line_id": 999999}).status_code == 404
+    # планировщик, веб-версия и работа вне перечня видят то же самое
+    web = next(x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] == w["worker_id"])["extras"]
+    assert {x["title"] for x in web} == {"Уборка участка", "Переналадка станка"}
+    assert a.delete(f"/extra/{xid}").json() == {"removed": True}
+    assert [x["title"] for x in a.get("/day").json()["workers"][0]["extras"]] == ["Переналадка станка"]
+
+
+def test_extra_work_scope_worker_and_foreman(full_org, tg):
+    o = full_org
+    fchat, wchat, w, me = team(o)
+    a, f = open_app(o, wchat.chat_id), open_app(o, fchat.chat_id)
+    other_w = next(x for x in o.get("/reports/day").json()["workers"] if x["worker_id"] != w["worker_id"])
+    mine_x = a.post("/extra", {"title": "Своя работа", "hours": 1, "worker_id": other_w["worker_id"]}).json()    # worker_id сборщика игнорируется
+    assert mine_x["worker_id"] == w["worker_id"]
+    # чужую работу сборщик не меняет и не удаляет
+    foreign_x = o.post("/extra-tasks", json={"plan_date": TODAY.isoformat(), "worker_id": other_w["worker_id"], "title": "Чужая", "hours": 1}).json()
+    assert a.put(f"/extra/{foreign_x['id']}", {"fact_hours": 3}).status_code in (403, 404)
+    assert a.delete(f"/extra/{foreign_x['id']}").status_code in (403, 404)
+    # бригадир — только работникам своего участка
+    assert f.post("/extra", {"title": "Для работника", "hours": 2, "worker_id": w["worker_id"]}).status_code == 201
+    foreign = next(x for x in o.workers if x["work_center_id"] != me["work_center_id"])
+    assert f.post("/extra", {"title": "Чужому", "hours": 2, "worker_id": foreign["id"]}).status_code == 403

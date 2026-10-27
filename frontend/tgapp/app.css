@@ -41,3 +41,4 @@ nav#tabs .badge{position:absolute;top:2px;right:22%;background:var(--err);color:
 #sheet .box{background:var(--card);width:100%;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px))}
 #sheet .box p{margin:0 0 14px;white-space:pre-line}
 .empty{padding:28px 12px;text-align:center;color:var(--hint)}
+#sheet .box.tall{max-height:92vh;overflow-y:auto}

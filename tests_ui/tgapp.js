@@ -129,6 +129,41 @@ let factsOf;
     step('«Закрыть день по плану»: подтверждение → факт по всем заданиям без факта');
   }
 
+  // ---------- другая работа: сменили проект/изделие/операцию; несколько операций; работа вне перечня ----------
+  { const before = (await factsOf()).length;
+    click(byText('#main button', 'Другая работа')); await until(() => !$('#sheet').hidden && $('#sheet select[aria-label="Проект"]'), 'окно «Другая работа»');
+    const sel = l => $(`#sheet select[aria-label="${l}"]`);
+    const choose = async (l, pick) => { const s0 = sel(l); const opt = [...s0.options].filter(o => o.value)[pick]; s0.value = opt.value; s0.dispatchEvent(new win.Event('change', { bubbles: true })); };
+    await choose('Проект', 0); await until(() => [...sel('Заказ и изделие').options].length > 1, 'заказы проекта');
+    await choose('Заказ и изделие', 0); await until(() => [...sel('Операция').options].length > 2, 'операции заказа (все операции маршрута)');
+    const opsCount = [...sel('Операция').options].filter(o => o.value).length;
+    if (!byText('#sheet button', 'Записать').disabled) throw new Error('«Записать» должна быть выключена, пока не выбрана операция');
+    await choose('Операция', 0);
+    const q = $('#sheet input[aria-label="Сделано"]'); setv(q, '3');
+    click(byText('#sheet button', 'Записать'));
+    await untilFact(f => f.length === before + 1, 'факт по другой операции');
+    // вторая операция того же заказа — окно остаётся открытым, проект и заказ запомнены
+    await until(() => !byText('#sheet button', 'Записать').disabled === false && sel('Операция').value === '', 'форма готова к следующей операции');
+    await choose('Операция', 1); setv($('#sheet input[aria-label="Сделано"]'), '2');
+    click(byText('#sheet button', 'Записать'));
+    await untilFact(f => f.length === before + 2, 'факт по второй операции');
+    step(`«Другая работа»: проект → заказ → операция (${opsCount} операций маршрута), записано две операции подряд`);
+    click(byText('#sheet button', 'Готово')); await until(() => $('#sheet').hidden, 'окно закрылось');
+    await until(() => $$('#main .card .meta').filter(m => /вне плана/.test(m.textContent)).length >= 2, 'карточки «вне плана» на экране');
+    // вне перечня
+    click(byText('#main button', 'Другая работа')); await until(() => !$('#sheet').hidden, 'окно ещё раз');
+    click(byText('#sheet .chip', 'Вне перечня')); await until(() => $('#sheet input[aria-label="Что делали"]'), 'вкладка «Вне перечня»');
+    setv($('#sheet input[aria-label="Что делали"]'), 'Уборка участка');
+    click(byText('#sheet button', 'Добавить')); await sleep(400);
+    click(byText('#sheet button', 'Закрыть') || byText('#sheet button', 'Готово')); await until(() => $('#sheet').hidden, 'окно закрылось');
+    await until(() => byText('#main h3', 'Уборка участка'), 'карточка работы вне перечня');
+    const xCard = () => $$('#main .card').find(c => /Уборка участка/.test(c.textContent));
+    click([...xCard().querySelectorAll('.counter button')].find(b => b.textContent === '+'));
+    await until(() => /1,5 ч/.test(xCard().textContent), 'часы 1,5 после «+»');
+    const extras = (await J('GET', '/reports/day', undefined, T)).workers.find(x => x.worker_id === w.worker_id).extras;
+    if (extras.length !== 1 || extras[0].fact_hours !== 1.5) throw new Error('работа вне перечня в системе: ' + JSON.stringify(extras));
+    step('«Вне перечня»: «Уборка участка» добавлена, часы 1 → 1,5 сохраняются (видны и в веб-версии)'); }
+
   // другие вкладки
   click(byText('#tabs button', 'Завтра')); await until(() => /Завтра|Ближайший день/.test($('#hd').textContent), 'вкладка «Завтра»');
   step('вкладка «Завтра» открывается: ' + $('#hd h1').textContent);

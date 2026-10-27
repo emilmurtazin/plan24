@@ -212,3 +212,20 @@ table.heat td.tt,table.heat th.tt{text-align:center;white-space:nowrap;padding-l
 .days .dpick{display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--muted)}
 .days .dpick input{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 #miss button.small{margin:2px 2px 2px 0}
+
+/* назначение: операции × дни × работники */
+.gridwrap{overflow-x:auto}
+table.gridt{border-collapse:separate;border-spacing:0;min-width:100%}
+table.gridt th,table.gridt td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);vertical-align:top;padding:6px;min-width:150px}
+table.gridt th{text-align:center;position:sticky;top:0;background:var(--card);z-index:2}table.gridt th small{display:block;font-weight:400;opacity:.7}
+table.gridt th.off,table.gridt td.off{background:rgba(127,127,127,.07)}
+table.gridt .gop{position:sticky;left:0;background:var(--card);z-index:3;min-width:180px;max-width:220px;text-align:left}
+.gmeta{font-size:12px;color:var(--muted)}
+.gl{display:flex;flex-direction:column;gap:4px;margin-bottom:4px}
+.gchip{display:flex;align-items:center;gap:4px;background:var(--blue-soft);border-radius:8px;padding:2px 4px 2px 8px;font-size:13px}
+.gchip.over{background:var(--red-soft)}
+.gchip .gn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gchip input.gq{width:52px;padding:2px 4px;text-align:center}
+.gchip .gx{background:transparent;color:var(--muted);min-height:0;padding:0 6px;font-size:18px;line-height:1}
+select.gadd{width:100%;font-size:13px;padding:4px}select.gadd option.abs{color:var(--red)}
+.gtot{font-size:12px;color:var(--muted);margin-top:2px}

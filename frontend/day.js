@@ -246,6 +246,7 @@ async function openTempWorker(d, reload) {
 SCREENS.exec = (v, tab) => {
   const worker = S.me.role === 'worker', tabs = {};
   if (STAFF.includes(S.me.role) || worker) tabs.day = { label: worker ? 'Мои задания' : 'План на день', custom: box => { const dd = S.dayOpen; S.dayOpen = null; return SCREENS.day(box, dd || undefined); } };
+  if (STAFF.includes(S.me.role)) tabs.grid = { label: 'Назначение', custom: box => SCREENS.grid(box) };
   if (READERS.includes(S.me.role)) tabs.load = { label: 'Загрузка', custom: box => SCREENS.load(box) };
   return tabsScreen(v, { title: worker ? 'Мои задания' : 'Выполнение', tabs, tab: tab || S.execTab, key: 'execTab', self: SCREENS.exec, def: 'day' });
 };
