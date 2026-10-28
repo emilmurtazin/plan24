@@ -55,7 +55,7 @@ def test_grid_structure_for_owner(full_org):
     assert [x["operation_id"] for x in g["operations"]] == [x["operation_id"] for x in ops]          # все операции заказа в порядке маршрута
     op = g["operations"][0]
     assert set(op["cells"]) == {d["date"] for d in g["days"]} and op["required"] >= 1 and "unplanned" in op and op["eligible"]
-    assert {"over", "complete"} <= set(op)
+    assert {"over", "complete", "sections", "eligible", "distributed"} <= set(op) and isinstance(op["sections"], list)
     assert all({"id", "name", "skill", "perf", "load", "absent"} <= set(w) for w in g["workers"])
     # любая дата внутри недели даёт понедельник этой недели; следующая неделя начинается через 7 дней
     assert grid(o, ol, start=TODAY.isoformat())["start"] == g["start"]

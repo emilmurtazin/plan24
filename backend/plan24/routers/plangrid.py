@@ -144,7 +144,8 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
                         "min_skill": op.min_skill, "required": required, "done": done, "planned": planned,
                         "unplanned": max(0, required - done - planned),
                         "over": max(0, done + planned - required),            # запланировано больше, чем нужно
-                        "complete": done + planned >= required,               # весь объём выполнен или полностью в плане "sections": sorted(centers[c] for c in cs if c in centers),
+                        "complete": done + planned >= required,               # весь объём выполнен или полностью в плане
+                        "sections": sorted(centers[c] for c in cs if c in centers),
                         "eligible": eligible, "distributed": bool(cs) or not has_centers,
                         "cells": {d.isoformat(): cells.get((op.id, d.isoformat()), []) for d in days}})
     return {"order": _label(db, ol), "start": start.isoformat(), "today": today.isoformat(), "efficiency": eff, "plan_id": plan.id,
