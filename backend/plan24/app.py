@@ -1,6 +1,7 @@
 """Plan 24 — сервис: организации, роли, данные в системе, планирование. Префикс /api/v1 (ТЗ раздел 9)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -49,8 +50,13 @@ def create_app() -> FastAPI:
         # Обычный интерфейс нельзя встраивать никуда. Мини-приложение Telegram — можно только в окна Telegram (веб-клиенты показывают его в iframe).
         if not in_telegram:
             h["X-Frame-Options"] = "DENY"
-        h["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                                        "connect-src 'self'; base-uri 'self'; frame-ancestors "
+        script, img, conn = "'self'", "'self' data:", "'self'"
+        if request.url.path == "/welcome" and config.metrika_id():       # лендинг: счётчик Яндекс.Метрики — только если он настроен
+            script += " https://mc.yandex.ru"
+            img += " https://mc.yandex.ru"
+            conn += " https://mc.yandex.ru https://mc.yandex.com wss://mc.yandex.ru"
+        h["Content-Security-Policy"] = (f"default-src 'self'; script-src {script}; style-src 'self' 'unsafe-inline'; img-src {img}; "
+                                        f"connect-src {conn}; base-uri 'self'; frame-ancestors "
                                         + ("https://web.telegram.org https://webk.telegram.org https://webz.telegram.org" if in_telegram else "'none'"))
         if in_telegram:
             h["Cache-Control"] = "no-store"
@@ -88,6 +94,17 @@ def create_app() -> FastAPI:
         @app.get("/", include_in_schema=False)
         def index():
             return FileResponse(STATIC / "index.html")
+        @app.get("/welcome", include_in_schema=False)
+        @app.get("/welcome/", include_in_schema=False)
+        def landing():
+            """Посадочная страница для рекламы: до входа и регистрации. Кнопки ведут на /#register с переносом меток рекламы."""
+            return FileResponse(STATIC / "landing" / "index.html")
+        @app.get("/welcome/config.js", include_in_schema=False)
+        def landing_config():
+            """Настройки лендинга для скрипта (внешние скрипты по CSP разрешены только со своего адреса, поэтому — файлом)."""
+            from fastapi.responses import Response
+            return Response("window.P24_LANDING = " + json.dumps({"metrika": config.metrika_id()}) + ";", media_type="application/javascript",
+                            headers={"Cache-Control": "no-store"})
         @app.get("/tg", include_in_schema=False)
         @app.get("/tg/", include_in_schema=False)
         def tg_app():

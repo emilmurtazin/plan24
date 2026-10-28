@@ -179,7 +179,7 @@ body.nav-open .scrim{opacity:1;visibility:visible}body.nav-open .drawer{transfor
 .od{margin-top:18px;scroll-margin-top:70px}
 #all tr[aria-selected=true] td{background:var(--blue-soft)}
 dl.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0 0 12px}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media (max-width:520px){.row2{grid-template-columns:1fr}}
+.row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.row2>label.f{min-width:0}.row2 input{width:100%;min-width:0}@media (max-width:520px){.row2{grid-template-columns:1fr}}
 .errlist{margin:6px 0 0;padding-left:20px;font-size:14px;max-height:200px;overflow:auto}
 /* загрузка: лёгкая тепловая карта в процентах */
 .lsec{margin-bottom:14px}.lsec .lh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}.lsec .lh h2{margin:0}

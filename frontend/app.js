@@ -71,7 +71,7 @@ function renderAuth(mode) {
     <div id="aerr" class="err" role="alert"></div>
     <button type="submit" style="width:100%;justify-content:center">${mode === 'login' ? 'Войти' : 'Создать организацию'}</button></form>
     ${mode === 'login' ? '<p style="margin:12px 0 0"><a href="#" id="fg">Забыли пароль?</a></p>' : ''}</div>
-  ${mode === 'register' ? '<p class="muted">14 дней — полный доступ без карты. Данные вашей организации не видны другим.</p>' : ''}</div>`;
+  ${mode === 'register' ? '<p class="muted">Данные вашей организации не видны другим.</p>' : ''}</div>`;
   $$('[data-m]').forEach(b => b.onclick = () => renderAuth(b.dataset.m));
   if ($('#fg')) $('#fg').onclick = e => { e.preventDefault(); renderForgot(); };
   $('#af').onsubmit = async e => {
@@ -298,5 +298,5 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') $$('details.
   const m = location.hash.match(/^#\/(verify|reset|invite)\?token=([\w-]+)$/);
   if (m) { history.replaceState(null, '', location.pathname); return renderTokenPage(m[1], m[2]); }
   if (S.refresh && await doRefresh()) { try { S.me = await GET('/auth/me'); return start(); } catch (e) { /* падаем на вход */ } }
-  renderAuth('login');
+  renderAuth(location.hash === '#register' ? 'register' : 'login');          // кнопки лендинга ведут на /#register
 })();

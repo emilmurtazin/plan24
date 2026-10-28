@@ -137,3 +137,9 @@ def tgapp_url() -> "str | None":
         return None
     base = base_url()
     return base + "/tg/" if base.startswith("https://") else None
+
+
+def metrika_id() -> str:
+    """Номер счётчика Яндекс.Метрики для лендинга (PLAN24_METRIKA_ID, только цифры); пусто — аналитика не подключается."""
+    v = (os.environ.get("PLAN24_METRIKA_ID") or "").strip()
+    return v if v.isdigit() else ""
