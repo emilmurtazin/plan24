@@ -215,17 +215,28 @@ table.heat td.tt,table.heat th.tt{text-align:center;white-space:nowrap;padding-l
 
 /* назначение: операции × дни × работники */
 .gridwrap{overflow-x:auto}
-table.gridt{border-collapse:separate;border-spacing:0;min-width:100%}
-table.gridt th,table.gridt td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);vertical-align:top;padding:6px;min-width:150px}
-table.gridt th{text-align:center;position:sticky;top:0;background:var(--card);z-index:2}table.gridt th small{display:block;font-weight:400;opacity:.7}
+/* компактная таблица: вся неделя (7 дней) помещается в окно; на узких экранах — прокрутка по горизонтали */
+table.gridt{border-collapse:separate;border-spacing:0;width:100%;min-width:860px;table-layout:fixed;font-size:12px}
+table.gridt th,table.gridt td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);vertical-align:top;padding:3px 4px}
+table.gridt th{text-align:center;position:sticky;top:0;background:var(--card);z-index:2;padding:4px;line-height:1.2}table.gridt th small{display:block;font-weight:400;opacity:.7;font-size:11px}
 table.gridt th.off,table.gridt td.off{background:rgba(127,127,127,.07)}
-table.gridt .gop{position:sticky;left:0;background:var(--card);z-index:3;min-width:180px;max-width:220px;text-align:left}
-.gmeta{font-size:12px;color:var(--muted)}
-.gl{display:flex;flex-direction:column;gap:4px;margin-bottom:4px}
-.gchip{display:flex;align-items:center;gap:4px;background:var(--blue-soft);border-radius:8px;padding:2px 4px 2px 8px;font-size:13px}
+table.gridt th.past,table.gridt td.past{opacity:.6}table.gridt td.past{background:rgba(127,127,127,.05)}
+table.gridt th.today{box-shadow:inset 0 -3px 0 var(--blue);color:var(--blue)}
+table.gridt .gop{position:sticky;left:0;background:var(--card);z-index:3;width:168px;text-align:left}
+table.gridt tr.st-full td.gop{box-shadow:inset 4px 0 0 var(--green);background:var(--green-soft)}
+table.gridt tr.st-over td.gop{box-shadow:inset 4px 0 0 var(--amber);background:var(--amber-soft)}
+table.gridt tr.st-short td.gop{box-shadow:inset 4px 0 0 var(--red);background:var(--red-soft)}
+table.gridt tr.st-full td.gcell:not(.off){background:var(--green-soft)}
+table.gridt tr.st-over td.gcell:not(.off){background:var(--amber-soft)}
+.gmeta{font-size:11px;color:var(--muted);line-height:1.25}
+.gmeta.ok-t{color:var(--green);font-weight:600}.gmeta.warn-t{color:var(--red);font-weight:600}.gmeta.over-t{color:var(--amber);font-weight:600}
+.gl{display:flex;flex-direction:column;gap:2px;margin-bottom:2px}
+.gchip{display:flex;align-items:center;gap:2px;background:var(--blue-soft);border-radius:6px;padding:0 2px 0 6px;font-size:12px;line-height:1.2}
 .gchip.over{background:var(--red-soft)}
 .gchip .gn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gchip input.gq{width:52px;padding:2px 4px;text-align:center}
-.gchip .gx{background:transparent;color:var(--muted);min-height:0;padding:0 6px;font-size:18px;line-height:1}
-select.gadd{width:100%;font-size:13px;padding:4px}select.gadd option.abs{color:var(--red)}
+.gchip input.gq{width:42px;min-height:22px;height:22px;padding:0 2px;text-align:center;font-size:12px}
+.gchip .gx{background:transparent;color:var(--muted);min-height:0;padding:0 4px;font-size:16px;line-height:1}
+select.gadd{width:100%;min-height:24px;height:24px;font-size:12px;padding:0 2px}select.gadd option.abs{color:var(--red)}
+.glegend{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;font-size:12px}
+.glegend .lg{padding:2px 8px;border-radius:10px;font-weight:500}.lg.full{background:var(--green-soft);color:var(--green)}.lg.over{background:var(--amber-soft);color:var(--amber)}.lg.short{background:var(--red-soft);color:var(--red)}
 .gtot{font-size:12px;color:var(--muted);margin-top:2px}

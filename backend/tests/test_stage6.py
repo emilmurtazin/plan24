@@ -193,3 +193,17 @@ def test_daily_snapshot_job_and_lazy_sync(full_org):
     done = _db(lambda s: snapshots.sync_all(s, now))
     assert done >= 1 and _db(lambda s: s.scalar(select(func.count()).select_from(DayPlanSnapshot))) == n1
     assert _db(lambda s: snapshots.sync_all(s, now)) == 0       # второй раз за день — ничего не делает
+
+
+def test_resource_need_counts_orders_not_only_with_risk_status(full_org):
+    """Заказ, который не выполняется в срок, не должен терять потребность в усилении из-за статуса, отличного от «Риск опоздания»
+    (например, «Нет плана» — объём не уложился в горизонт, или срок уже прошёл)."""
+    o = full_org
+    o.patch("/settings", json={"freeze_days": 0})
+    o.replan_all()
+    new_order(o, 100000, (TODAY - timedelta(days=2)).isoformat(), "OVD-1")        # срок уже прошёл, объём огромный
+    o.replan_all()
+    d = ov(o)
+    row = next(r for r in d["resources"]["sections"] if r["needs_more"]) if d["resources"]["any_need"] else None
+    assert d["resources"]["any_need"] and row is not None and d["resources"]["orders_checked"] >= 1
+    assert all("late_ops" in s for s in d["resources"]["sections"])

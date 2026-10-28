@@ -39,19 +39,19 @@ SCREENS.grid = async v => {
 
   function cell(g, op, d) {
     const W = wk(g), items = op.cells[d.date] || [];
-    const td = gh('td', { class: 'gcell' + (d.workday ? '' : ' off') });
+    const td = gh('td', { class: 'gcell' + (d.workday ? '' : ' off') + (d.past ? ' past' : '') });
     const list = gh('div', { class: 'gl' });
     for (const it of items) {
       const w = W[it.worker_id], ld = w ? w.load[d.date] : 0;
-      const inp = gh('input', { type: 'number', min: 1, step: 1, value: it.qty, class: 'gq', 'aria-label': 'Количество' + (it.capacity ? ` (норма ${num(it.capacity)})` : '') });
+      const inp = gh('input', { type: 'number', min: 1, step: 1, value: it.qty, class: 'gq', disabled: d.past, 'aria-label': 'Количество' + (it.capacity ? ` (норма ${num(it.capacity)})` : '') });
       let t; inp.oninput = () => { clearTimeout(t); t = setTimeout(() => { const q = Math.round(+inp.value); if (q >= 1) run(() => PATCH(`/plan-day/items/${it.item_id}`, { qty: q }).then(r => ({ warnings: r.warnings }))); }, 700); };
       list.append(gh('div', { class: 'gchip' + (ld > 1.0001 ? ' over' : '') , title: `${it.worker}: загрузка дня ${Math.round(ld * 100)}%${it.capacity ? ', норма ' + num(it.capacity) + ' за день' : ''}${it.locked ? ' · день закреплён' : ''}` },
         gh('span', { class: 'gn', text: it.worker }), inp,
-        gh('button', { class: 'gx', 'aria-label': 'Снять назначение', onclick: () => run(() => DEL(`/plan-grid/assign/${it.item_id}`).then(r => { toast(r && r.unpinned ? 'Назначение снято, закрепление дня снято' : 'Назначение снято'); return null; }) ) }, '×')));
+        d.past ? null : gh('button', { class: 'gx', 'aria-label': 'Снять назначение', onclick: () => run(() => DEL(`/plan-grid/assign/${it.item_id}`).then(r => { toast(r && r.unpinned ? 'Назначение снято, закрепление дня снято' : 'Назначение снято'); return null; }) ) }, '×')));
     }
     td.append(list);
     const have = new Set(items.map(i => i.worker_id));
-    const cand = op.eligible.map(id => W[id]).filter(w => w && !have.has(w.id));
+    const cand = d.past ? [] : op.eligible.map(id => W[id]).filter(w => w && !have.has(w.id));
     if (cand.length) {
       const sel = gh('select', { class: 'gadd', 'aria-label': 'Назначить работника' }, gh('option', { value: '' }, '＋ работник'),
         cand.sort((a, b) => (a.load[d.date] || 0) - (b.load[d.date] || 0)).map(w => {
@@ -60,7 +60,7 @@ SCREENS.grid = async v => {
         }));
       sel.onchange = () => { if (sel.value) run(() => POST('/plan-grid/assign', { order_line_id: g.order.order_line_id, operation_id: op.operation_id, plan_date: d.date, worker_id: +sel.value })); };
       td.append(sel);
-    } else if (!items.length) td.append(gh('span', { class: 'muted', text: op.distributed ? 'нет работников' : 'не распределена' }));
+    } else if (!items.length && !d.past) td.append(gh('span', { class: 'muted', text: op.distributed ? 'нет работников' : 'не распределена' }));
     const tot = items.reduce((a, i) => a + i.qty, 0);
     if (tot) td.append(gh('div', { class: 'gtot', text: `Итого: ${tot}` }));
     return td;
@@ -72,21 +72,30 @@ SCREENS.grid = async v => {
       `${x.project} · ${x.order} · ${x.product} · ${num(x.qty)} шт${x.due_date ? ' · срок ' + fmtDY(x.due_date) : ''}`)));
     sel.onchange = () => { S.gridOrder = +sel.value; load(); };
     const shift = n => { const d = new Date(g.start + 'T00:00:00'); d.setDate(d.getDate() + n); S.gridStart = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); load(); };
-    const head = gh('tr', null, gh('th', { class: 'gop', text: 'Операция' }), g.days.map(d => gh('th', { class: d.workday ? '' : 'off' }, fmtD(d.date), gh('small', { text: d.wd + (d.workday ? '' : ' · вых.') }))));
-    const rows = g.operations.map(op => gh('tr', null,
-      gh('td', { class: 'gop' }, gh('b', { text: op.name }),
-        gh('div', { class: 'gmeta', text: `норма ${num(op.norm_per_day)}/день · нужно ${num(op.required)}` }),
-        gh('div', { class: 'gmeta', text: `сделано ${num(op.done)} · в плане ${num(op.planned)}` }),
-        op.unplanned > 0 ? gh('div', { class: 'gmeta warn-t', text: `не назначено: ${num(op.unplanned)}` }) : (op.required - op.done <= 0 ? gh('div', { class: 'gmeta ok-t', text: 'выполнено' }) : gh('div', { class: 'gmeta ok-t', text: 'весь объём в плане' })),
-        op.sections.length ? gh('div', { class: 'gmeta', text: op.sections.join(', ') }) : null),
-      g.days.map(d => cell(g, op, d))));
+    const head = gh('tr', null, gh('th', { class: 'gop', text: 'Операция' }), g.days.map(d => gh('th', { class: (d.workday ? '' : 'off') + (d.past ? ' past' : '') + (d.date === g.today ? ' today' : '') }, fmtD(d.date), gh('small', { text: d.wd + (d.workday ? '' : ' · вых.') }))));
+    /* состояние объёма операции: больше нужного — оранжевым, весь объём (сделан + в плане) — зелёным, остаток не назначен — красным */
+    const opState = op => op.over > 0 ? 'over' : (op.required - op.done <= 0 || op.complete) ? 'full' : op.unplanned > 0 ? 'short' : '';
+    const rows = g.operations.map(op => {
+      const st = opState(op);
+      const note = st === 'over' ? gh('div', { class: 'gmeta over-t', text: `запланировано больше на ${num(op.over)}` })
+        : st === 'full' ? gh('div', { class: 'gmeta ok-t', text: op.required - op.done <= 0 ? 'выполнено' : 'весь объём в плане' })
+        : st === 'short' ? gh('div', { class: 'gmeta warn-t', text: `не назначено: ${num(op.unplanned)}` }) : null;
+      return gh('tr', { class: st ? 'st-' + st : null },
+        gh('td', { class: 'gop' }, gh('b', { text: op.name }),
+          gh('div', { class: 'gmeta', text: `норма ${num(op.norm_per_day)}/день · нужно ${num(op.required)}` }),
+          gh('div', { class: 'gmeta', text: `сделано ${num(op.done)} · в плане ${num(op.planned)}` }),
+          note,
+          op.sections.length ? gh('div', { class: 'gmeta', text: op.sections.join(', ') }) : null),
+        g.days.map(d => cell(g, op, d)));
+    });
     v.replaceChildren(
       gh('div', { class: 'row', style: 'margin-bottom:8px' }, gh('h2', { class: 'grow', style: 'margin:0', text: 'Назначение на неделю' }),
         gh('span', { class: 'row noprint' }, gh('button', { class: 'secondary small', 'aria-label': 'Неделя назад', onclick: () => shift(-7) }, '‹'),
           gh('b', { class: 'lrange', text: `${fmtD(g.days[0].date)} – ${fmtD(g.days[6].date)}` }), gh('button', { class: 'secondary small', 'aria-label': 'Неделя вперёд', onclick: () => shift(7) }, '›'),
           gh('button', { class: 'small secondary', onclick: () => { S.gridStart = null; load(); } }, 'Сегодня'))),
       gh('label', { class: 'f' }, 'Заказ', sel),
-      gh('p', { class: 'hint' }, 'Выберите работника в ячейке — подставится норма (с учётом производительности, остатка по заказу и свободной части дня), а день работника закрепится: перепланирование назначенное не изменит. Количество можно поправить. ⚠ — квалификация ниже требуемой. «×» снимает назначение (если у работника в этот день больше ничего нет, закрепление снимается).'),
+      gh('p', { class: 'hint' }, 'Выберите работника в ячейке — подставится норма (с учётом производительности, остатка по заказу и свободной части дня), а день работника закрепится: перепланирование назначенное не изменит. Количество можно поправить. ⚠ — квалификация ниже требуемой. «×» снимает назначение (если у работника в этот день больше ничего нет, закрепление снимается). Прошедшие дни доступны только для просмотра.'),
+      gh('div', { class: 'glegend' }, gh('span', { class: 'lg full' }, 'весь объём в плане'), gh('span', { class: 'lg over' }, 'запланировано больше нужного'), gh('span', { class: 'lg short' }, 'есть неназначенный остаток')),
       gh('div', { class: 'card flush gridwrap' }, gh('table', { class: 'gridt' }, head, rows)));
   }
   await load();

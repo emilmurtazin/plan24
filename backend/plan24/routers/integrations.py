@@ -8,13 +8,13 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from .. import audit, config
 from ..db import DB
 from ..deps import MANAGERS, STAFF, get_or_404, require, scoped
-from ..models import TelegramCode, TelegramLink, User, Worker, utcnow
+from ..models import TelegramCode, TelegramLink, TelegramState, User, Worker, utcnow
 from ..telegram import bot, client
 
 router = APIRouter(tags=["telegram"])
@@ -105,4 +105,7 @@ def unlink(lid: int, user: User = Depends(require(*STAFF)), db: Session = DB):
     if user.role == "foreman" and not _foreman_owns(db, user, l.worker_id):
         raise HTTPException(404, "Не найдено")
     audit.log(db, user, "telegram", lid, "unlinked")
+    # состояние диалога принадлежит организации; если оставить его, чат нельзя будет привязать к другой организации
+    # (запись с тем же chat_id в чужой организации невидима, а вставка нового состояния упирается в первичный ключ)
+    db.execute(delete(TelegramState).where(TelegramState.chat_id == l.chat_id))
     db.delete(l)

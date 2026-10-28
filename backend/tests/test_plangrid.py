@@ -29,6 +29,9 @@ def pick(g, min_workers=1):
     raise AssertionError("нет операции с подходящим работником")
 
 
+NEXT_MON = (TODAY + timedelta(days=3)).isoformat()      # TODAY — пятница; сетка недели начинается с понедельника
+
+
 def weekday(n=3):
     d = TODAY + timedelta(days=n)
     while d.weekday() > 4:
@@ -41,18 +44,23 @@ def test_grid_structure_for_owner(full_org):
     o.replan_all()
     ol = first_order(o)
     g = grid(o, ol)
-    assert g["order"]["order_line_id"] == ol and len(g["days"]) == 7 and g["days"][0]["date"] == TODAY.isoformat()
+    assert g["order"]["order_line_id"] == ol and len(g["days"]) == 7
+    # неделя всегда с понедельника: сегодня (пятница) — пятый столбец, предыдущие дни помечены как прошедшие
     from datetime import date
+    assert g["days"][0]["wd"] == "пн" and g["days"][6]["wd"] == "вс" and date.fromisoformat(g["start"]).weekday() == 0
+    assert g["days"][4]["date"] == TODAY.isoformat() and [d["past"] for d in g["days"]] == [True] * 4 + [False] * 3
     assert [d["workday"] for d in g["days"]] == [date.fromisoformat(d["date"]).weekday() < 5 for d in g["days"]]      # выходные помечены
-    assert g["days"][0]["wd"] == "пт" and g["days"][1]["wd"] == "сб" and not g["days"][1]["workday"]
+    assert g["days"][5]["wd"] == "сб" and not g["days"][5]["workday"]
     ops = o.get(f"/reports/order-status?order_line_id={ol}").json()["operations"]
     assert [x["operation_id"] for x in g["operations"]] == [x["operation_id"] for x in ops]          # все операции заказа в порядке маршрута
     op = g["operations"][0]
     assert set(op["cells"]) == {d["date"] for d in g["days"]} and op["required"] >= 1 and "unplanned" in op and op["eligible"]
+    assert {"over", "complete"} <= set(op)
     assert all({"id", "name", "skill", "perf", "load", "absent"} <= set(w) for w in g["workers"])
-    # прошедшие даты не отдаём: окно начинается не раньше сегодняшнего дня
-    assert grid(o, ol, start=(TODAY - timedelta(days=5)).isoformat())["start"] == TODAY.isoformat()
-    assert grid(o, ol, start=(TODAY + timedelta(days=7)).isoformat())["start"] == (TODAY + timedelta(days=7)).isoformat()
+    # любая дата внутри недели даёт понедельник этой недели; следующая неделя начинается через 7 дней
+    assert grid(o, ol, start=TODAY.isoformat())["start"] == g["start"]
+    assert grid(o, ol, start=(TODAY - timedelta(days=5)).isoformat())["days"][0]["wd"] == "пн"
+    assert grid(o, ol, start=(TODAY + timedelta(days=7)).isoformat())["start"] == (TODAY + timedelta(days=7 - 4)).isoformat()
 
 
 def test_assign_pulls_norm_pins_day_and_survives_replan(full_org):
@@ -60,7 +68,7 @@ def test_assign_pulls_norm_pins_day_and_survives_replan(full_org):
     o.patch("/settings", json={"freeze_days": 0})
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     op, w = pick(g)
     day = weekday(4)
     free_day = next(d for d in (x["date"] for x in g["days"]) if d >= day.isoformat() and w["load"][d] == 0 and d not in w["absent"])
@@ -74,11 +82,11 @@ def test_assign_pulls_norm_pins_day_and_survives_replan(full_org):
     assert body["default_qty"] == body["item"]["qty"] == expected or body["item"]["qty"] <= expected        # норма (не больше остатка)
     assert body["item"]["is_locked"] is True and body["capacity"] == round(cap, 1)
     assert (w["id"], free_day) in pins(o)                                                                       # день закреплён автоматически
-    cell = grid(o, ol)["operations"][[x["operation_id"] for x in g["operations"]].index(op["operation_id"])]["cells"][free_day]
+    cell = grid(o, ol, start=NEXT_MON)["operations"][[x["operation_id"] for x in g["operations"]].index(op["operation_id"])]["cells"][free_day]
     assert [(c["worker_id"], c["qty"], c["locked"]) for c in cell] == [(w["id"], body["item"]["qty"], True)]
     # перепланирование не трогает назначенное
     o.replan_all()
-    cell2 = grid(o, ol)["operations"][[x["operation_id"] for x in g["operations"]].index(op["operation_id"])]["cells"][free_day]
+    cell2 = grid(o, ol, start=NEXT_MON)["operations"][[x["operation_id"] for x in g["operations"]].index(op["operation_id"])]["cells"][free_day]
     assert [(c["worker_id"], c["qty"]) for c in cell2] == [(w["id"], body["item"]["qty"])]
 
 
@@ -86,7 +94,7 @@ def test_explicit_qty_edit_and_unassign_unpins_empty_day(full_org):
     o = full_org
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     op, w = pick(g)
     day = next(d["date"] for d in g["days"] if d["workday"] and d["date"] > TODAY.isoformat() and w["load"][d["date"]] == 0)
     base = {"order_line_id": ol, "operation_id": op["operation_id"], "plan_date": day, "worker_id": w["id"]}
@@ -105,7 +113,7 @@ def test_second_assignment_keeps_day_pinned_until_last_is_removed(full_org):
     o = full_org
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     ops = [x for x in g["operations"] if x["eligible"]]
     if len(ops) < 2:
         pytest.skip("в заказе одна операция")
@@ -121,7 +129,7 @@ def test_warnings_overload_skill_absence_and_over_need(full_org):
     o = full_org
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     op, w = pick(g)
     day = next(d["date"] for d in g["days"] if d["workday"] and d["date"] > TODAY.isoformat() and w["load"][d["date"]] == 0)
     base = {"order_line_id": ol, "operation_id": op["operation_id"], "plan_date": day, "worker_id": w["id"]}
@@ -135,14 +143,14 @@ def test_warnings_overload_skill_absence_and_over_need(full_org):
     o.post("/absences", json={"worker_id": w["id"], "date_from": day, "date_to": day, "reason": "отпуск"})
     r = o.post("/plan-grid/assign", json={**base, "qty": 1}).json()
     assert any("отпуск или отсутствие" in x for x in r["warnings"])
-    assert day in next(x for x in grid(o, ol)["workers"] if x["id"] == w["id"])["absent"]
+    assert day in next(x for x in grid(o, ol, start=NEXT_MON)["workers"] if x["id"] == w["id"])["absent"]
 
 
 def test_default_qty_respects_free_capacity_of_the_day(full_org):
     o = full_org
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     ops = [x for x in g["operations"] if x["eligible"]]
     if len(ops) < 2:
         pytest.skip("в заказе одна операция")
@@ -173,7 +181,7 @@ def test_weekend_assignment_is_allowed_and_pinned(full_org):
     o = full_org
     o.replan_all()
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     sat = next(d for d in g["days"] if not d["workday"])
     op, w = pick(g)
     r = o.post("/plan-grid/assign", json={"order_line_id": ol, "operation_id": op["operation_id"], "plan_date": sat["date"], "worker_id": w["id"], "qty": 2})
@@ -223,7 +231,7 @@ def test_assignment_notifies_the_worker_in_telegram(full_org, tg):
     o = full_org
     fchat, wchat, w, me = team(o)
     ol = first_order(o)
-    g = grid(o, ol)
+    g = grid(o, ol, start=NEXT_MON)
     ops = [x for x in g["operations"] if w["worker_id"] in x["eligible"]]
     if not ops:
         pytest.skip("у работника нет подходящей операции в первом заказе")

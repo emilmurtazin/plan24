@@ -279,9 +279,16 @@ def _reasons(db: Session, t: int, today: date, wcenter: dict, cname: dict, own) 
 
 def _resources(db: Session, user: User, rows: list, risk: list, load: dict, sections: list, workers: list, today: date) -> dict:
     """Где не хватает людей. Берём заказы в риске (до 25), по их операциям — структурированные рекомендации order_status."""
-    per: dict = {s["id"]: {"section_id": s["id"], "section": s["name"], "add_workers": 0, "items": [], "qualification": []} for s in sections}
+    per: dict = {s["id"]: {"section_id": s["id"], "section": s["name"], "add_workers": 0, "items": [], "qualification": [], "late_ops": []} for s in sections}
     by_name = {s["name"]: s["id"] for s in sections}
-    for r in risk[:25]:
+    # проверяем не только «Риск опоздания»: заказ, который не выполняется в срок, может иметь и другой статус —
+    # «Нет плана» (объём не уложился в горизонт), «В работе» с неназначенным остатком или с уже прошедшим сроком
+    seen = {r["order_line_id"] for r in risk}
+    extra = [r for r in rows if r["order_line_id"] not in seen and r["status"] not in ("Готово", "Нет операций")
+             and (r["status"] == "Нет плана" or (r.get("due") and r["due"] < today.isoformat()))]
+    extra.sort(key=lambda r: (r.get("due") or "9999"))
+    checked = (list(risk) + extra)[:25]
+    for r in checked:
         ol = db.get(OrderLine, r["order_line_id"])
         if ol is None:
             continue
@@ -298,6 +305,11 @@ def _resources(db: Session, user: User, rows: list, risk: list, load: dict, sect
                                               "operation": op["name"], "add": op["staffing"]["add"], "current": op["staffing"]["current"],
                                               "need": op["staffing"]["need"], "spare": op["staffing"].get("spare", 0),
                                               "end_date": op["end_date"], "due": due, "unplanned": op["unplanned"]})
+                if op["status"] != "Готово" and (op["late"] or op["unplanned"] > 0 or op["bottleneck_critical"]) \
+                        and not (op["staffing"] and op["staffing"]["add"] > 0):
+                    per[sid]["late_ops"].append({"order_line_id": r["order_line_id"], "order": r["id"], "operation": op["name"],
+                                                 "end_date": op["end_date"], "due": due, "unplanned": op["unplanned"],
+                                                 "reason": "не весь объём в плане" if op["unplanned"] > 0 else "завершится позже срока"})
                 for p in op["problems"]:
                     if p["code"] == "NO_QUALIFIED":
                         per[sid]["qualification"].append({"order": r["id"], "operation": op["name"], "text": p["text"]})
@@ -314,6 +326,7 @@ def _resources(db: Session, user: User, rows: list, risk: list, load: dict, sect
         p["items"].sort(key=lambda i: -i["add"])
         p["items"] = p["items"][:5]
         p["qualification"] = p["qualification"][:3]
+        p["late_ops"] = p["late_ops"][:5]
         p.setdefault("peak_load", None); p.setdefault("overload_weeks", 0); p.setdefault("workers", wcount.get(p["section_id"], 0))
-        p["needs_more"] = bool(p["add_workers"] or p["qualification"] or p["overload_weeks"])
-    return {"sections": list(per.values()), "orders_checked": min(len(risk), 25), "any_need": any(p["needs_more"] for p in per.values())}
+        p["needs_more"] = bool(p["add_workers"] or p["qualification"] or p["late_ops"] or p["overload_weeks"])
+    return {"sections": list(per.values()), "orders_checked": len(checked), "any_need": any(p["needs_more"] for p in per.values())}

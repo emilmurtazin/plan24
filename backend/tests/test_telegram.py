@@ -612,3 +612,24 @@ def test_polling_loop_survives_network_failure_and_bad_update(full_org, tg, monk
     assert calls["n"] == 3                                                    # упал, повторил, обработал, пошёл дальше
     assert dbm.get_engine() is engine_before                                  # движок БД не пересоздавался на каждом обновлении
     assert Flaky.deleted == 1                                                 # перед опросом снят вебхук
+
+
+def test_unlinked_chat_can_be_linked_to_another_company(full_org, tg, env):
+    """После отвязки чат должен привязываться к другой организации: состояние диалога прежней организации не мешает."""
+    o = full_org
+    chat, wid, name = link_worker(o)
+    chat.say("/tasks")
+    lid = o.get("/telegram/status", "manager").json()["links"][0]["id"]
+    assert o.delete(f"/telegram/links/{lid}", "manager").status_code == 204
+    s = dbm.admin_session()
+    from plan24.models import TelegramState
+    assert s.scalar(select(TelegramState).where(TelegramState.chat_id == chat.chat_id)) is None      # следов диалога не осталось
+    s.close()
+    o2 = Org(env, "second@b.ru", "Цех Б")
+    o2.seed("windows")
+    o2.fake = o.fake
+    w2 = o2.get("/workers").json()["items"][0]
+    code = o2.post("/telegram/codes", json={"worker_id": w2["id"]}).json()["code"]
+    assert w2["name"] in text(chat.say("/start " + code))
+    st = o2.get("/telegram/status").json()["links"]
+    assert [l["name"] for l in st] == [w2["name"]]

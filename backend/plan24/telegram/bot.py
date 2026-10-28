@@ -201,8 +201,11 @@ def _link(db: Session, chat_id: int, raw: str, out: list):
         return say(out, chat_id, "Код не подошёл: он неверный, уже использован или истёк. Попросите руководителя выдать новый.")
     dbm.set_tenant(db, code.tenant_id)            # дальше — запись, только в организации, выдавшей код
     # одна личность — один чат: прежняя привязка (например, со старого телефона) заменяется
-    db.execute(delete(TelegramLink).where((TelegramLink.worker_id == code.worker_id) if code.worker_id
-                                          else (TelegramLink.user_id == code.user_id)))
+    ident = (TelegramLink.worker_id == code.worker_id) if code.worker_id else (TelegramLink.user_id == code.user_id)
+    old_chats = list(db.scalars(select(TelegramLink.chat_id).where(ident)))
+    db.execute(delete(TelegramLink).where(ident))
+    if old_chats:
+        db.execute(delete(TelegramState).where(TelegramState.chat_id.in_(old_chats)))   # диалог со старого телефона больше не нужен
     db.flush()
     db.add(TelegramLink(tenant_id=code.tenant_id, chat_id=chat_id, worker_id=code.worker_id, user_id=code.user_id))
     code.used_at = utcnow()

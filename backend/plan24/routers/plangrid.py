@@ -99,7 +99,8 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
     if ol.status != "planned":
         raise HTTPException(422, "Позиция не в работе (черновик, отменена или завершена)")
     plan = de._plan(db, user)
-    start = max(start or today, today)
+    base = start or today
+    start = base - timedelta(days=base.weekday())                   # неделя всегда с понедельника (прошедшие дни показываются, но не правятся)
     days = [start + timedelta(days=i) for i in range(GRID_DAYS)]
     eff = _eff(db, user.tenant_id)
     ops = _visible_ops(db, user, ol)
@@ -141,10 +142,12 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
         eligible = [w.id for w in workers if (not has_centers) or w.work_center_id in cs]
         out_ops.append({"operation_id": op.id, "name": op.name, "sequence": op.sequence, "norm_per_day": op.norm_per_day, "per_item": op.per_item,
                         "min_skill": op.min_skill, "required": required, "done": done, "planned": planned,
-                        "unplanned": max(0, required - done - planned), "sections": sorted(centers[c] for c in cs if c in centers),
+                        "unplanned": max(0, required - done - planned),
+                        "over": max(0, done + planned - required),            # запланировано больше, чем нужно
+                        "complete": done + planned >= required,               # весь объём выполнен или полностью в плане "sections": sorted(centers[c] for c in cs if c in centers),
                         "eligible": eligible, "distributed": bool(cs) or not has_centers,
                         "cells": {d.isoformat(): cells.get((op.id, d.isoformat()), []) for d in days}})
-    return {"order": _label(db, ol), "start": start.isoformat(), "efficiency": eff, "plan_id": plan.id,
+    return {"order": _label(db, ol), "start": start.isoformat(), "today": today.isoformat(), "efficiency": eff, "plan_id": plan.id,
             "days": [{"date": d.isoformat(), "wd": WD[d.weekday()], "workday": planning.is_work_day(db, user.tenant_id, d), "past": d < today} for d in days],
             "operations": out_ops,
             "workers": [{"id": w.id, "name": w.name, "skill": w.skill, "perf": w.perf, "status": w.status, "center": centers.get(w.work_center_id),

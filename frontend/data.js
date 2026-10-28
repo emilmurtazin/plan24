@@ -311,7 +311,7 @@ async function openAbsences(w) {
 
 /* ---------- настройки планировщика ---------- */
 SCREENS.settings = async (v, back) => {
-  const s = await GET('/settings'), days = new Set(s.work_weekdays.split(',').map(Number)), WDN = [['1', 'Пн'], ['2', 'Вт'], ['3', 'Ср'], ['4', 'Чт'], ['5', 'Пт'], ['6', 'Сб'], ['0', 'Вс']];
+  const s = await GET('/settings'), days = new Set(s.work_weekdays.split(',').map(Number)), WDN = [['0', 'Пн'], ['1', 'Вт'], ['2', 'Ср'], ['3', 'Чт'], ['4', 'Пт'], ['5', 'Сб'], ['6', 'Вс']]; /* как date.weekday() в Python: 0 — понедельник, 6 — воскресенье */
   const F = [
     { name: 'priority_strictness', label: 'Жёсткость приоритета по умолчанию, %', type: 'number', min: 0, max: 100, step: 10, help: '100 — следующий приоритет ждёт окончания предыдущего; 0 — приоритет влияет только на очерёдность.' },
     { name: 'max_workers_per_op', label: 'Максимум исполнителей на одну операцию', type: 'number', min: 1, step: 1, help: 'Больше людей — быстрее, но больше переключений.' },
