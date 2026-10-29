@@ -123,14 +123,12 @@ const TABS = {
   centers: {
     label: 'Участки', cfg: {
       title: 'Участки', add: 'Добавить участок', path: '/work-centers', cols: () => [{ label: 'Название', get: x => x.name }], fields: () => [nameField],
-      headerExtra: '<button class="secondary" data-settings>Настройки</button>',
-      hint: () => 'Кнопка «Настройки» — параметры планировщика (жёсткость приоритета, рабочие дни, заморозка плана и др.).',
-      after: (box, refs, rows, reload) => { $('[data-settings]', box).onclick = () => SCREENS.settings(box, reload); }
+      hint: () => 'Настройки планирования участка (эффективность, число исполнителей на операцию и др.) — в «Организация → Планирование».'
     }
   },
   holidays: {
     label: 'Календарь', cfg: {
-      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Работники → Участки → Настройки». Здесь — дополнительные нерабочие даты.',
+      title: 'Праздники и нерабочие дни', add: 'Добавить день', path: '/holidays', hint: () => 'Рабочие дни недели настраиваются в «Организация → Планирование». Здесь — дополнительные нерабочие даты.',
       cols: () => [{ label: 'Дата', get: x => fmtDY(x.holiday_date) }, { label: 'Название', get: x => x.name }],
       fields: () => [{ name: 'holiday_date', label: 'Дата', type: 'date', required: true }, { name: 'name', label: 'Название' }], editFields: () => [{ name: 'name', label: 'Название' }]
     }
@@ -206,6 +204,7 @@ const ORG_TABS = {
       catch (e) { $('#qe', box).textContent = errText(e); }
     };
   } },
+  planning: { label: 'Планирование', custom: box => SCREENS.settings(box) },
   holidays: TABS.holidays,
   users: { label: 'Пользователи', owner: true, custom: box => SCREENS.users(box) },
   audit: { label: 'Журнал', custom: box => SCREENS.audit(box) },
@@ -227,10 +226,11 @@ async function openRouting(product, selId, onClose) {
   const m = modal(`<h2>${esc(product.name)}: версии и операции</h2>
     <div class="row" style="margin-bottom:10px">${rts.map(r => `<button class="small ${r.id === cur.id ? '' : 'secondary'}" data-v="${r.id}">${esc(verLabel(r))}${r.is_current ? ' · текущая' : ''}</button>`).join('')}<span class="grow"></span><button class="small secondary" data-nv>Новая версия</button></div>
     <div class="row" style="margin-bottom:8px"><b>Версия: ${esc(verLabel(cur))}</b> <span class="muted">· операций: ${cur.operations.length}</span><span class="grow"></span><button class="small secondary" data-rn>Переименовать версию</button></div>
-    <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции и изменить блокировку. Для остального создайте новую версию.' : 'Одинаковый «Порядок» — операции идут параллельно. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
+    <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции, изменить блокировку и партию. Для остального создайте новую версию.' : 'Одинаковый «Порядок» — операции идут параллельно. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
     <div class="scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
+    { label: 'Партия', cls: 'num', html: o => o.start_after_pct != null && o.start_after_pct < 100 ? `после ${num(o.start_after_pct)}%` : '<span class="muted">после полного</span>' },
     { label: 'Блок', html: o => o.hold_qty ? `<span class="warn">${num(o.hold_qty)}${o.hold_until ? ' до ' + fmtDY(o.hold_until) : ''}</span> ${esc(o.hold_reason)}` : '—' }], cur.operations,
-      o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Название / блок'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
+      o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Название / блок / партия'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
     <div class="row" style="margin-top:12px">${canEdit ? '<button data-oa>+ Операция</button>' : ''}<button class="secondary" data-x>Закрыть</button></div>`, true);
   const done = () => { m.close(); if (onClose) onClose(); };
   const again = () => { m.close(); openRouting(product, cur.id, onClose); };
@@ -249,10 +249,11 @@ async function openRouting(product, selId, onClose) {
     { name: 'norm_per_day', label: 'Норма за день', type: 'number', required: true, min: 0, step: 'any' },
     { name: 'min_skill', label: 'Требуемая квалификация', type: 'select', options: qOpts(quals), required: true, num: true, help: 'Работник допускается, если его уровень не ниже' },
     { name: 'per_item', label: 'Операций на изделие', type: 'number', required: true, min: 0, step: 'any' }] : []),
+  { name: 'start_after_pct', label: 'Партия: начинать, когда предыдущая операция выполнена на, %', type: 'number', min: 1, max: 100, step: 'any', help: 'Например, 30 — операция стартует, когда предыдущая сделала 30% изделий, и дальше берёт их по мере готовности. Пусто или 100 — только после полного окончания предыдущей. Для операции первого порядка не действует.' },
   { name: 'hold_qty', label: 'Блок: изделий, по которым операция не идёт', type: 'number', min: 0, step: 'any' }, { name: 'hold_until', label: 'Блок снимается автоматически с даты', type: 'date' }, { name: 'hold_reason', label: 'Причина блокировки' }];
   const edit = (o) => formModal({
     title: o ? o.name : 'Новая операция', fields: opFields(canEdit), values: o || { sequence: (cur.operations.at(-1)?.sequence || 0) + 1, norm_per_day: 10, min_skill: 1, per_item: 1, hold_qty: 0 },
-    onSubmit: async (vals, f) => { const body = { ...vals, hold_qty: vals.hold_qty || 0, hold_reason: vals.hold_reason || '' }; if (o) await PATCH(`/operations/${o.id}`, { ...body, version: o.version }); else await POST(`/routings/${cur.id}/operations`, body); f.close(); again(); }
+    onSubmit: async (vals, f) => { const body = { ...vals, hold_qty: vals.hold_qty || 0, hold_reason: vals.hold_reason || '', start_after_pct: vals.start_after_pct ?? null }; if (o) await PATCH(`/operations/${o.id}`, { ...body, version: o.version }); else await POST(`/routings/${cur.id}/operations`, body); f.close(); again(); }
   });
   const oa = $('[data-oa]', m.el); if (oa) oa.onclick = () => edit(null);
   $$('[data-oe]', m.el).forEach(b => b.onclick = () => edit(cur.operations.find(o => o.id == b.dataset.oe)));
@@ -309,29 +310,39 @@ async function openAbsences(w) {
   };
 }
 
-/* ---------- настройки планировщика ---------- */
-SCREENS.settings = async (v, back) => {
-  const s = await GET('/settings'), days = new Set(s.work_weekdays.split(',').map(Number)), WDN = [['0', 'Пн'], ['1', 'Вт'], ['2', 'Ср'], ['3', 'Чт'], ['4', 'Пт'], ['5', 'Сб'], ['6', 'Вс']]; /* как date.weekday() в Python: 0 — понедельник, 6 — воскресенье */
+/* ---------- настройки планирования ---------- */
+/* Вкладка «Организация → Планирование»: общие настройки и настройки каждого участка. Пустое значение у участка — действует общее. */
+const SECTION_FIELDS = [
+  { name: 'efficiency', label: 'Коэффициент эффективности', short: 'Эффективность', type: 'number', min: 0.1, max: 1.5, step: 0.05, help: '1 — нормы как заданы. 0,85 — учесть, что полный день работают не на 100%.' },
+  { name: 'max_workers_per_op', label: 'Максимум исполнителей на одну операцию', short: 'Макс. человек на операцию', type: 'number', min: 1, step: 1, help: 'Больше людей — быстрее, но больше переключений.' },
+  { name: 'today_load_threshold', label: 'Порог загрузки «сегодня», доля дня', short: 'Порог «сегодня»', type: 'number', min: 0, max: 1, step: 0.05, help: 'Кто уже выработал столько сегодня, новых заданий на сегодня не получает.' },
+  { name: 'min_start_share', label: 'Минимальная доля старта операции', short: 'Мин. доля старта', type: 'number', min: 0.1, max: 1, step: 0.05, help: 'Операцию начинают, если в этот день можно сделать хотя бы эту долю одного изделия.' }];
+SCREENS.settings = async v => {
+  const [s, centers] = await Promise.all([GET('/settings'), listAll('/work-centers')]);
+  const days = new Set(s.work_weekdays.split(',').map(Number)), WDN = [['0', 'Пн'], ['1', 'Вт'], ['2', 'Ср'], ['3', 'Чт'], ['4', 'Пт'], ['5', 'Сб'], ['6', 'Вс']]; /* как date.weekday() в Python: 0 — понедельник, 6 — воскресенье */
   const F = [
-    { name: 'priority_strictness', label: 'Жёсткость приоритета по умолчанию, %', type: 'number', min: 0, max: 100, step: 10, help: '100 — следующий приоритет ждёт окончания предыдущего; 0 — приоритет влияет только на очерёдность.' },
-    { name: 'max_workers_per_op', label: 'Максимум исполнителей на одну операцию', type: 'number', min: 1, step: 1, help: 'Больше людей — быстрее, но больше переключений.' },
+    { name: 'priority_strictness', label: 'Жёсткость приоритета, %', type: 'number', min: 0, max: 100, step: 10, help: '100 — следующий приоритет ждёт окончания предыдущего; 0 — приоритет влияет только на очерёдность.' },
     { name: 'freeze_days', label: 'Фиксировать план на ближайшие N рабочих дней', type: 'number', min: 0, max: 5, step: 1, help: '2 — задания на сегодня и завтра не меняются при пересчёте. 0 — всё пересчитывается.' },
-    { name: 'today_load_threshold', label: 'Порог загрузки «сегодня», доля дня', type: 'number', min: 0, max: 1, step: 0.05, help: 'Кто уже выработал столько сегодня, новых заданий на сегодня не получает.' },
-    { name: 'min_start_share', label: 'Минимальная доля старта операции', type: 'number', min: 0.1, max: 1, step: 0.05, help: 'Операцию начинают, если в этот день можно сделать хотя бы эту долю одного изделия.' },
-    { name: 'efficiency', label: 'Коэффициент эффективности', type: 'number', min: 0.1, max: 1.5, step: 0.05, help: '1 — нормы как заданы. 0,85 — учесть, что полный день работают не на 100%.' },
     { name: 'shift_hours', label: 'Длительность смены, ч', type: 'number', min: 1, max: 24, step: 0.5, help: 'Только для отображения.' },
     { name: 'fact_confirmation', label: 'Факт сборщика подтверждает бригадир', type: 'checkbox', help: 'Пока не подтверждён, факт виден как «ждёт подтверждения», но в расчёт идёт.' },
     { name: 'fix_group_start', label: 'Не начинать следующую операцию раньше окончания предыдущей у опаздывающих заказов', type: 'checkbox', help: 'Исправляет особенность прежнего скрипта (D-04). По умолчанию выключено — как в скрипте.' }];
-  v.innerHTML = `<div class="row" style="margin-bottom:10px">${back ? '<button class="secondary" id="sb">← К участкам</button>' : ''}<h2 class="grow" style="margin:0">Настройки планировщика</h2></div><div class="card" style="max-width:640px"><form id="sf" novalidate>${F.map(f => fieldHtml(f, s[f.name])).join('')}
-    <label class="f">Жёсткость по уровням приоритета (например «2:60; 3:30»)<input name="lv" value="${esc(Object.entries(s.strictness_by_level || {}).map(([k, x]) => k + ':' + x).join('; '))}"></label>
+  const FALL = SECTION_FIELDS;                       // общие значения, по умолчанию действующие на участках
+  const val = (c, f) => c[f.name] != null ? `<b>${num(c[f.name])}</b>` : `<span class="muted">общ. ${num(s[f.name])}</span>`;
+  v.innerHTML = `<h2 style="margin:0 0 10px">Планирование</h2>
+    <p class="hint">Настройки каждого участка свои: у участка можно задать эффективность, число исполнителей на операцию и другие параметры. Пустое значение у участка — действует общее из блока ниже. Изменения применяются при следующем перепланировании. Партии (старт следующей операции, когда выполнена часть предыдущей) задаются у самой операции в «Каталоге изделий».</p>
+    <h3>Участки</h3>
+    ${centers.length ? `<div class="card flush scroll">${table([{ label: 'Участок', get: c => c.name }, ...SECTION_FIELDS.map(f => ({ label: f.short, cls: 'num', html: c => val(c, f) }))], centers, c => `<button class="small secondary" data-ce="${c.id}">Настроить</button>`)}</div>` : '<p class="muted">Участков пока нет — добавьте их в «Работники → Участки».</p>'}
+    <h3>Общие настройки</h3>
+    <div class="card" style="max-width:640px"><form id="sf" novalidate>${F.map(f => fieldHtml(f, s[f.name])).join('')}
     <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Рабочие дни недели</legend><div class="row">${WDN.map(([k, l]) => `<label class="chk"><input type="checkbox" name="wd" value="${k}" ${days.has(+k) ? 'checked' : ''}> ${l}</label>`).join('')}</div></fieldset>
+    <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Значения по умолчанию для участков</legend>${FALL.map(f => fieldHtml(f, s[f.name])).join('')}</fieldset>
     <div class="err" id="se" role="alert"></div><button type="submit">Сохранить</button></form></div>`;
-  if (back) $('#sb').onclick = back;
+  $$('[data-ce]', v).forEach(b => b.onclick = () => { const c = centers.find(x => x.id == b.dataset.ce); formModal({
+    title: 'Планирование: ' + c.name, fields: SECTION_FIELDS.map(f => ({ ...f, help: f.help + ` Пусто — общее значение (${num(s[f.name])}).` })), values: c,
+    onSubmit: async (vals, m) => { await PATCH(`/work-centers/${c.id}`, { ...vals, version: c.version }); m.close(); toast('Настройки участка сохранены. Пересчитайте план.'); SCREENS.settings(v); } }); });
   $('#sf').onsubmit = async e => {
-    e.preventDefault(); const form = e.target, body = readForm(form, F);
-    body.strictness_by_level = {}; let bad = false;
-    for (const part of form.elements.lv.value.split(/[;,]/).map(x => x.trim()).filter(Boolean)) { const m = part.match(/^(\d+)\s*:\s*([\d.,]+)$/); if (m) body.strictness_by_level[m[1]] = Number(m[2].replace(',', '.')); else bad = true; }
-    if (bad) { $('#se').textContent = 'Жёсткость по уровням: формат «2:60; 3:30»'; return; }
+    e.preventDefault(); const form = e.target, body = readForm(form, [...F, ...FALL]);
+    for (const f of FALL) if (body[f.name] == null) delete body[f.name];                // общее значение не может быть пустым
     body.work_weekdays = $$('[name=wd]:checked', form).map(i => i.value).join(',');
     if (!body.work_weekdays) { $('#se').textContent = 'Отметьте хотя бы один рабочий день'; return; }
     try { await PATCH('/settings', body); $('#se').textContent = ''; toast('Настройки сохранены. Пересчитайте план.'); } catch (x) { $('#se').textContent = errText(x); }

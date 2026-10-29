@@ -72,9 +72,6 @@ def seed_dataset(db: Session, user: User, ds: dict, shift_days: int = 0, setting
         st, cfg = db.get(PlannerSettings, t), ds.get("settings") or {}
         if "strictness" in cfg:
             st.priority_strictness = float(cfg["strictness"])
-        if cfg.get("byLevel"):
-            st.strictness_by_level = {k.strip(): float(v) for k, v in
-                                      (x.split(":") for x in str(cfg["byLevel"]).split(";"))}
         if "maxWorkers" in cfg:
             st.max_workers_per_op = int(cfg["maxWorkers"])
         st.freeze_days = 0 if cfg.get("_no_freeze") else st.freeze_days

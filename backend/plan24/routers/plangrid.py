@@ -28,9 +28,15 @@ GRID_DAYS = 7
 WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
-def _eff(db: Session, tenant_id: int) -> float:
+def _eff(db: Session, tenant_id: int):
+    """Коэффициент эффективности: функция по работнику — значение его участка, а если не задано, общее из настроек. Без работника — общее."""
     st = db.get(PlannerSettings, tenant_id)
-    return (st.efficiency if st else 1.0) or 1.0
+    base = (st.efficiency if st else 1.0) or 1.0
+    own = {c.id: c.efficiency for c in db.scalars(select(WorkCenter).where(WorkCenter.tenant_id == tenant_id)) if c.efficiency}
+
+    def eff(w=None) -> float:
+        return own.get(w.work_center_id, base) if w is not None else base
+    return eff
 
 
 def _capacity(op: Operation, w: Worker, eff: float) -> float:
@@ -87,7 +93,7 @@ def _day_loads(db: Session, user: User, worker_ids: list, days: list, eff: float
     for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == plan_id, PlanItem.worker_id.in_(worker_ids), PlanItem.plan_date.in_(days))):
         op, w = ops.get(it.operation_id), ws.get(it.worker_id)
         if op and w:
-            cap = _capacity(op, w, eff)
+            cap = _capacity(op, w, eff(w))
             load[(it.worker_id, it.plan_date)] += it.qty / cap if cap else 0
     return load
 
@@ -129,7 +135,7 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
             continue
         cells[(it.operation_id, it.plan_date.isoformat())].append(
             {"item_id": it.id, "worker_id": it.worker_id, "worker": w.name if w else "?", "qty": it.qty, "locked": it.is_locked,
-             "capacity": round(_capacity(op, w, eff), 1) if w else None})
+             "capacity": round(_capacity(op, w, eff(w)), 1) if w else None})
 
     out_ops = []
     for op in ops:
@@ -148,7 +154,7 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
                         "sections": sorted(centers[c] for c in cs if c in centers),
                         "eligible": eligible, "distributed": bool(cs) or not has_centers,
                         "cells": {d.isoformat(): cells.get((op.id, d.isoformat()), []) for d in days}})
-    return {"order": _label(db, ol), "start": start.isoformat(), "today": today.isoformat(), "efficiency": eff, "plan_id": plan.id,
+    return {"order": _label(db, ol), "start": start.isoformat(), "today": today.isoformat(), "efficiency": eff(), "plan_id": plan.id,
             "days": [{"date": d.isoformat(), "wd": WD[d.weekday()], "workday": planning.is_work_day(db, user.tenant_id, d), "past": d < today} for d in days],
             "operations": out_ops,
             "workers": [{"id": w.id, "name": w.name, "skill": w.skill, "perf": w.perf, "status": w.status, "center": centers.get(w.work_center_id),
@@ -176,7 +182,7 @@ def assign(body: AssignIn, bg: BackgroundTasks, user: User = Depends(require(*ST
     op = get_or_404(db, Operation, body.operation_id, user)
     warns = de._check_task(db, user, w, ol, op)
     eff = _eff(db, user.tenant_id)
-    cap = _capacity(op, w, eff)
+    cap = _capacity(op, w, eff(w))
     required = math.ceil(ol.qty * op.per_item - 1e-9)
     done = db.scalar(select(func.coalesce(func.sum(Fact.qty), 0.0)).where(
         Fact.tenant_id == user.tenant_id, Fact.order_line_id == ol.id, Fact.operation_id == op.id, Fact.deleted_at.is_(None))) or 0

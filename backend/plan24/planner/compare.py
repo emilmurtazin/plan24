@@ -41,7 +41,7 @@ def compare_strictness(inp: PlanInput, variants=VARIANTS) -> dict:
 
     out = [describe("Текущая настройка", inp.config.priority_strictness, base_rows, base_max, True)]
     for label, s in variants:
-        cfg = replace(inp.config, priority_strictness=s, strictness_by_level={})
+        cfg = replace(inp.config, priority_strictness=s)
         _, rows, mx = _metrics(replace(inp, config=cfg))
         out.append(describe(label, s, rows, mx, False))
     return {"variants": out, "basis": "рабочие дни; сдвиг считается относительно текущей настройки"}

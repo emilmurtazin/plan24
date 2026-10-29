@@ -35,12 +35,18 @@ def _js_round(x: float) -> int:
 
 class _W:
     """Рабочее состояние исполнителя: свободная ёмкость по дням (в долях дня)."""
-    __slots__ = ("name", "perf", "skill", "free", "allowed_key")
+    __slots__ = ("name", "perf", "skill", "free", "allowed_key", "eff", "section", "max_n", "load_thr", "start_share")
 
-    def __init__(self, w: Worker, total_days: int, work_days: tuple):
+    def __init__(self, w: Worker, total_days: int, work_days: tuple, cfg: PlanConfig):
         self.name = w.name
         self.perf = w.perf
         self.skill = w.skill
+        # настройки участка работника, а если не заданы — общие
+        self.eff = cfg.efficiency if w.efficiency is None else w.efficiency
+        self.section = w.section
+        self.max_n = cfg.max_workers_per_op if w.max_workers_per_op is None else w.max_workers_per_op
+        self.load_thr = cfg.today_load_threshold if w.today_load_threshold is None else w.today_load_threshold
+        self.start_share = cfg.min_start_share if w.min_start_share is None else w.min_start_share
         self.free = [0.0 if work_days[i] in w.absent_days else 1.0 for i in range(total_days)]
 
 
@@ -105,7 +111,7 @@ def plan(inp: PlanInput) -> PlanResult:
     today_key = work_days[0]
     eff = cfg.efficiency
 
-    workers = [_W(w, total_days, work_days) for w in inp.workers]
+    workers = [_W(w, total_days, work_days, cfg) for w in inp.workers]
     ops_by_product = {p: sorted(ops, key=lambda o: o.sequence) for p, ops in inp.products.items()}
     norm_by_op = {}
     for p, ops in inp.products.items():
@@ -141,7 +147,7 @@ def plan(inp: PlanInput) -> PlanResult:
                 if norm:
                     w = worker_by_name.get(f.worker)
                     perf = w.perf if w else 1
-                    day_cap = norm * perf * eff
+                    day_cap = norm * perf * (w.eff if w else eff)
                     if day_cap > 0:
                         today_fact_load[f.worker] += f.qty / day_cap
         if f.qty == 0 and f.plan > 0:
@@ -165,12 +171,13 @@ def plan(inp: PlanInput) -> PlanResult:
         for wn, share in today_fact_load.items():
             if wn in worker_by_name:
                 worker_by_name[wn].free[0] = max(0.0, worker_by_name[wn].free[0] - share)
-    loaded_today = [n for n, share in today_fact_load.items() if share >= cfg.today_load_threshold]
+    loaded_today = [n for n, share in today_fact_load.items()
+                    if share >= (worker_by_name[n].load_thr if n in worker_by_name else cfg.today_load_threshold)]
     loaded_today_set = set(loaded_today)
 
     # --- время и целые операции ---
     def op_days(op: Operation, w: _W) -> float:
-        return 1 / (op.norm_per_day * w.perf * eff)
+        return 1 / (op.norm_per_day * w.perf * w.eff)
 
     def spend_time(w: _W, day: int, days: float) -> None:
         w.free[day] -= days
@@ -208,23 +215,37 @@ def plan(inp: PlanInput) -> PlanResult:
         return fallback
 
     def strictness_for(p) -> float:
-        return cfg.strictness_by_level.get(p, cfg.priority_strictness)
+        return cfg.priority_strictness
 
     new_fact_rows: list = []
     priority_last_day: dict = {}
 
+    emitted: dict = {}          # (id позиции, операция) -> число операций по дням плана; нужно для старта партиями
+
+    def mark(order_id, op_name, day, qty):
+        arr = emitted.get((order_id, op_name))
+        if arr is None:
+            arr = emitted[(order_id, op_name)] = [0.0] * total_days
+        arr[day] += qty
+
     def emit(day, order, op, give, w, reason, frozen=False):
+        mark(order.id, op.name, day, give)
         result_items.append(PlanItem(work_days[day], order.id, order.project, order.product,
                                      op.name, give, w.name, reason, frozen))
 
-    def schedule_op(order, op, remaining, candidates, from_day, to_day, reason, on_day_used):
+    def schedule_op(order, op, remaining, candidates, from_day, to_day, reason, on_day_used, cap=None):
         day = from_day
         while day <= to_day and remaining > 0:
             pool = [w for w in candidates if w.free[day] > 0.01]
             if day == 0:
                 pool = [w for w in pool if w.name not in loaded_today_set]
             pool.sort(key=lambda w: (-(w.free[day] * w.perf), -w.perf))
-            pool = pool[: cfg.max_workers_per_op]
+            chosen, per_section = [], {}              # не больше max_n исполнителей одного участка на операцию
+            for w in pool:
+                if per_section.get(w.section, 0) < w.max_n:
+                    chosen.append(w)
+                    per_section[w.section] = per_section.get(w.section, 0) + 1
+            pool = chosen
             for w in pool:
                 if remaining <= 0:
                     break
@@ -234,11 +255,15 @@ def plan(inp: PlanInput) -> PlanResult:
                     # не больше остатка дня; единица дольше целого дня не влезает ни в какой день — её начинают только со свободного дня
                     if give < 1 and one_op > 1 + EPS and w.free[day] >= 1 - EPS:
                         give = 1
-                elif give < 1 and w.free[day] >= min(one_op * cfg.min_start_share, cfg.min_start_share) - EPS:
+                elif give < 1 and w.free[day] >= min(one_op * w.start_share, w.start_share) - EPS:
                     give = 1
                 give = min(give, remaining)
+                if cap is not None:                      # партии: за один день — не больше, чем освободила предыдущая операция
+                    give = min(give, math.floor(cap["fn"](day) - cap["base"] - cap["placed"] + EPS))
                 if give <= 0:
                     continue
+                if cap is not None:
+                    cap["placed"] += give
                 spend_time(w, day, give * one_op)
                 add_prio_load(order.priority, day, give / op.norm_per_day)
                 remaining -= give
@@ -310,10 +335,14 @@ def plan(inp: PlanInput) -> PlanResult:
             min_start_day = min_start_for_order
             if gi > 0:
                 min_start_day = max(min_start_for_order, group_progress[gi - 1][1])
-            group_last_day = min_start_day
+            # партии: операция стартует, когда предыдущая выполнена на start_after_pct %, и дальше берёт изделия по мере готовности
+            prog_names = {o.name for o in group_ops if gi > 0 and o.start_after_pct is not None and o.start_after_pct < 100 - EPS}
+            group_last_day = min_start_for_order if prog_names and len(prog_names) == len(group_ops) else min_start_day
             group_min_ready = order.qty
 
             for op in group_ops:
+                progressive = op.name in prog_names
+                op_ready_items, op_min_start = (order.qty, min_start_for_order) if progressive else (ready_items, min_start_day)
                 total_required = math.ceil(order.qty * op.per_item - EPS)
                 done_ops = done_map.get((order.id, op.name), 0)
                 done_items = math.floor(done_ops / op.per_item)
@@ -324,8 +353,25 @@ def plan(inp: PlanInput) -> PlanResult:
                 hold = op.hold_qty or 0
                 if op.hold_until is not None and work_days[0] >= op.hold_until:
                     hold = 0     # BR-8: удержание снимается автоматически
-                blocked = min(hold, ready_items)
-                available_items = max(0, ready_items - blocked)
+                blocked = min(hold, op_ready_items)
+                available_items = max(0, op_ready_items - blocked)
+                prev_cache: dict = {}
+
+                def prev_cum(day, _gi=gi, _order=order):
+                    """Сколько изделий уже прошло предыдущую операцию (все операции предыдущего порядка) к концу дня day."""
+                    if day not in prev_cache:
+                        m = _order.qty
+                        for po in groups[_gi - 1]:
+                            arr = emitted.get((_order.id, po.name))
+                            cum = done_map.get((_order.id, po.name), 0) + (sum(arr[: day + 1]) if arr else 0)
+                            m = min(m, math.floor(cum / po.per_item + EPS))
+                        prev_cache[day] = m
+                    return prev_cache[day]
+
+                thr_items = max(1, math.ceil(order.qty * (op.start_after_pct or 100) / 100 - EPS))
+                if progressive:
+                    final_ready = prev_cum(total_days - 1)
+                    available_items = max(0, min(order.qty, final_ready) - blocked) if final_ready >= thr_items else 0
 
                 candidates = [w for w in workers if w.skill >= op.min_skill and _allowed(w, order) and _op_allowed(w, order, op)]
                 sched_pool = [w for w in candidates if w.name not in inp.fixed_workers] if inp.fixed_workers else candidates
@@ -352,6 +398,7 @@ def plan(inp: PlanInput) -> PlanResult:
                                 frozen_by_key[rk] = 0
                 for di, pi in pinned_by_pair.get((order.id, op.name), ()):
                     already_ops += pi.qty
+                    mark(order.id, op.name, di, pi.qty)
                     result_items.append(PlanItem(work_days[di], order.id, order.project, order.product, op.name,
                                                  pi.qty, pi.worker, pi.reason, False))
                     spend = pi.qty / op.norm_per_day
@@ -368,6 +415,12 @@ def plan(inp: PlanInput) -> PlanResult:
 
                 before = remaining_ops
                 last_planned_day = already_last_day
+                cap = None
+                if progressive:
+                    def cap_fn(day, _op=op, _ai=available_items, _thr=thr_items, _pc=prev_cum):
+                        items = _pc(day)
+                        return math.ceil((min(items, _ai) if items >= _thr else 0) * _op.per_item - EPS)
+                    cap = {"fn": cap_fn, "base": done_ops + already_ops, "placed": 0}
 
                 def on_day_used(d):
                     nonlocal last_planned_day, order_max_day
@@ -391,14 +444,14 @@ def plan(inp: PlanInput) -> PlanResult:
                             order.id, op.name))
                     else:
                         remaining_ops = schedule_op(order, op, remaining_ops, sched_pool,
-                                                    min_start_day, deadline_idx, "FREE_CAPACITY", on_day_used)
+                                                    op_min_start, deadline_idx, "FREE_CAPACITY", on_day_used, cap)
                         if remaining_ops > 0 and deadline_idx < total_days - 1:
                             late_from = deadline_idx + 1
                             if cfg.fix_group_start_after_deadline:
-                                late_from = max(late_from, min_start_day)   # D-04 (BR-6)
+                                late_from = max(late_from, op_min_start)   # D-04 (BR-6)
                             remaining_ops = schedule_op(order, op, remaining_ops, sched_pool,
                                                         late_from, total_days - 1, "AFTER_DEADLINE",
-                                                        on_day_used)
+                                                        on_day_used, cap)
                         if remaining_ops > 0:
                             warnings.append(PlanWarning(
                                 "HORIZON_EXCEEDED",

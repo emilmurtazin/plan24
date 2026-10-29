@@ -42,7 +42,9 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
 
     routing = db.get(Routing, ol.routing_id)
     ops = sorted(routing.operations, key=lambda o: (o.sequence, o.id))
-    centers = {c.id: c.name for c in db.scalars(select(WorkCenter).where(WorkCenter.tenant_id == t))}
+    center_rows = list(db.scalars(select(WorkCenter).where(WorkCenter.tenant_id == t)))
+    centers = {c.id: c.name for c in center_rows}
+    center_eff = {c.id: c.efficiency for c in center_rows if c.efficiency}       # эффективность участка; нет — общая из настроек
     assign: dict = defaultdict(set)
     for a in db.scalars(select(OrderLineOperation).where(OrderLineOperation.order_line_id == ol.id)):
         assign[a.operation_id].add(a.work_center_id)
@@ -156,7 +158,8 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
         # человеко-смен до завершения: сколько полных рабочих дней одного работника нужно на оставшийся объём
         # (норма × средняя производительность работников операции × коэффициент эффективности)
         pool_perf = (sum(w.perf for w in (on_op or cand)) / len(on_op or cand)) if (on_op or cand) else 1.0
-        person_shifts = 0.0 if c["remaining"] <= 1e-9 else round(c["remaining"] / (op.norm_per_day * pool_perf * (st.efficiency if st else 1.0)), 1)
+        pool_eff = (sum(center_eff.get(w.work_center_id, st.efficiency if st else 1.0) for w in (on_op or cand)) / len(on_op or cand)) if (on_op or cand) else (st.efficiency if st else 1.0)
+        person_shifts = 0.0 if c["remaining"] <= 1e-9 else round(c["remaining"] / (op.norm_per_day * pool_perf * pool_eff), 1)
         status = ("Готово" if c["remaining"] <= 1e-9 else "Не распределена" if (has_centers and not cs)
                   else "Не весь объём в плане" if c["unplanned"] > 1e-9 else "В плане")
         out_ops.append({

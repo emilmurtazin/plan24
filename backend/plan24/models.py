@@ -101,6 +101,11 @@ class WorkCenter(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # Настройки планирования участка; пусто — действует общее значение из PlannerSettings
+    efficiency: Mapped[Optional[float]] = mapped_column(Float)
+    max_workers_per_op: Mapped[Optional[int]] = mapped_column(Integer)
+    today_load_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    min_start_share: Mapped[Optional[float]] = mapped_column(Float)
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
 
 
@@ -149,7 +154,6 @@ class PlannerSettings(Base):
     today_load_threshold: Mapped[float] = mapped_column(Float, default=0.6)
     min_start_share: Mapped[float] = mapped_column(Float, default=0.5)
     priority_strictness: Mapped[float] = mapped_column(Float, default=100)
-    strictness_by_level: Mapped[dict] = mapped_column(JSON, default=dict)
     efficiency: Mapped[float] = mapped_column(Float, default=1.0)          # D-01: 1.0 как в скрипте
     work_weekdays: Mapped[str] = mapped_column(String(20), default="0,1,2,3,4")
     shift_hours: Mapped[float] = mapped_column(Float, default=8)           # только для отображения
@@ -209,6 +213,8 @@ class Operation(Base):
     hold_qty: Mapped[float] = mapped_column(Float, default=0)
     hold_reason: Mapped[str] = mapped_column(String(200), default="")
     hold_until: Mapped[Optional[date]] = mapped_column(Date)
+    # партия: следующая операция стартует, когда предыдущая выполнена на столько процентов (пусто/100 — после полного окончания)
+    start_after_pct: Mapped[Optional[float]] = mapped_column(Float)
     version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (UniqueConstraint("routing_id", "name"),)
 

@@ -140,12 +140,6 @@ def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), effici
                              op=str(f["op"]).strip(), worker=str(f["worker"]).strip(),
                              plan=to_num(f.get("plan"), 0), qty=qty, reason=reason))
 
-    by_level = {}
-    for part in re.split(r"[;,]", str(s.get("byLevel") or "")):
-        m = re.match(r"^\s*(\d+)\s*:\s*([\d.,]+)\s*$", part)
-        if m:
-            by_level[int(m.group(1))] = min(100.0, max(0.0, to_num(m.group(2), 100)))
-
     cal = build_work_calendar(today, [o.due for o in orders], holidays, weekdays)
     cfg = PlanConfig(
         today=cal[0] if cal else today, work_days=cal, efficiency=efficiency,
@@ -153,7 +147,7 @@ def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), effici
         today_load_threshold=min(1.0, max(0.0, to_num(s.get("todayThreshold"), 0.6))),
         min_start_share=min(1.0, max(0.1, to_num(s.get("minStartShare"), 0.5))),
         priority_strictness=min(100.0, max(0.0, to_num(s.get("strictness"), 100))),
-        strictness_by_level=by_level, cap_load=cap_load,
+        cap_load=cap_load,
     )
     return PlanInput(order_lines=tuple(orders), products=products, workers=tuple(avail),
                      facts=tuple(facts), config=cfg, all_workers_perf=perf_all)

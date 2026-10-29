@@ -31,7 +31,25 @@ class NamePatch(BaseModel):
     version: Optional[int] = None
 
 
-make_crud(router, "/work-centers", WorkCenter, NameIn, NamePatch, "work_center")
+class CenterIn(BaseModel):
+    """Участок и его настройки планирования; пустое значение — действует общее из «Настройки планирования»."""
+    name: str = Field(min_length=1, max_length=160)
+    efficiency: Optional[float] = Field(None, gt=0, le=1.5)
+    max_workers_per_op: Optional[int] = Field(None, ge=1, le=50)
+    today_load_threshold: Optional[float] = Field(None, ge=0, le=1)
+    min_start_share: Optional[float] = Field(None, ge=0.1, le=1)
+
+
+class CenterPatch(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=160)
+    efficiency: Optional[float] = Field(None, gt=0, le=1.5)
+    max_workers_per_op: Optional[int] = Field(None, ge=1, le=50)
+    today_load_threshold: Optional[float] = Field(None, ge=0, le=1)
+    min_start_share: Optional[float] = Field(None, ge=0.1, le=1)
+    version: Optional[int] = None
+
+
+make_crud(router, "/work-centers", WorkCenter, CenterIn, CenterPatch, "work_center")
 
 
 class ReasonIn(BaseModel):
@@ -287,7 +305,8 @@ def new_routing_version(pid: int, copy: bool = True, name: str = "", user: User 
     if prev and copy:
         for o in prev.operations:
             db.add(Operation(tenant_id=user.tenant_id, routing_id=r.id, name=o.name, norm_per_day=o.norm_per_day,
-                             unit=o.unit, min_skill=o.min_skill, sequence=o.sequence, per_item=o.per_item))
+                             unit=o.unit, min_skill=o.min_skill, sequence=o.sequence, per_item=o.per_item,
+                             hold_qty=o.hold_qty, hold_reason=o.hold_reason, hold_until=o.hold_until, start_after_pct=o.start_after_pct))
         db.flush()
         db.refresh(r)
     audit.log(db, user, "routing", r.id, "create", {"product_id": pid, "version_no": r.version_no, "name": r.name})
@@ -304,6 +323,7 @@ class OperationIn(BaseModel):
     hold_qty: float = Field(0, ge=0)
     hold_reason: str = ""
     hold_until: Optional[date] = None
+    start_after_pct: Optional[float] = Field(None, ge=1, le=100)      # партия: старт после выполнения предыдущей операции на N %
 
 
 class OperationPatch(BaseModel):
@@ -316,11 +336,12 @@ class OperationPatch(BaseModel):
     hold_qty: Optional[float] = Field(None, ge=0)
     hold_reason: Optional[str] = None
     hold_until: Optional[date] = None
+    start_after_pct: Optional[float] = Field(None, ge=1, le=100)
     version: Optional[int] = None
 
 
 HOLD_FIELDS = {"hold_qty", "hold_reason", "hold_until"}
-SAFE_FIELDS = HOLD_FIELDS | {"name"}          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
+SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
 
 
 def levels_count(db, user) -> int:
@@ -690,7 +711,6 @@ class SettingsPatch(BaseModel):
     today_load_threshold: Optional[float] = Field(None, ge=0, le=1)
     min_start_share: Optional[float] = Field(None, ge=0.1, le=1)
     priority_strictness: Optional[float] = Field(None, ge=0, le=100)
-    strictness_by_level: Optional[dict[str, float]] = None
     efficiency: Optional[float] = Field(None, gt=0, le=1.5)
     work_weekdays: Optional[str] = Field(None, pattern=r"^[0-6](,[0-6])*$")
     shift_hours: Optional[float] = Field(None, gt=0, le=24)
@@ -712,10 +732,6 @@ def get_settings(user: User = Depends(require(*READERS)), db: Session = DB):
 def patch_settings(body: SettingsPatch, user: User = Depends(require(*MANAGERS)), db: Session = DB):
     s = db.get(PlannerSettings, user.tenant_id)
     data = body.model_dump(exclude_unset=True)
-    if "strictness_by_level" in data and data["strictness_by_level"] is not None:
-        for k, v in data["strictness_by_level"].items():
-            if not k.isdigit() or not 0 <= v <= 100:
-                raise HTTPException(422, "Жёсткость по уровню: ключ — номер приоритета, значение — 0…100")
     if data.get("qualifications") is not None:
         names = [str(x).strip() for x in data["qualifications"]]
         if any(not x or len(x) > 40 for x in names) or len({x.lower() for x in names}) != len(names):

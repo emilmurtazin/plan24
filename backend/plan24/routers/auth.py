@@ -114,7 +114,7 @@ def register(body: RegisterIn, bg: BackgroundTasks, db: Session = DB):
     db.add(t); db.flush()
     dbm.set_tenant(db, t.id)
     db.add(TenantModule(tenant_id=t.id, module_id="production", enabled=True))
-    db.add(PlannerSettings(tenant_id=t.id, strictness_by_level={}))
+    db.add(PlannerSettings(tenant_id=t.id))
     for r in DEFAULT_REASONS:
         db.add(FactReason(tenant_id=t.id, name=r))
     first, last, full = names.resolve(body.first_name, body.last_name, body.name)

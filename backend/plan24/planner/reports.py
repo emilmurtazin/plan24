@@ -64,6 +64,7 @@ def _day_cap(norm_by_op: dict, perf_by_name: dict, product: str, op: str, worker
 def load_matrix(inp: PlanInput, res: PlanResult) -> dict:
     """Загрузка исполнитель × день: план, факт, отклонение (в долях рабочего дня)."""
     eff = inp.config.efficiency
+    eff_of = dict(inp.all_workers_eff) or {w.name: w.efficiency for w in inp.workers if w.efficiency is not None}    # эффективность участков
     today = res.work_days[0] if res.work_days else inp.config.today
     norm_by_op = {(p, o.name): o.norm_per_day for p, ops in inp.products.items() for o in ops}
     perf = dict(inp.all_workers_perf) or {w.name: w.perf for w in inp.workers}
@@ -77,7 +78,7 @@ def load_matrix(inp: PlanInput, res: PlanResult) -> dict:
     for f in list(inp.facts) + list(res.new_fact_rows):
         if not (f.date and f.order_id and f.product and f.op and f.worker):
             continue
-        cap = _day_cap(norm_by_op, perf, f.product, f.op, f.worker, eff)
+        cap = _day_cap(norm_by_op, perf, f.product, f.op, f.worker, eff_of.get(f.worker, eff))
         if not cap:
             continue
         dates.add(f.date)
@@ -90,7 +91,7 @@ def load_matrix(inp: PlanInput, res: PlanResult) -> dict:
     for it in res.items:
         if it.qty <= 0 or it.date <= today:
             continue
-        cap = _day_cap(norm_by_op, perf, it.product, it.operation, it.worker, eff)
+        cap = _day_cap(norm_by_op, perf, it.product, it.operation, it.worker, eff_of.get(it.worker, eff))
         if not cap:
             continue
         plan_data[(it.date, it.worker)] += it.qty / cap

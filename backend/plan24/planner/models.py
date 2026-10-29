@@ -24,6 +24,10 @@ class Operation:
     hold_qty: float = 0          # «Блок»: изделий, по которым операция не идёт
     hold_until: Optional[date] = None   # дата снятия удержания (BR-8, новое)
     hold_reason: str = ""
+    # Партия: следующая операция маршрута может стартовать, когда эта (предыдущая по порядку) операция выполнена на столько процентов
+    # от количества изделий; дальше она берёт изделия по мере их готовности. None или 100 — после полного окончания предыдущей.
+    # Для операций первого порядка не применяется.
+    start_after_pct: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,12 @@ class Worker:
     perf: float = 1
     skill: float = 1
     absent_days: frozenset = frozenset()      # BR-2/BR-9, новое по сравнению со скриптом
+    # Настройки участка работника; None — используется общее значение из PlanConfig
+    section: Optional[int] = None
+    efficiency: Optional[float] = None
+    max_workers_per_op: Optional[int] = None
+    today_load_threshold: Optional[float] = None
+    min_start_share: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -84,7 +94,6 @@ class PlanConfig:
     today_load_threshold: float = 0.6
     min_start_share: float = 0.5
     priority_strictness: float = 100.0       # BR-4, %
-    strictness_by_level: dict = field(default_factory=dict)
     # D-04: в скрипте проход «после срока» игнорирует старт группы (нарушает BR-6). True = исправлено.
     fix_group_start_after_deadline: bool = False
     freeze_days: int = 2                     # сегодня и завтра: строки Факта с plan>0
@@ -101,6 +110,7 @@ class PlanInput:
     facts: tuple
     config: PlanConfig
     all_workers_perf: dict = field(default_factory=dict)  # name -> perf (в т.ч. недоступные), для отчётов
+    all_workers_eff: dict = field(default_factory=dict)   # name -> коэффициент эффективности участка (если задан), для отчётов
     # Частичное перепланирование: эти исполнители новых заданий не получают, но уже назначенное им
     # (строки Факта с plan>0, qty=0) учитывается как выполняемое — работа участка не пересчитывается.
     fixed_workers: frozenset = frozenset()

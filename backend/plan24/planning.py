@@ -117,7 +117,8 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         if pk not in pproducts:
             pproducts[pk] = tuple(POp(name=op.name, norm_per_day=op.norm_per_day, min_skill=op.min_skill,
                                       sequence=op.sequence, per_item=op.per_item, hold_qty=op.hold_qty,
-                                      hold_until=op.hold_until, hold_reason=op.hold_reason)
+                                      hold_until=op.hold_until, hold_reason=op.hold_reason,
+                                      start_after_pct=op.start_after_pct)
                                   for op in routings[o.routing_id].operations)
         for op in routings[o.routing_id].operations:
             ctx.op_id[(key, op.name)] = op.id
@@ -131,8 +132,20 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
                               allowed_workers=None if len(names) == len(avail) else names, op_workers=op_workers))
     prod_key_of = {ctx.key_by_order_id[o.id]: pkey(o) for o in orders}
 
-    pworkers = tuple(PWorker(id=w.id, name=w.name, perf=w.perf, skill=w.skill, absent_days=frozenset(absent[w.id]))
+    # настройки участков: у работника — значения его участка, а если не заданы — общие (из PlannerSettings)
+    centers_by_id = {c.id: c for c in db.scalars(q(WorkCenter))}
+
+    def sec(w):
+        return centers_by_id.get(w.work_center_id)
+
+    pworkers = tuple(PWorker(id=w.id, name=w.name, perf=w.perf, skill=w.skill, absent_days=frozenset(absent[w.id]),
+                             section=w.work_center_id if sec(w) and sec(w).max_workers_per_op is not None else None,
+                             efficiency=sec(w).efficiency if sec(w) else None,
+                             max_workers_per_op=sec(w).max_workers_per_op if sec(w) else None,
+                             today_load_threshold=sec(w).today_load_threshold if sec(w) else None,
+                             min_start_share=sec(w).min_start_share if sec(w) else None)
                      for w in avail)
+    eff_all = {w.name: sec(w).efficiency for w in workers_all if sec(w) and sec(w).efficiency is not None}
 
     # --- факт и план прошлых/ближайших дней в одних строках, как лист «Факт» скрипта ---
     scope = ov.get("scope_center_id")
@@ -205,17 +218,16 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
                 continue
             pinned_list.append(PinnedItem(it.plan_date, key, opn, wn, it.qty, it.reason_code))
 
-    by_level = {int(k): float(v) for k, v in (ov.get("strictness_by_level", st.strictness_by_level) or {}).items()}
     cfg = PlanConfig(
         today=plan_today, work_days=engine_cal, efficiency=ov.get("efficiency", st.efficiency),
         max_workers_per_op=ov.get("max_workers_per_op", st.max_workers_per_op),
         today_load_threshold=ov.get("today_load_threshold", st.today_load_threshold),
         min_start_share=ov.get("min_start_share", st.min_start_share),
         priority_strictness=float(ov.get("priority_strictness", st.priority_strictness)),
-        strictness_by_level=by_level, freeze_days=freeze_days, cap_load=True,
+        freeze_days=freeze_days, cap_load=True,
         fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start))
     inp = PlanInput(order_lines=tuple(porders), products=pproducts, workers=pworkers, facts=facts, config=cfg,
-                    all_workers_perf={w.name: w.perf for w in workers_all}, fixed_workers=fixed_names,
+                    all_workers_perf={w.name: w.perf for w in workers_all}, all_workers_eff=eff_all, fixed_workers=fixed_names,
                     pinned=tuple(sorted(pinned_list, key=str)), pinned_days=pinned_days)
     return inp, ctx
 
@@ -298,7 +310,6 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
     p = Plan(tenant_id=user.tenant_id, status="active", created_by=user.id, warnings=warnings, summary=summary,
              input_hash=input_hash(inp),
              params={"today": inp.config.today.isoformat(), "strictness": inp.config.priority_strictness,
-                     "by_level": {str(k): v for k, v in inp.config.strictness_by_level.items()},
                      "fix_group_start": inp.config.fix_group_start_after_deadline, "efficiency": inp.config.efficiency,
                      "scope_center_id": (overrides or {}).get("scope_center_id")})
     db.add(p)

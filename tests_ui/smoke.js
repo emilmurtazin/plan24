@@ -322,11 +322,18 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   await until(() => $('.modal form'), 'форма работника 2');
   if (![...$('.modal form').elements.skill.options].some(o => /Ученик/.test(o.textContent))) throw new Error('новое название уровня не дошло до формы работника');
   step('новое название уровня видно в форме работника'); click(byText('.modal button', 'Отмена'));
-  click(byText('#view nav.seg button', 'Участки'));
-  await until(() => $('[data-settings]'), 'кнопка «Настройки» в участках'); click($('[data-settings]'));
-  await until(() => $('#sf'), 'настройки'); 
+  // --- планирование: настройки участка и общие настройки — в «Организация → Планирование» ---
+  click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Планирование'), 'вкладка «Планирование»'); click(byText('#view nav.seg button', 'Планирование'));
+  await until(() => $('#sf') && $('[data-ce]'), 'настройки планирования'); step('вкладка «Планирование»: участки и общие настройки');
+  if ($$('[data-ce]').length < 2) throw new Error('в настройках планирования нет участков');
+  if ($('#sf').elements.lv) throw new Error('«жёсткость по уровням» должна быть удалена');
+  click($('[data-ce]')); await until(() => $('.modal form') && $('.modal form').elements.efficiency, 'форма настроек участка');
+  setv($('.modal form').elements.efficiency, '0.8'); setv($('.modal form').elements.max_workers_per_op, '2'); $('.modal form').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => /Настройки участка сохранены/.test($('#toast').textContent), 'сохранение настроек участка'); step('настройки участка сохранены');
+  await until(() => $('#sf') && /0[.,]8/.test($('#view').textContent), 'значение участка видно в таблице');
   setv($('#sf').elements.priority_strictness, '60'); $('#sf').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await until(() => /Настройки сохранены/.test($('#toast').textContent), 'сохранение настроек'); step('настройки сохранены');
+  click(byText('#drawer button', 'Работники')); await until(() => byText('#view nav.seg button', 'Причины отклонений'), 'работники');
   // --- причины отклонений: у каждого участка свои ---
   click(byText('#view nav.seg button', 'Причины отклонений')); await until(() => $('[data-sec]'), 'вкладка причин с выбором участка');
   const secSel = $('[data-sec]'); if (secSel.options.length < 2) throw new Error('нет выбора участка у причин');

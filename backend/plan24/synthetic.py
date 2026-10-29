@@ -110,12 +110,12 @@ def make_datasets(today: date = date(2026, 10, 2)) -> dict:
         "settings": {}}
     sets["edge_batches_fact"] = (ds, today)
 
-    # граничный 3: жёсткость 50% и по уровням, 4 приоритета
+    # граничный 3: жёсткость 50%, 4 приоритета
     rng = random.Random(2003)
     route = ROUTES["windows"]
     ds = {"orders": _orders(route, rng, today, 10, prio_levels=4), "ops": _ops(route, rng),
           "workers": _workers(rng, 7, 3), "holidays": [], "facts": [],
-          "settings": {"strictness": 50, "byLevel": "3:20; 4:0"}}
+          "settings": {"strictness": 50}}
     sets["edge_strictness_levels"] = (ds, today)
 
     # граничный 4: недоступные, нет подходящей квалификации, изделие без операций

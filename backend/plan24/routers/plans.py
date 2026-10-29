@@ -23,7 +23,6 @@ router = APIRouter(prefix="/plans", tags=["plans"])
 class RunIn(BaseModel):
     """Параметры одного запуска; постоянные значения хранятся в /settings."""
     strictness: Optional[float] = Field(None, ge=0, le=100)
-    by_level: Optional[dict[str, float]] = None
     fix_group_start: Optional[bool] = None
     work_center_id: Optional[int] = None       # перепланировать только участок (бригадир — всегда только свой)
 
@@ -52,16 +51,13 @@ def _overrides(b: RunIn, scope: Optional[int] = None) -> dict:
         o["scope_center_id"] = scope
     if b.strictness is not None:
         o["priority_strictness"] = b.strictness
-    if b.by_level is not None:
-        o["strictness_by_level"] = b.by_level
     if b.fix_group_start is not None:
         o["fix_group_start"] = b.fix_group_start
     return o
 
 
 def _meta(db, user, p: Plan, today: date, with_warnings: bool) -> dict:
-    ov = {"priority_strictness": p.params.get("strictness"), "strictness_by_level": p.params.get("by_level") or {},
-          "fix_group_start": p.params.get("fix_group_start"), "efficiency": p.params.get("efficiency"),
+    ov = {"priority_strictness": p.params.get("strictness"), "fix_group_start": p.params.get("fix_group_start"), "efficiency": p.params.get("efficiency"),
           "scope_center_id": p.params.get("scope_center_id")}
     ov = {k: v for k, v in ov.items() if v is not None}
     inp, _ = planning.build_input(db, user.tenant_id, today, ov)

@@ -100,8 +100,6 @@ def test_validation_errors_are_structured_ru(org):
     assert r.json()["errors"][0]["field"] == "perf"
     assert org.post("/absences", json={"worker_id": 1, "date_from": "2026-10-09", "date_to": "2026-10-01"}).status_code == 422
     assert org.patch("/settings", json={"priority_strictness": 150}).status_code == 422
-    assert org.patch("/settings", json={"strictness_by_level": {"x": 10}}).status_code == 422
-    assert org.patch("/settings", json={"strictness_by_level": {"2": 120}}).status_code == 422
     assert org.patch("/settings", json={"work_weekdays": "7,8"}).status_code == 422
 
 
