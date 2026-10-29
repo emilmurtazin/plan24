@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import audit, config, email_tokens, mailer, names, security
 from .. import db as dbm
 from ..db import DB
-from ..deps import current_user, tenant_of
+from ..deps import current_user, ensure_not_blocked, not_support, tenant_of
 from ..models import FactReason, PlannerSettings, Tenant, TenantModule, User, WorkCenter, utcnow
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -200,6 +200,7 @@ def login(body: LoginIn, request: Request, db: Session = DB):
         security.login_limiter.fail(key)
         raise HTTPException(401, "Неверный e-mail или пароль")
     dbm.set_tenant(db, u.tenant_id)
+    ensure_not_blocked(db, u.tenant_id)               # пароль верен, но организация заблокирована — токены не выдаём
     security.login_limiter.reset(key)
     return {**_tokens(db, u), "user": user_out(u, tenant_of(db, u))}
 
@@ -213,13 +214,15 @@ def refresh(body: RefreshIn, db: Session = DB):
     u = db.get(User, uid)
     if not u or not u.is_active:
         raise HTTPException(401, "Сессия истекла")
+    ensure_not_blocked(db, u.tenant_id)
     return {"access_token": security.make_access(uid, u.tenant_id), "refresh_token": new_refresh, "token_type": "bearer",
             "expires_in": config.ACCESS_TTL_MIN * 60}
 
 
 @router.post("/logout")
-def logout(u: User = Depends(current_user), db: Session = DB):
-    security.revoke_all(db, u.id)
+def logout(request: Request, u: User = Depends(current_user), db: Session = DB):
+    if not getattr(request.state, "support", False):     # поддержка не должна закрывать настоящие сессии владельца
+        security.revoke_all(db, u.id)
     return {"ok": True}
 
 
@@ -229,7 +232,8 @@ def me(u: User = Depends(current_user), db: Session = DB):
 
 
 @router.post("/change-password")
-def change_password(body: PasswordIn, u: User = Depends(current_user), db: Session = DB):
+def change_password(body: PasswordIn, request: Request, u: User = Depends(current_user), db: Session = DB):
+    not_support(request)
     if not security.verify_password(u.password_hash, body.current_password):
         raise HTTPException(403, "Текущий пароль неверен")
     u.password_hash = security.hash_password(body.new_password)
@@ -239,7 +243,8 @@ def change_password(body: PasswordIn, u: User = Depends(current_user), db: Sessi
 
 
 @router.patch("/profile")
-def update_profile(body: ProfileIn, bg: BackgroundTasks, u: User = Depends(current_user), db: Session = DB):
+def update_profile(body: ProfileIn, bg: BackgroundTasks, request: Request, u: User = Depends(current_user), db: Session = DB):
+    not_support(request)
     """Профиль: имя, фамилия, e-mail. Смена e-mail требует текущего пароля и снова запрашивает подтверждение адреса.
     Пароль меняется отдельно: POST /auth/change-password."""
     changes: dict = {}

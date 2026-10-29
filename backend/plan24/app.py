@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, dayedit, demo, dev, facts, integrations, plangrid, plans, refs, reports, tgapp, users
+from .routers import auth, dayedit, demo, dev, facts, integrations, plangrid, plans, refs, reports, superadmin, tgapp, users
 
 STATIC = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -62,8 +62,10 @@ def create_app() -> FastAPI:
             h["Cache-Control"] = "no-store"
         if config.env() == "prod":
             h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"      # по HTTP браузеры его игнорируют
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") or request.url.path.rstrip("/") == "/admin":
             h["Cache-Control"] = "no-store"          # ответы API содержат данные организации
+        if request.url.path.rstrip("/") == "/admin":
+            h["X-Robots-Tag"] = "noindex, nofollow"
         return resp
 
     @app.get("/api/v1/health")
@@ -87,13 +89,20 @@ def create_app() -> FastAPI:
         except Exception as e:                                       # noqa: BLE001
             return problem(503, "База данных недоступна", type(e).__name__)
 
-    for r in (auth.router, users.router, refs.router, plans.router, dayedit.router, facts.router, reports.router, demo.router, dev.router, integrations.router, tgapp.router, plangrid.router):
+    for r in (auth.router, users.router, refs.router, plans.router, dayedit.router, facts.router, reports.router, demo.router, dev.router, integrations.router, tgapp.router, plangrid.router, superadmin.router):
         app.include_router(r, prefix="/api/v1")
 
     if STATIC.exists():
         @app.get("/", include_in_schema=False)
         def index():
             return FileResponse(STATIC / "index.html")
+        @app.get("/admin", include_in_schema=False)
+        @app.get("/admin/", include_in_schema=False)
+        def admin_page():
+            """Панель суперадмина: страница существует, только если на сервере заданы учётные данные суперадмина."""
+            if not config.superadmin_credentials():
+                raise HTTPException(404, "Not Found")
+            return FileResponse(STATIC / "admin" / "index.html")
         @app.get("/welcome", include_in_schema=False)
         @app.get("/welcome/", include_in_schema=False)
         def landing():

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .. import config, facts_service, planning, reports_service, security
 from .. import db as dbm
 from ..db import DB
+from ..deps import ensure_not_blocked
 from ..models import TelegramLink, Worker
 from ..telegram import client as tgclient
 from ..telegram import core, events, webapp
@@ -43,6 +44,7 @@ def tg_ctx(request: Request, db: Session = DB) -> Ctx:
         raise HTTPException(401, "Сессия истекла — откройте приложение из Telegram заново")
     lid, tid = ids
     dbm.set_tenant(db, tid)
+    ensure_not_blocked(db, tid)
     link = db.get(TelegramLink, lid)
     if link is None or link.tenant_id != tid:
         raise HTTPException(401, "Чат отвязан — попросите руководителя выдать новый код")
@@ -80,6 +82,7 @@ def auth(body: AuthIn, request: Request, db: Session = DB):
     if link is None:
         raise HTTPException(403, "Этот Telegram не привязан к Plan 24. Отправьте боту /start и одноразовый код от руководителя")
     dbm.set_tenant(db, link.tenant_id)
+    ensure_not_blocked(db, link.tenant_id)
     actor, name = core.resolve_actor(db, link)
     if actor is None:
         raise HTTPException(403, "Доступ закрыт. Обратитесь к руководителю")

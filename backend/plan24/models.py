@@ -45,6 +45,8 @@ class Tenant(Base):
     plan: Mapped[str] = mapped_column(String(32), default="trial")
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    blocked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)             # заблокирована суперадмином; пусто — работает
+    blocked_reason: Mapped[Optional[str]] = mapped_column(String(300))
 
 
 class TenantModule(Base):

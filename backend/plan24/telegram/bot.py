@@ -69,6 +69,10 @@ def handle_update(db: Session, upd: dict, out: list) -> None:
     link = db.scalar(select(TelegramLink).where(TelegramLink.chat_id == chat_id))
     if link is not None:
         dbm.set_tenant(db, link.tenant_id)
+        t = db.get(Tenant, link.tenant_id)
+        if t is not None and t.blocked_at is not None:        # организация заблокирована суперадмином
+            say(out, chat_id, "Доступ организации приостановлен. Обратитесь к руководителю.")
+            return
     try:
         with db.begin_nested():
             if "callback_query" in upd:

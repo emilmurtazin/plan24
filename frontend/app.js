@@ -15,7 +15,7 @@ const fmtDT = iso => iso ? new Date(iso + 'Z').toLocaleString('ru-RU', { day: '2
 const num = v => v == null ? '—' : (Math.round(v * 100) / 100).toString().replace('.', ',');
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
 
-const S = { me: null, screen: null, access: null, refresh: localStorage.getItem('p24_rt'), plan: undefined, nav: 0 };
+const S = { me: null, screen: null, access: null, refresh: localStorage.getItem('p24_rt'), plan: undefined, nav: 0, support: false };
 
 function toast(m, bad) {
   if (!m) return;
@@ -44,6 +44,7 @@ async function api(method, path, body, extra = {}) {
   if (method === 'GET' && gen !== S.nav) throw new Stale();
   if (r.status === 204) return null;
   let d = null; try { d = await r.json(); } catch (e) { /* пустое тело */ }
+  if (r.status === 403 && d && /приостановлен/.test(d.title || '') && S.me && !S.support) { logout(true); toast(d.title, true); throw new ApiError(403, d.title); }
   if (!r.ok) throw new ApiError(r.status, (d && d.title) || 'Ошибка ' + r.status, d && d.errors);
   return d;
 }
@@ -52,7 +53,13 @@ const listAll = async p => (await GET(p + (p.includes('?') ? '&' : '?') + 'limit
 const errText = e => e instanceof Stale ? '' : e instanceof ApiError ? (e.errors.length ? e.errors.map(x => (x.field ? x.field + ': ' : '') + x.message).join('; ') : e.message) : 'Нет связи с сервером';
 
 /* ---------------- вход / регистрация ---------------- */
+function endSupport(msg) {
+  S.me = null; S.access = null; S.refresh = null; document.body.classList.remove('support'); $('.supportbar')?.remove();
+  $('#root').innerHTML = `<div class="auth"><h1>Режим поддержки завершён</h1><p class="muted">${esc(msg || 'Окно можно закрыть.')}</p><p><a href="/admin">Вернуться в панель суперадмина</a></p></div>`;
+  try { if (!msg) window.close(); } catch (e) { /* окно закрыть нельзя — остаётся сообщение */ }
+}
 function logout(silent) {
+  if (S.support) return endSupport(silent ? 'Сессия поддержки истекла. Войдите из панели суперадмина заново.' : '');   // настоящие сессии владельца не трогаем
   if (!silent && S.access) api('POST', '/auth/logout', {}).catch(() => { });
   S.me = null; S.access = null; S.refresh = null; localStorage.removeItem('p24_rt'); renderAuth('login');
 }
@@ -294,7 +301,21 @@ document.addEventListener('click', e => $$('details.menu[open]').forEach(m => { 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') $$('details.menu[open]').forEach(m => m.open = false); });
 
 /* ---------------- старт ---------------- */
+function addSupportBar() {
+  const me = S.me;
+  document.body.classList.add('support');
+  const bar = document.createElement('div'); bar.className = 'supportbar'; bar.setAttribute('role', 'status');
+  bar.append(`Режим поддержки: вы вошли как ${me.name} (${me.email}), «${me.tenant.name}». Действия записываются в журнал. `);
+  const b = document.createElement('button'); b.textContent = 'Завершить'; b.onclick = () => endSupport(); bar.append(b);
+  document.body.prepend(bar);
+}
 (async function boot() {
+  const imp = location.hash.match(/^#imp=([\w.%-]+)$/);                       // вход суперадмина под организацией (из панели /admin)
+  if (imp) {
+    history.replaceState(null, '', location.pathname);                           // токен не остаётся в адресе и истории
+    S.support = true; S.refresh = null; S.access = decodeURIComponent(imp[1]);   // без обновления токена; localStorage владельца не трогаем
+    try { S.me = await GET('/auth/me'); start(); return addSupportBar(); } catch (e) { return endSupport('Не удалось войти: ' + errText(e)); }
+  }
   const m = location.hash.match(/^#\/(verify|reset|invite)\?token=([\w-]+)$/);
   if (m) { history.replaceState(null, '', location.pathname); return renderTokenPage(m[1], m[2]); }
   if (S.refresh && await doRefresh()) { try { S.me = await GET('/auth/me'); return start(); } catch (e) { /* падаем на вход */ } }

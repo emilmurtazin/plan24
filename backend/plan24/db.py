@@ -48,8 +48,9 @@ def _on_begin(session, transaction, connection):
 def _apply_context(session: Session, connection=None):
     """Транзакционные настройки для RLS. is_local=true: действуют до конца транзакции и не «утекают» в пул."""
     tid, auth = session.info.get("tenant_id"), session.info.get("auth_scope")
-    sql = "SELECT set_config('app.tenant_id', %s, true), set_config('app.auth_scope', %s, true)"
-    args = (str(tid) if tid else "", "on" if auth else "")
+    sql = ("SELECT set_config('app.tenant_id', %s, true), set_config('app.auth_scope', %s, true), "
+           "set_config('app.platform_scope', %s, true)")
+    args = (str(tid) if tid else "", "on" if auth else "", "on" if session.info.get("platform_scope") else "")
     if connection is not None:
         connection.exec_driver_sql(sql, args)
     elif session.in_transaction() and is_pg():
@@ -60,6 +61,7 @@ def set_tenant(session: Session, tenant_id: int | None):
     """Закрепляет организацию за сессией (и выключает режим чтения при входе). Все дальнейшие запросы — только её данные."""
     session.info["tenant_id"] = tenant_id
     session.info["auth_scope"] = False
+    session.info["platform_scope"] = False
     _apply_context(session)
 
 
@@ -67,6 +69,14 @@ def auth_scope(session: Session, on: bool = True):
     """Режим «только чтение для поиска учётной записи до входа» (users, токены, привязки Telegram).
     Допускается ТОЛЬКО в точках входа без авторизации; записывать в этом режиме нельзя (политики это запрещают)."""
     session.info["auth_scope"] = on
+    _apply_context(session)
+
+
+def platform_scope(session: Session, on: bool = True):
+    """Режим суперадмина платформы: чтение организаций и их сводных данных и несколько точечных записей
+    (блокировка, отключение пользователей, токены). Включается ТОЛЬКО после проверки токена суперадмина
+    (routers/superadmin.py); любой вход в организацию (set_tenant) этот режим снимает."""
+    session.info["platform_scope"] = on
     _apply_context(session)
 
 

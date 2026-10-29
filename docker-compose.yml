@@ -18,6 +18,9 @@ services:
       PLAN24_SECRET: ${PLAN24_SECRET:?}
       PLAN24_BASE_URL: ${PLAN24_BASE_URL:?}
       PLAN24_WORKERS: ${PLAN24_WORKERS:-2}
+      PLAN24_SUPERADMIN_EMAIL: ${PLAN24_SUPERADMIN_EMAIL:-}                  # панель суперадмина /admin; пусто — панели нет
+      PLAN24_SUPERADMIN_PASSWORD_HASH: ${PLAN24_SUPERADMIN_PASSWORD_HASH:-}  # argon2-хеш: python -m plan24.superadmin_tool ($ → $$)
+      PLAN24_METRIKA_ID: ${PLAN24_METRIKA_ID:-}                              # счётчик Яндекс.Метрики лендинга /welcome
       PLAN24_DB_POOL: ${PLAN24_DB_POOL:-5}
       PLAN24_DB_OVERFLOW: ${PLAN24_DB_OVERFLOW:-5}
       PLAN24_SMTP_HOST: ${PLAN24_SMTP_HOST:-}

@@ -14,6 +14,8 @@ def env() -> str:
 
 
 ACCESS_TTL_MIN = 15
+PLATFORM_TTL_MIN = 60          # сессия панели суперадмина (без обновления: через час — войти заново)
+IMPERSONATE_TTL_MIN = 30       # вход под организацией для поддержки (без обновления)
 REFRESH_TTL_DAYS = 14
 TRIAL_DAYS = 14
 LOGIN_MAX_FAILS = 5
@@ -143,3 +145,11 @@ def metrika_id() -> str:
     """Номер счётчика Яндекс.Метрики для лендинга (PLAN24_METRIKA_ID, только цифры); пусто — аналитика не подключается."""
     v = (os.environ.get("PLAN24_METRIKA_ID") or "").strip()
     return v if v.isdigit() else ""
+
+
+def superadmin_credentials() -> "tuple[str, str] | None":
+    """Панель суперадмина включена, только если на сервере заданы PLAN24_SUPERADMIN_EMAIL и PLAN24_SUPERADMIN_PASSWORD_HASH
+    (argon2-хеш: `python -m plan24.superadmin_tool`). Пароль в открытом виде не хранится нигде."""
+    email = (os.environ.get("PLAN24_SUPERADMIN_EMAIL") or "").strip().lower()
+    h = (os.environ.get("PLAN24_SUPERADMIN_PASSWORD_HASH") or "").strip()
+    return (email, h) if email and h else None

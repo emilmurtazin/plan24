@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from . import db as dbm
 from .db import DB
 from .models import Tenant, User
-from .security import decode_access
+from .security import decode_access_full
 
 ALL = ("owner", "manager", "technologist", "foreman", "worker", "viewer", "director")
 MANAGERS = ("owner", "manager")
@@ -21,15 +21,36 @@ CATALOG = ("owner", "manager", "technologist")        # создание и ре
 
 def current_user(request: Request, db: Session = DB) -> User:
     auth = request.headers.get("authorization", "")
-    ids = decode_access(auth[7:]) if auth.lower().startswith("bearer ") else None
+    ids = decode_access_full(auth[7:]) if auth.lower().startswith("bearer ") else None
     if ids is None:
         raise HTTPException(401, "Требуется вход")
-    uid, tid = ids
+    uid, tid, support = ids
     dbm.set_tenant(db, tid)           # контекст RLS — до первого обращения к данным; чужой tid строку пользователя не вернёт
     u = db.get(User, uid)
     if not u or not u.is_active or u.tenant_id != tid:           # деактивированный пользователь теряет доступ сразу, не по истечении токена
         raise HTTPException(401, "Требуется вход")
+    if not support:
+        ensure_not_blocked(db, tid)
+    else:
+        db.info["support"] = True     # вход суперадмина под организацией: действия помечаются в журнале, учётные данные менять нельзя
+        request.state.support = True
     return u
+
+
+BLOCKED_MSG = "Доступ организации приостановлен. Обратитесь в поддержку"
+
+
+def ensure_not_blocked(db: Session, tenant_id: int) -> None:
+    """Заблокированная суперадмином организация не работает ни в вебе, ни в Telegram: токены перестают действовать сразу."""
+    t = db.get(Tenant, tenant_id)
+    if t is None or t.blocked_at is not None:
+        raise HTTPException(403, BLOCKED_MSG)
+
+
+def not_support(request: Request) -> None:
+    """Запрет действий над учётными данными при входе поддержки (пароль, e-mail)."""
+    if getattr(request.state, "support", False):
+        raise HTTPException(403, "В режиме поддержки это действие недоступно")
 
 
 def require(*roles: str):

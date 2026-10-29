@@ -227,9 +227,11 @@ def test_parallel_replans_of_one_org_serialize_and_leave_one_active_plan(two, re
     import conftest
     a, b, app, admin, ta, tb = two
     ids, errs = [], []
+    centers = a.get("/work-centers").json()["items"]
+    body = {"work_center_id": centers[0]["id"]} if centers else {}              # после первого расчёта перепланирование идёт по участкам
 
     def run():
-        r = a.c.post("/api/v1/plans/replan", json={}, headers=a.users["owner"])
+        r = a.c.post("/api/v1/plans/replan", json=body, headers=a.users["owner"])
         (ids if r.status_code == 201 else errs).append(r.json().get("id") or r.text[:100])
     ths = [threading.Thread(target=run) for _ in range(5)]
     [t.start() for t in ths]; [t.join() for t in ths]
@@ -263,6 +265,8 @@ def test_ready_probe_reports_schema_drift(two, request):
     urls = request.getfixturevalue("pg_db")
     assert a.c.get("/api/v1/health/ready").json()["database"] == "postgresql"
     own = sa.create_engine(urls.owner)
+    with own.begin() as c:
+        real = c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()        # текущая ревизия — её и вернём
     try:
         with own.begin() as c:
             c.execute(sa.text("UPDATE alembic_version SET version_num='0001'"))
@@ -270,7 +274,7 @@ def test_ready_probe_reports_schema_drift(two, request):
         assert r.status_code == 503 and "ревизии" in r.json()["title"]
     finally:
         with own.begin() as c:
-            c.execute(sa.text("UPDATE alembic_version SET version_num='0007'"))
+            c.execute(sa.text("UPDATE alembic_version SET version_num=:v"), {"v": real})
         own.dispose()
     assert a.c.get("/api/v1/health/ready").status_code == 200
 
@@ -320,3 +324,46 @@ def test_parallel_same_idempotency_key_returns_same_answer(two):
     ths = [threading.Thread(target=put) for _ in range(6)]
     [x.start() for x in ths]; [x.join() for x in ths]
     assert {c for c, _ in out} == {200} and len({i for _, i in out}) == 1
+
+
+# ---------------------------------------------------------------- режим платформы (панель суперадмина)
+def as_platform(conn):
+    conn.exec_driver_sql("SELECT set_config('app.tenant_id', '', true), set_config('app.auth_scope', '', true), "
+                         "set_config('app.platform_scope', 'on', true)")
+
+
+def test_platform_scope_reads_summaries_but_not_business_data(two):
+    a, b, app, admin, ta, tb = two
+    with app.begin() as c:
+        as_platform(c)
+        assert count(c, "tenants") == 2 and count(c, "users") >= 2                       # организации и пользователи видны все
+        for t in ("workers", "order_lines", "plans", "audit_log"):
+            assert count(c, t) > 0, t
+        assert count(c, "telegram_links") >= 0                                            # читается (в этой выборке привязок нет)
+        for t in ("projects", "products", "facts", "plan_items", "planner_settings", "telegram_codes", "work_centers"):
+            assert count(c, t) == 0, f"режим платформы не должен видеть {t}"
+    with app.begin() as c:                                                                # без режима — по-прежнему ничего
+        as_tenant(c)
+        assert count(c, "tenants") == 0 and count(c, "users") == 0
+
+
+def test_platform_scope_writes_are_narrow(two):
+    a, b, app, admin, ta, tb = two
+    with app.begin() as c:
+        as_platform(c)
+        assert c.execute(sa.text("UPDATE tenants SET blocked_at = now(), blocked_reason = 'x' WHERE id = :t"), {"t": ta}).rowcount == 1
+        assert c.execute(sa.text("UPDATE users SET is_active = false WHERE tenant_id = :t"), {"t": ta}).rowcount >= 1
+        assert c.execute(sa.text("UPDATE refresh_tokens SET revoked_at = now()")).rowcount >= 1
+        c.execute(sa.text("INSERT INTO audit_log (tenant_id, entity, action, changes, created_at) VALUES (:t, 'tenant', 'platform_block', '{}', now())"), {"t": ta})
+    for sql in ("UPDATE order_lines SET qty = 1", "UPDATE workers SET name = 'x'", "UPDATE plans SET status = 'x'", "DELETE FROM users",
+                "DELETE FROM tenants", "DELETE FROM audit_log", "UPDATE audit_log SET action = 'x'"):
+        with app.begin() as c:
+            as_platform(c)
+            try:
+                n = c.execute(sa.text(sql)).rowcount
+            except DBAPIError:
+                n = 0                                                                     # отказ по правам — тоже «не изменилось»
+        assert n == 0, f"режим платформы не должен выполнять: {sql}"
+    with admin.connect() as c:
+        assert count(c, "users", f"WHERE tenant_id={tb} AND is_active") >= 1             # организация Б не затронута
+        assert count(c, "workers", "WHERE name = 'x'") == 0

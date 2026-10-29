@@ -26,6 +26,7 @@ python3 -m uvicorn plan24.app:app --port 8000        # интерфейс http:/
 | `PLAN24_DOCS=1` | опубликовать описание API (`/api/docs`) в prod; по умолчанию в prod скрыто |
 | `PLAN24_TG_MORNING_AT`, `PLAN24_TG_EVENING_AT` | время утренних заданий и вечернего напоминания, по часовому поясу организации (07:30 / 17:30) |
 | `PLAN24_TODAY` | только dev: зафиксировать «сегодня» |
+| `PLAN24_SUPERADMIN_EMAIL`, `PLAN24_SUPERADMIN_PASSWORD_HASH` | панель суперадмина `/admin` (хеш — `python -m plan24.superadmin_tool`); без них панели нет, см. `docs/OPERATIONS.md` |
 | `PLAN24_METRIKA_ID` | номер счётчика Яндекс.Метрики для лендинга `/welcome` (только цифры); без него аналитика не подключается и внешних запросов нет |
 
 ### Подключение Telegram-бота

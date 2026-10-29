@@ -44,6 +44,8 @@ def run_due(db: Session, now_utc: datetime) -> list:
     for tid in tenant_ids:
         dbm.set_tenant(db, tid)                                  # дальше — данные одной организации
         tenant = db.get(Tenant, tid)
+        if tenant.blocked_at is not None:                        # заблокированным организациям рассылки не отправляем
+            continue
         local = now_utc.astimezone(ZoneInfo(tenant.timezone))
         day = local.date()
         for link in db.scalars(select(TelegramLink).where(TelegramLink.tenant_id == tid).order_by(TelegramLink.id)):

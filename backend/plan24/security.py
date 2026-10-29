@@ -31,20 +31,49 @@ def verify_password(h: str, p: str) -> bool:
         return False
 
 
-def make_access(user_id: int, tenant_id: int) -> str:
-    """Токен несёт организацию (tid): по ней выставляется контекст RLS до обращения к базе."""
+def make_access(user_id: int, tenant_id: int, support: bool = False) -> str:
+    """Токен несёт организацию (tid): по ней выставляется контекст RLS до обращения к базе.
+    support=True — вход суперадмина под организацией: короткий срок, без refresh, действия помечаются в журнале."""
     now = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user_id), "tid": tenant_id, "typ": "access", "iat": now,
-                       "exp": now + timedelta(minutes=config.ACCESS_TTL_MIN)}, config.secret_key(), algorithm=ALGO)
+    claims = {"sub": str(user_id), "tid": tenant_id, "typ": "access", "iat": now,
+              "exp": now + timedelta(minutes=config.IMPERSONATE_TTL_MIN if support else config.ACCESS_TTL_MIN)}
+    if support:
+        claims["imp"] = 1
+    return jwt.encode(claims, config.secret_key(), algorithm=ALGO)
+
+
+def decode_access_full(token: str) -> tuple | None:
+    """→ (id пользователя, id организации, вход_поддержки) или None."""
+    try:
+        d = jwt.decode(token, config.secret_key(), algorithms=[ALGO])
+        return (int(d["sub"]), int(d["tid"]), bool(d.get("imp"))) if d.get("typ") == "access" else None
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return None
 
 
 def decode_access(token: str) -> tuple | None:
     """→ (id пользователя, id организации) или None."""
+    r = decode_access_full(token)
+    return r[:2] if r else None
+
+
+def make_platform(email: str) -> str:
+    """Токен суперадмина платформы. Другой typ: им нельзя пользоваться в API организаций, а токеном организации — в панели."""
+    now = datetime.now(timezone.utc)
+    return jwt.encode({"sub": email, "typ": "platform", "iat": now, "exp": now + timedelta(minutes=config.PLATFORM_TTL_MIN)},
+                      config.secret_key(), algorithm=ALGO)
+
+
+def decode_platform(token: str) -> str | None:
+    """→ e-mail суперадмина или None. Подходит только токен, выданный для текущего суперадмина из настроек сервера."""
+    creds = config.superadmin_credentials()
     try:
         d = jwt.decode(token, config.secret_key(), algorithms=[ALGO])
-        return (int(d["sub"]), int(d["tid"])) if d.get("typ") == "access" else None
-    except (jwt.PyJWTError, KeyError, ValueError):
+    except jwt.PyJWTError:
         return None
+    if not creds or d.get("typ") != "platform" or d.get("sub") != creds[0]:
+        return None
+    return creds[0]
 
 
 def make_tgapp(link_id: int, tenant_id: int) -> str:
@@ -170,10 +199,12 @@ class RateLimiter:
 login_limiter = RateLimiter("login")
 tgapp_limiter = RateLimiter("tgapp", 20, 300)         # неудачные входы в мини-приложение: 20 за 5 минут на IP
 forgot_limiter = RateLimiter("forgot", 3, 3600)        # запросы сброса пароля: 3 в час на e-mail+IP
+platform_limiter = RateLimiter("platform", 5, 900)     # неудачные входы суперадмина: 5 за 15 минут на IP и 30 на всю платформу
+platform_global_limiter = RateLimiter("platform-all", 30, 900)
 resend_limiter = RateLimiter("resend", 1, 60)          # повторная отправка подтверждения: 1 в минуту на пользователя
 
 
 def reset_limiters():
     """Для тестов: очистить состояние в памяти."""
-    for l in (login_limiter, forgot_limiter, resend_limiter):
+    for l in (login_limiter, forgot_limiter, resend_limiter, platform_limiter, platform_global_limiter):
         l.clear_memory()
