@@ -217,6 +217,8 @@ class Operation(Base):
     hold_until: Mapped[Optional[date]] = mapped_column(Date)
     # партия: следующая операция стартует, когда предыдущая выполнена на столько процентов (пусто/100 — после полного окончания)
     start_after_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # предшественники: имена операций маршрута; пусто (NULL) — после всего предыдущего порядка, [] — без предшественников
+    predecessors: Mapped[Optional[list]] = mapped_column(JSON)
     version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (UniqueConstraint("routing_id", "name"),)
 

@@ -6,7 +6,7 @@ vc.on('jsdomError', e => errors.push('jsdomError: ' + (e.detail || e.message)));
 vc.on('error', e => errors.push('console.error: ' + e));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let win, doc;
-async function until(fn, what, t = 8000) { const s = Date.now(); while (Date.now() - s < t) { try { const r = fn(); if (r) return r; } catch (e) {} await sleep(40); } throw new Error('Не дождались: ' + what + '\nТекущий DOM: ' + (doc.querySelector('#view')?.textContent || doc.body.textContent).slice(0, 300)); }
+async function until(fn, what, t = 8000) { const s = Date.now(); while (Date.now() - s < t) { try { const r = fn(); if (r) return r; } catch (e) {} await sleep(40); } throw new Error('Не дождались: ' + what + '\nТекущий DOM: ' + (doc.querySelector('.modal')?.textContent || doc.querySelector('#view')?.textContent || doc.body.textContent).slice(0, 700)); }
 const $ = s => doc.querySelector(s), $$ = s => [...doc.querySelectorAll(s)];
 const byText = (sel, txt) => $$(sel).find(e => e.textContent.trim().includes(txt));
 function setv(el, v) { el.value = v; el.dispatchEvent(new win.Event('input', { bubbles: true })); el.dispatchEvent(new win.Event('change', { bubbles: true })); }
@@ -284,6 +284,18 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('.modal button', 'Переименовать версию'));
   await until(() => $('.modal form'), 'форма переименования'); const rnf = $('.modal form'); setv(rnf.elements.name, 'Усиленная-2'); rnf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
   await until(() => /v2 · Усиленная-2/.test($('.modal h2').parentElement.textContent), 'новое название версии'); step('версия переименована: v2 · Усиленная-2');
+  // предшественники: операция не ждёт весь предыдущий порядок, а только выбранные операции
+  if (!/Предшественники/.test($('.modal table').textContent)) throw new Error('в таблице операций нет колонки «Предшественники»');
+  const opRows = $$('.modal table tbody tr').map(tr => [parseFloat(tr.cells[0].textContent.replace(',', '.')), tr]).sort((a, b) => b[0] - a[0]);
+  const lastOp = opRows[0][1], lastName = lastOp.cells[1].textContent.trim();
+  click(lastOp.querySelector('[data-oe]')); await until(() => $('.modal form [name=pred_mode]'), 'форма операции с предшественниками');
+  const opf = $('.modal form'); if (opf.querySelector('[data-predlist]').hidden !== true) throw new Error('список предшественников должен быть скрыт в режиме «по порядку»');
+  opf.elements.sequence.value = '99'; opf.elements.sequence.dispatchEvent(new win.Event('input', { bubbles: true }));      // список предшественников следует за полем «Порядок»
+  opf.elements.pred_mode.value = 'list'; opf.elements.pred_mode.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => $('.modal form [name=pred]'), 'список операций-предшественников'); const pickName = $('.modal form [name=pred]').value; $('.modal form [name=pred]').checked = true;
+  opf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => $$('.modal table tbody tr').some(tr => tr.cells[1].textContent.trim() === lastName && [...tr.cells].slice(2).some(c => c.textContent.trim() === pickName)), 'предшественник сохранён и виден в таблице');
+  step('операция «' + lastName + '» зависит только от «' + pickName + '»');
   if (!/Уровень \d/.test($('.modal table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
   step('операции показывают требуемую квалификацию названием уровня');
   click(byText('.modal button', 'Закрыть'));

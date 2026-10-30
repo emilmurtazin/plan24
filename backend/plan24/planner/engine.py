@@ -221,6 +221,7 @@ def plan(inp: PlanInput) -> PlanResult:
     priority_last_day: dict = {}
 
     emitted: dict = {}          # (id позиции, операция) -> число операций по дням плана; нужно для старта партиями
+    op_track: dict = {}         # (id позиции, операция) -> (сколько изделий готово для следующих, день окончания); для предшественников
 
     def mark(order_id, op_name, day, qty):
         arr = emitted.get((order_id, op_name))
@@ -326,6 +327,7 @@ def plan(inp: PlanInput) -> PlanResult:
         for op in ops:
             by_seq.setdefault(op.sequence, []).append(op)
         groups = [by_seq[k] for k in sorted(by_seq)]
+        ops_by_name = {o.name: o for o in ops}
 
         group_progress: list = []
         order_max_day = min_start_for_order
@@ -335,14 +337,28 @@ def plan(inp: PlanInput) -> PlanResult:
             min_start_day = min_start_for_order
             if gi > 0:
                 min_start_day = max(min_start_for_order, group_progress[gi - 1][1])
-            # партии: операция стартует, когда предыдущая выполнена на start_after_pct %, и дальше берёт изделия по мере готовности
-            prog_names = {o.name for o in group_ops if gi > 0 and o.start_after_pct is not None and o.start_after_pct < 100 - EPS}
-            group_last_day = min_start_for_order if prog_names and len(prog_names) == len(group_ops) else min_start_day
+            # Зависимости: у операции без predecessors (None) — весь предыдущий порядок, как в скрипте; с predecessors — только
+            # перечисленные операции (пустой список — старт сразу). Партия: старт, когда они выполнены на start_after_pct %.
+            def _progressive(o):
+                return o.start_after_pct is not None and o.start_after_pct < 100 - EPS
+
+            legacy_gated = any(o.predecessors is None and gi > 0 and not _progressive(o) for o in group_ops)
+            group_last_day = min_start_day if (gi == 0 or legacy_gated) else min_start_for_order
             group_min_ready = order.qty
 
             for op in group_ops:
-                progressive = op.name in prog_names
-                op_ready_items, op_min_start = (order.qty, min_start_for_order) if progressive else (ready_items, min_start_day)
+                if op.predecessors is not None:
+                    prev_list = [ops_by_name[n] for n in op.predecessors if n in ops_by_name and (order.id, n) in op_track]
+                    if prev_list:
+                        dep_ready = min(order.qty, min(op_track[(order.id, p.name)][0] for p in prev_list))
+                        dep_start = max(min_start_for_order, max(op_track[(order.id, p.name)][1] for p in prev_list))
+                    else:
+                        dep_ready, dep_start = order.qty, min_start_for_order
+                else:
+                    prev_list = groups[gi - 1] if gi > 0 else []
+                    dep_ready, dep_start = ready_items, min_start_day
+                progressive = bool(prev_list) and _progressive(op)
+                op_ready_items, op_min_start = (order.qty, min_start_for_order) if progressive else (dep_ready, dep_start)
                 total_required = math.ceil(order.qty * op.per_item - EPS)
                 done_ops = done_map.get((order.id, op.name), 0)
                 done_items = math.floor(done_ops / op.per_item)
@@ -357,11 +373,11 @@ def plan(inp: PlanInput) -> PlanResult:
                 available_items = max(0, op_ready_items - blocked)
                 prev_cache: dict = {}
 
-                def prev_cum(day, _gi=gi, _order=order):
-                    """Сколько изделий уже прошло предыдущую операцию (все операции предыдущего порядка) к концу дня day."""
+                def prev_cum(day, _pl=prev_list, _order=order):
+                    """Сколько изделий уже прошло операции-предшественники (по умолчанию — весь предыдущий порядок) к концу дня day."""
                     if day not in prev_cache:
                         m = _order.qty
-                        for po in groups[_gi - 1]:
+                        for po in _pl:
                             arr = emitted.get((_order.id, po.name))
                             cum = done_map.get((_order.id, po.name), 0) + (sum(arr[: day + 1]) if arr else 0)
                             m = min(m, math.floor(cum / po.per_item + EPS))
@@ -469,6 +485,7 @@ def plan(inp: PlanInput) -> PlanResult:
                 next_ready = min(total_planned_items, available_items)
                 if next_ready < group_min_ready:
                     group_min_ready = next_ready
+                op_track[(order.id, op.name)] = (next_ready, max(op_min_start, last_planned_day))
 
             group_progress.append((max(0, group_min_ready), group_last_day))
 

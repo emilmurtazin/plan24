@@ -117,3 +117,85 @@ def test_replan_with_section_settings_and_batches(full_org):
     for op in o.get(f"/products/{pid}/routings").json()[0]["operations"][1:]:
         assert o.patch(f"/operations/{op['id']}", json={"start_after_pct": 40}).status_code in (200, 409)
     assert o.replan_all().status_code == 201
+
+
+# ------------------------------------------------------------------ предшественники операций
+def stage_ops(**preds):
+    """Порядок 1: A (медленная, 5 в день) и B (быстрая, 20 в день); порядок 2: C. Все — на разных работниках."""
+    return [Operation("A", 5, sequence=1), Operation("B", 20, sequence=1),
+            Operation("C", 20, sequence=2, **preds)]
+
+
+W3 = [Worker(1, "w1"), Worker(2, "w2"), Worker(3, "w3")]
+ASSIGN3 = {"A": frozenset({"w1"}), "B": frozenset({"w2"}), "C": frozenset({"w3"})}
+
+
+def test_predecessor_removes_wait_for_the_whole_stage():
+    legacy = run(stage_ops(), W3, ASSIGN3)
+    only_b = run(stage_ops(predecessors=("B",)), W3, ASSIGN3)
+    c0, c1 = by_op(legacy, "C"), by_op(only_b, "C")
+    assert min(c0) == max(by_op(legacy, "A"))                          # по порядку: C ждёт самую медленную операцию этапа (A)
+    assert max(by_op(only_b, "B")) == 1 and min(c1) == 1               # от B одной: B готова за 2 дня — C стартует на второй день
+    assert sum(c1.values()) == 40 and max(c1) < max(c0) + 1
+    assert by_op(legacy, "A") == by_op(only_b, "A")                    # остальные операции не изменились
+
+
+def test_several_predecessors_wait_for_all_of_them():
+    both = run(stage_ops(predecessors=("A", "B")), W3, ASSIGN3)
+    assert min(by_op(both, "C")) == max(by_op(both, "A"))             # ждёт и A
+
+
+def test_empty_predecessors_start_immediately_and_unknown_names_are_ignored():
+    free = run(stage_ops(predecessors=()), W3, ASSIGN3)
+    assert min(by_op(free, "C")) == 0 and sum(by_op(free, "C").values()) == 40
+    unknown = run(stage_ops(predecessors=("нет такой",)), W3, ASSIGN3)
+    assert min(by_op(unknown, "C")) == 0
+
+
+def test_predecessor_with_batch_start():
+    r = run([Operation("A", 5, sequence=1), Operation("B", 20, sequence=2, start_after_pct=25, predecessors=("A",))], W, ASSIGN)
+    a, b = by_op(r, "A"), by_op(r, "B")
+    assert min(b) == 1 and sum(b.values()) == 40
+    ca = cb = 0
+    for d in range(len(DAYS)):
+        ca += a.get(d, 0)
+        cb += b.get(d, 0)
+        assert cb <= ca
+
+
+def test_chain_of_predecessors_is_transitive():
+    ops = [Operation("A", 5, sequence=1), Operation("B", 20, sequence=2, predecessors=("A",)),
+           Operation("C", 20, sequence=3, predecessors=("B",))]
+    r = run(ops, [Worker(1, "w1"), Worker(2, "w2"), Worker(3, "w3")], {"A": frozenset({"w1"}), "B": frozenset({"w2"}), "C": frozenset({"w3"})})
+    assert min(by_op(r, "B")) >= max(by_op(r, "A")) and min(by_op(r, "C")) >= max(by_op(r, "B"))
+
+
+def test_api_predecessors_validation_rename_delete_and_copy(org):
+    pid, rid = mk_product(org, ops=(("Раскрой", 40, 1), ("Кромка", 40, 1), ("Сборка", 6, 2)))
+    ops = {o["name"]: o for o in org.get(f"/products/{pid}/routings").json()[0]["operations"]}
+    assert all(o["predecessors"] is None for o in ops.values())
+    sb = ops["Сборка"]["id"]
+
+    def preds_of_sb():
+        r = org.get(f"/products/{pid}/routings").json()[0]["operations"]
+        return next(o["predecessors"] for o in r if o["id"] == sb)
+
+    bad = lambda preds: org.patch(f"/operations/{sb}", json={"predecessors": preds}).status_code
+    assert bad(["Сборка"]) == 422 and bad(["Нет такой"]) == 422                       # сама себя / несуществующая
+    assert org.patch(f"/operations/{ops['Раскрой']['id']}", json={"predecessors": ["Сборка"]}).status_code == 422     # порядок не меньше
+    assert org.patch(f"/operations/{sb}", json={"predecessors": ["Кромка", "Кромка"]}).json()["predecessors"] == ["Кромка"]
+    org.patch(f"/operations/{ops['Кромка']['id']}", json={"name": "Кромление"})        # переименование обновляет ссылки
+    assert preds_of_sb() == ["Кромление"]
+    assert org.patch(f"/operations/{sb}", json={"predecessors": []}).json()["predecessors"] == []       # без предшественников
+    assert org.patch(f"/operations/{sb}", json={"predecessors": ["Кромление", "Раскрой"]}).status_code == 200
+    assert org.patch(f"/operations/{ops['Раскрой']['id']}", json={"sequence": 5}).status_code == 422   # от неё зависит «Сборка»
+    assert org.delete(f"/operations/{ops['Кромка']['id']}").status_code == 204
+    assert preds_of_sb() == ["Раскрой"]
+    org.delete(f"/operations/{ops['Раскрой']['id']}")
+    assert preds_of_sb() is None                 # опустел — снова «по порядку»
+    org.patch(f"/operations/{sb}", json={"predecessors": []})
+    assert mk_order(org, pid).status_code == 201
+    assert org.patch(f"/operations/{sb}", json={"predecessors": None}).status_code == 200      # в маршруте, стоящем в заказах — можно
+    org.patch(f"/operations/{sb}", json={"predecessors": []})
+    v2 = org.post(f"/products/{pid}/routings").json()
+    assert [o["predecessors"] for o in v2["operations"]] == [[]]                               # копируется в новую версию

@@ -118,7 +118,8 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
             pproducts[pk] = tuple(POp(name=op.name, norm_per_day=op.norm_per_day, min_skill=op.min_skill,
                                       sequence=op.sequence, per_item=op.per_item, hold_qty=op.hold_qty,
                                       hold_until=op.hold_until, hold_reason=op.hold_reason,
-                                      start_after_pct=op.start_after_pct)
+                                      start_after_pct=op.start_after_pct,
+                                      predecessors=tuple(op.predecessors) if op.predecessors is not None else None)
                                   for op in routings[o.routing_id].operations)
         for op in routings[o.routing_id].operations:
             ctx.op_id[(key, op.name)] = op.id
