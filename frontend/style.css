@@ -251,3 +251,10 @@ select.gadd{width:100%;min-height:24px;height:24px;font-size:12px;padding:0 2px}
 .supportbar{position:sticky;top:0;z-index:30;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;min-height:34px;padding:4px 12px;background:var(--amber-soft);color:var(--amber);font-size:13px;font-weight:600}
 .supportbar button{min-height:24px;padding:0 10px;font-size:12px}
 body.support header.top{top:34px}
+
+/* быстрая настройка предшественников и партии в таблице операций */
+.inl{min-height:30px;padding:2px 8px;font-size:13px;width:auto;max-width:100%}
+.qpct input{width:72px;text-align:right}
+.qp{min-width:190px}.qpl{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.qpn{font-size:12px;margin-top:4px}
+.chip{display:inline-flex;align-items:center;gap:5px;background:var(--grey-soft);border-radius:99px;padding:2px 10px 2px 7px;font-size:12px;cursor:pointer}
+.chip input{margin:0;min-height:0;width:auto}.chip:has(input:checked){background:var(--blue-soft);color:var(--blue);font-weight:600}

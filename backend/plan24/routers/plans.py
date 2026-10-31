@@ -25,30 +25,33 @@ class RunIn(BaseModel):
     strictness: Optional[float] = Field(None, ge=0, le=100)
     fix_group_start: Optional[bool] = None
     work_center_id: Optional[int] = None       # перепланировать только участок (бригадир — всегда только свой)
+    work_center_ids: Optional[list[int]] = Field(None, max_length=200)      # или сразу несколько участков
 
 
-def _scope(db, user: User, b: RunIn) -> Optional[int]:
-    """Область перепланирования — всегда участок. Бригадир — только свой; руководитель выбирает участок.
+def _scope(db, user: User, b: RunIn) -> Optional[list[int]]:
+    """Область перепланирования — один или несколько участков. Бригадир — только свой; руководитель выбирает участки.
     Единственное исключение: активного плана ещё нет — первый расчёт строится сразу по всем участкам."""
+    ids = list(dict.fromkeys(([b.work_center_id] if b.work_center_id is not None else []) + (b.work_center_ids or [])))
     if user.role == "foreman":
         if user.work_center_id is None:
             raise HTTPException(403, "Бригадиру не назначен участок")
-        if b.work_center_id not in (None, user.work_center_id):
+        if any(i != user.work_center_id for i in ids):
             raise HTTPException(403, "Бригадир перепланирует только свой участок")
-        return user.work_center_id
-    if b.work_center_id is not None:
-        get_or_404(db, WorkCenter, b.work_center_id, user)
-        return b.work_center_id
+        return [user.work_center_id]
+    if ids:
+        for i in ids:
+            get_or_404(db, WorkCenter, i, user)
+        return sorted(ids)
     has_plan = db.scalar(select(Plan.id).where(Plan.tenant_id == user.tenant_id, Plan.status == "active"))
     if has_plan:
-        raise HTTPException(422, "Выберите участок: перепланирование выполняется по участкам")
+        raise HTTPException(422, "Выберите участок (или несколько): перепланирование выполняется по участкам")
     return None          # первый расчёт организации
 
 
-def _overrides(b: RunIn, scope: Optional[int] = None) -> dict:
+def _overrides(b: RunIn, scope: Optional[list] = None) -> dict:
     o = {}
-    if scope is not None:
-        o["scope_center_id"] = scope
+    if scope:
+        o["scope_center_ids"] = list(scope)
     if b.strictness is not None:
         o["priority_strictness"] = b.strictness
     if b.fix_group_start is not None:
@@ -58,7 +61,7 @@ def _overrides(b: RunIn, scope: Optional[int] = None) -> dict:
 
 def _meta(db, user, p: Plan, today: date, with_warnings: bool) -> dict:
     ov = {"priority_strictness": p.params.get("strictness"), "fix_group_start": p.params.get("fix_group_start"), "efficiency": p.params.get("efficiency"),
-          "scope_center_id": p.params.get("scope_center_id")}
+          "scope_center_ids": p.params.get("scope_center_ids") or ([p.params["scope_center_id"]] if p.params.get("scope_center_id") else None)}
     ov = {k: v for k, v in ov.items() if v is not None}
     inp, _ = planning.build_input(db, user.tenant_id, today, ov)
     n = db.scalar(select(func.count()).select_from(PlanItem).where(PlanItem.plan_id == p.id))

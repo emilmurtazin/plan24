@@ -223,13 +223,20 @@ async function openRouting(product, selId, onClose) {
   const quals = st.qualifications || [];
   const cur = rts.find(r => r.id === selId) || rts[0];
   const canEdit = !cur.used;
+  /* Быстрая настройка прямо в таблице: предшественники и «партия» сохраняются сразу, без окна редактирования операции */
+  const predCell = o => {
+    const cand = cur.operations.filter(x => x.id !== o.id && x.sequence < o.sequence), listMode = o.predecessors != null, sel = new Set(o.predecessors || []);
+    return `<div class="qp" data-qp="${o.id}"><select class="inl" data-pm aria-label="Предшественники: ${esc(o.name)}"><option value="seq" ${listMode ? '' : 'selected'}>весь предыдущий порядок</option><option value="list" ${listMode ? 'selected' : ''}>только выбранные</option></select>${listMode
+      ? (cand.length ? `<div class="qpl">${cand.map(x => `<label class="chip"><input type="checkbox" data-pc value="${esc(x.name)}" ${sel.has(x.name) ? 'checked' : ''}><span>${esc(x.name)}</span></label>`).join('')}</div>${sel.size ? '' : '<div class="muted qpn">ничего не выбрано — стартует сразу</div>'}` : '<div class="muted qpn">нет операций с меньшим порядком — стартует сразу</div>') : ''}</div>`;
+  };
+  const pctCell = o => `<span class="qpct"><input class="inl" type="number" min="1" max="100" step="any" placeholder="100" value="${o.start_after_pct ?? ''}" data-pct="${o.id}" aria-label="Партия, %: ${esc(o.name)}"> %</span>`;
   const m = modal(`<h2>${esc(product.name)}: версии и операции</h2>
     <div class="row" style="margin-bottom:10px">${rts.map(r => `<button class="small ${r.id === cur.id ? '' : 'secondary'}" data-v="${r.id}">${esc(verLabel(r))}${r.is_current ? ' · текущая' : ''}</button>`).join('')}<span class="grow"></span><button class="small secondary" data-nv>Новая версия</button></div>
     <div class="row" style="margin-bottom:8px"><b>Версия: ${esc(verLabel(cur))}</b> <span class="muted">· операций: ${cur.operations.length}</span><span class="grow"></span><button class="small secondary" data-rn>Переименовать версию</button></div>
-    <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции, изменить блокировку и партию. Для остального создайте новую версию.' : 'Одинаковый «Порядок» — операции идут параллельно. По умолчанию операция ждёт весь предыдущий порядок; в «Предшественниках» можно указать, от каких именно операций она зависит, и тогда простоев не будет. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
+    <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции, изменить блокировку и партию. Для остального создайте новую версию.' : 'Предшественников и «Партию, %» можно менять прямо в таблице — сохраняется сразу. Одинаковый «Порядок» — операции идут параллельно. По умолчанию операция ждёт весь предыдущий порядок; в «Предшественниках» можно указать, от каких именно операций она зависит, и тогда простоев не будет. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
     <div class="scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
-    { label: 'Предшественники', html: o => o.predecessors == null ? '<span class="muted">весь предыдущий порядок</span>' : o.predecessors.length ? esc(o.predecessors.join(', ')) : '<span class="muted">нет, стартует сразу</span>' },
-    { label: 'Партия', cls: 'num', html: o => o.start_after_pct != null && o.start_after_pct < 100 ? `после ${num(o.start_after_pct)}%` : '<span class="muted">после полного</span>' },
+    { label: 'Предшественники', html: o => predCell(o) },
+    { label: 'Партия, %', html: o => pctCell(o) },
     { label: 'Блок', html: o => o.hold_qty ? `<span class="warn">${num(o.hold_qty)}${o.hold_until ? ' до ' + fmtDY(o.hold_until) : ''}</span> ${esc(o.hold_reason)}` : '—' }], cur.operations,
       o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Название / блок / партия'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
     <div class="row" style="margin-top:12px">${canEdit ? '<button data-oa>+ Операция</button>' : ''}<button class="secondary" data-x>Закрыть</button></div>`, true);
@@ -271,6 +278,29 @@ async function openRouting(product, selId, onClose) {
     extra: predExtra, onOpen: form => wirePreds(form, o),
     title: o ? o.name : 'Новая операция', fields: opFields(canEdit), values: o || { sequence: (cur.operations.at(-1)?.sequence || 0) + 1, norm_per_day: 10, min_skill: 1, per_item: 1, hold_qty: 0 },
     onSubmit: async (vals, f) => { const form = $('form', f.el), body = { ...vals, hold_qty: vals.hold_qty || 0, hold_reason: vals.hold_reason || '', start_after_pct: vals.start_after_pct ?? null, predecessors: form.elements.pred_mode.value === 'list' ? $$('[name=pred]:checked', form).map(i => i.value) : null }; if (o) await PATCH(`/operations/${o.id}`, { ...body, version: o.version }); else await POST(`/routings/${cur.id}/operations`, body); f.close(); again(); }
+  });
+  const opById = id => cur.operations.find(o => o.id == id);
+  const saving = new Map();                                 // сохранения одной операции идут по очереди: версия записи берётся актуальная
+  const quickSave = (o, patch, redraw) => {
+    const run = async () => {
+      try { const r = await PATCH(`/operations/${o.id}`, { ...patch, version: o.version }); Object.assign(o, r); toast('Сохранено'); }
+      catch (e) { toast(errText(e), true); }
+      redraw();                                            // показать фактическое состояние (и при ошибке вернуть прежнее)
+    };
+    const next = (saving.get(o.id) || Promise.resolve()).then(run);
+    saving.set(o.id, next);
+    return next;
+  };
+  m.el.addEventListener('change', e => {
+    const t = e.target;
+    if (t.matches('[data-pm],[data-pc]')) {
+      const cell = t.closest('[data-qp]'), o = opById(cell.dataset.qp);
+      const preds = t.matches('[data-pm]') ? (t.value === 'seq' ? null : (o.predecessors || [])) : $$('[data-pc]:checked', cell).map(i => i.value);
+      quickSave(o, { predecessors: preds }, () => { cell.outerHTML = predCell(o); });
+    } else if (t.matches('[data-pct]')) {
+      const o = opById(t.dataset.pct), v = t.value.trim() === '' ? null : Number(t.value);
+      quickSave(o, { start_after_pct: v }, () => { t.value = o.start_after_pct ?? ''; });
+    }
   });
   const oa = $('[data-oa]', m.el); if (oa) oa.onclick = () => edit(null);
   $$('[data-oe]', m.el).forEach(b => b.onclick = () => edit(cur.operations.find(o => o.id == b.dataset.oe)));

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .deps import scoped
-from . import planning
+from . import order_cleanup, planning
 from .models import DayPin, DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, Product, Project, Worker
 
 
@@ -35,7 +35,9 @@ def missing_fact_days(db: Session, user, today: date) -> list:
     «Не внесён» — нет записи факта по связке день × позиция × операция × работник (внесённый ноль — это внесённый факт).
     Бригадир видит свой участок; сборщик — только себя."""
     lo = today - timedelta(days=MISSING_DAYS)
-    snaps = list(db.scalars(scoped(DayPlanSnapshot, user).where(DayPlanSnapshot.plan_date >= lo, DayPlanSnapshot.plan_date < today)))
+    dead = order_cleanup.dead_ids(db, user.tenant_id)
+    snaps = [s for s in db.scalars(scoped(DayPlanSnapshot, user).where(DayPlanSnapshot.plan_date >= lo, DayPlanSnapshot.plan_date < today))
+             if s.order_line_id not in dead]
     if not snaps:
         return []
     workers = {w.id: w for w in db.scalars(scoped(Worker, user))}
@@ -56,6 +58,7 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
     d = day or (date.fromisoformat(plan.params["today"]) if plan else today)
     workers = {w.id: w for w in db.scalars(scoped(Worker, user))}
     orders = {o.id: o for o in db.scalars(scoped(OrderLine, user))}
+    dead = order_cleanup.dead_ids(db, user.tenant_id)           # удалённые заказы в «Плане на день» не показываются
     products = {p.id: p.name for p in db.scalars(scoped(Product, user))}
     projects = {p.id: p.name for p in db.scalars(scoped(Project, user))}
     ops = {o.id: o for o in db.scalars(scoped(Operation, user))}
@@ -65,7 +68,7 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
     tasks: dict = defaultdict(dict)       # worker_id -> (order_line_id, operation_id) -> task
     if plan:
         for it in db.scalars(select(PlanItem).where(PlanItem.plan_id == plan.id, PlanItem.plan_date == d)):
-            if it.worker_id not in visible:
+            if it.worker_id not in visible or it.order_line_id in dead:
                 continue
             t = tasks[it.worker_id].setdefault((it.order_line_id, it.operation_id),
                                                {"plan_qty": 0, "frozen": False, "locked": False, "manual": False, "item_id": it.id})
@@ -76,14 +79,14 @@ def day_report(db: Session, user, day: Optional[date], today: date) -> dict:
     if d < today:
         # прошедший день: активный план начинается с сегодняшнего, а что планировалось на тот день — в снимках плана
         for x in db.scalars(scoped(DayPlanSnapshot, user).where(DayPlanSnapshot.plan_date == d)):
-            if x.worker_id not in visible or x.qty <= 0:
+            if x.worker_id not in visible or x.qty <= 0 or x.order_line_id in dead:
                 continue
             t = tasks[x.worker_id].setdefault((x.order_line_id, x.operation_id),
                                               {"plan_qty": 0, "frozen": False, "locked": False, "manual": False, "item_id": None})
             t["plan_qty"] += x.qty
     facts = {}
     for f in db.scalars(scoped(Fact, user).where(Fact.fact_date == d, Fact.deleted_at.is_(None))):
-        if f.worker_id in visible:
+        if f.worker_id in visible and f.order_line_id not in dead:
             facts[(f.worker_id, f.order_line_id, f.operation_id)] = f
             tasks[f.worker_id].setdefault((f.order_line_id, f.operation_id),
                                           {"plan_qty": 0, "frozen": False, "locked": False, "manual": False, "item_id": None})

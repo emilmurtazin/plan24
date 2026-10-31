@@ -252,7 +252,7 @@ SCREENS.home = async v => {
     const nd = (plan.warnings || []).filter(w => w.code === 'NOT_DISTRIBUTED'), ndOrders = new Set(nd.map(w => w.order_line_id)).size;
     if (nd.length) h += `<div class="banner err" role="alert"><span><b>Ошибка: операции не распределены по участкам (${nd.length} в ${ndOrders} поз.).</b> Такие операции не попадают в план, а следующие за ними не планируются, пока их не распределят.</span>${MANAGERS.includes(S.me.role) ? '<button id="goDist" class="small">Распределить</button>' : ''}</div>`;
     h += await dashboardView(plan);
-    h += `<p class="muted">План от ${fmtDT(plan.created_at)}${plan.params.scope_center_id ? ' (последним пересчитан участок)' : ''} · строк плана: ${plan.items} · строгость приоритета ${num(plan.params.strictness)}%</p>`;
+    h += `<p class="muted">План от ${fmtDT(plan.created_at)}${(plan.params.scope_center_ids || (plan.params.scope_center_id ? [1] : [])).length ? ' (последним пересчитаны не все участки)' : ''} · строк плана: ${plan.items} · строгость приоритета ${num(plan.params.strictness)}%</p>`;
     if (plan.warnings && plan.warnings.length) h += `<div class="card"><h2>Предупреждения (${plan.warnings.length})</h2><div class="scroll"><table>${plan.warnings.slice(0, 30).map(w => `<tr><td class="${w.code === 'NOT_DISTRIBUTED' ? 'err' : 'warn'}">${esc(WARN_RU[w.code] || w.code)}</td><td>${esc(w.text)}</td></tr>`).join('')}</table></div></div>`;
   }
   v.innerHTML = h;
@@ -264,25 +264,40 @@ SCREENS.home = async v => {
 let REASONS = null;
 
 /* ---------------- Перепланирование ---------------- */
+/* участки, по которым считался план (новые планы — scope_center_ids, старые — один scope_center_id) */
+const scopeIds = p => p.params.scope_center_ids || (p.params.scope_center_id ? [p.params.scope_center_id] : []);
+let scopeCenters = [];
+const scopeNames = p => scopeIds(p).map(id => scopeCenters.find(c => c.id === id)?.name || 'участок').join(', ');
 async function openReplan() {
   const foreman = S.me.role === 'foreman';
   const [st, centers, act] = await Promise.all([GET('/settings').catch(() => ({ priority_strictness: 100 })), listAll('/work-centers'), GET('/plans/active')]);
   const first = !act.plan;              // активного плана нет — первый расчёт идёт сразу по всем участкам; дальше только по участкам
   const hist = MANAGERS.includes(S.me.role) ? (await GET('/plans')).items : [];
+  scopeCenters = centers;
   const myCenter = centers.find(c => c.id === S.me.work_center_id);
   const scopeHtml = foreman
     ? `<p class="banner info">Вы перепланируете <b>свой участок${myCenter ? ' «' + esc(myCenter.name) + '»' : ''}</b>. Задания других участков не меняются.</p>`
     : first ? `<p class="banner info">Плана ещё нет. Первый расчёт строится сразу <b>по всем участкам</b>; дальше план пересчитывается по одному участку.</p>`
-    : (centers.length ? `<label class="f">Участок<select id="scope">${centers.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select><span style="font-size:13px">Перепланирование выполняется по участкам. Задания других участков не меняются.</span></label>`
+    : (centers.length ? `<fieldset class="predset"><legend>Участки для перепланирования</legend>
+        <div class="row" style="gap:6px"><button type="button" class="small secondary" data-all>Все участки</button><button type="button" class="small secondary" data-none>Снять выбор</button><span class="muted" id="scn"></span></div>
+        <div class="predlist" id="scope">${centers.map((c, i) => `<label class="chk"><input type="checkbox" value="${c.id}" ${i === 0 ? 'checked' : ''}> <span>${esc(c.name)}</span></label>`).join('')}</div>
+        <span class="muted" style="font-size:13px">Можно отметить несколько участков. Задания остальных участков не меняются.</span></fieldset>`
       : `<p class="banner warn">Перепланирование выполняется по участкам, а участков нет. Добавьте их в разделе «Работники → Участки».</p>`);
   const m = modal(`<h2>Перепланирование</h2>${scopeHtml}
     <label class="f"><b>Жёсткость приоритета: <span id="sv">${num(st.priority_strictness)}</span>%</b><input class="slider" id="sl" type="range" min="0" max="100" step="10" value="${st.priority_strictness}"></label>
     <p class="muted" style="margin-top:-6px">100% — следующий приоритет начинается, когда закончен предыдущий. 0% — приоритет задаёт только очерёдность доступа к людям. Значение влияет на этот запуск; постоянное — в «Настройках».</p>
     <div class="row"><button class="secondary" id="cmp">Сравнить варианты</button><button id="run">Построить план</button><button class="secondary" data-x>Закрыть</button></div>
     <div id="cr" class="scroll" style="margin-top:12px"></div>
-    ${hist.length ? `<h3>История планов</h3><div class="scroll"><table>${hist.slice(0, 8).map(p => `<tr><td>${fmtDT(p.created_at)}</td><td>${num(p.params.strictness)}%</td><td>${p.params.scope_center_id ? esc(centers.find(c => c.id === p.params.scope_center_id)?.name || 'участок') : 'первый расчёт, все участки'}</td><td>${p.status === 'active' ? '<span class="badge b-done">активный</span>' : `<button class="small secondary" data-act="${p.id}">Вернуть этот</button>`}</td></tr>`).join('')}</table></div>` : ''}`, true);
+    ${hist.length ? `<h3>История планов</h3><div class="scroll"><table>${hist.slice(0, 8).map(p => `<tr><td>${fmtDT(p.created_at)}</td><td>${num(p.params.strictness)}%</td><td>${scopeNames(p) ? esc(scopeNames(p)): 'первый расчёт, все участки'}</td><td>${p.status === 'active' ? '<span class="badge b-done">активный</span>' : `<button class="small secondary" data-act="${p.id}">Вернуть этот</button>`}</td></tr>`).join('')}</table></div>` : ''}`, true);
   const sl = $('#sl', m.el); sl.oninput = () => $('#sv', m.el).textContent = sl.value; $('[data-x]', m.el).onclick = m.close;
-  const scopeBody = () => { const el = $('#scope', m.el); return el && el.value ? { work_center_id: +el.value } : {}; };
+  const countScope = () => { const n = $$('#scope input:checked', m.el).length; const el = $('#scn', m.el); if (el) el.textContent = `выбрано: ${n} из ${centers.length}`; };
+  if ($('#scope', m.el)) { m.el.addEventListener('change', countScope); $('[data-all]', m.el).onclick = () => { $$('#scope input', m.el).forEach(i => { i.checked = true; }); countScope(); }; $('[data-none]', m.el).onclick = () => { $$('#scope input', m.el).forEach(i => { i.checked = false; }); countScope(); }; countScope(); }
+  const scopeBody = () => {
+    if (!$('#scope', m.el)) return {};
+    const ids = $$('#scope input:checked', m.el).map(i => +i.value);
+    if (!ids.length) throw new Error('Отметьте хотя бы один участок');
+    return { work_center_ids: ids };
+  };
   const run = async s => { try { await POST('/plans/replan', { strictness: +s, ...scopeBody() }); REASONS = null; m.close(); toast('План построен'); show(S.screen); } catch (e) { toast(errText(e), true); } };
   $('#run', m.el).onclick = () => run(sl.value);
   $$('[data-act]', m.el).forEach(b => b.onclick = async () => { try { await POST(`/plans/${b.dataset.act}/activate`); m.close(); toast('План возвращён'); show(S.screen); } catch (e) { toast(errText(e), true); } });

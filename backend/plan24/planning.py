@@ -149,13 +149,13 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     eff_all = {w.name: sec(w).efficiency for w in workers_all if sec(w) and sec(w).efficiency is not None}
 
     # --- факт и план прошлых/ближайших дней в одних строках, как лист «Факт» скрипта ---
-    scope = ov.get("scope_center_id")
+    scope = frozenset(ov["scope_center_ids"]) if ov.get("scope_center_ids") else None       # участки, которые пересчитываются
     fixed_names: frozenset = frozenset()
     active_plan = db.scalar(select(Plan).where(Plan.tenant_id == tenant_id, Plan.status == "active"))
     if scope is not None:
         if active_plan is None:
             raise NoActivePlan()
-        fixed_names = frozenset(w.name for w in avail if w.work_center_id != scope)
+        fixed_names = frozenset(w.name for w in avail if w.work_center_id not in scope)
     freeze_days = ov.get("freeze_days", st.freeze_days)
     plan_today = cal[0] if cal else today
     freeze_window = set(cal[:freeze_days]) if freeze_days else set()
@@ -197,7 +197,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
 
     # --- закреплённые вручную правки «Плана на день»: остаются как есть при любом перепланировании ---
     fixed_avail = {w.id for w in avail if w.name in fixed_names}          # их будущее и так сохраняется выше (left)
-    out_of_scope = {w.id for w in workers_all if scope is not None and w.work_center_id != scope}
+    out_of_scope = {w.id for w in workers_all if scope is not None and w.work_center_id not in scope}
     pinned_set = {(wname[x.worker_id], x.plan_date) for x in db.scalars(q(DayPin).where(DayPin.plan_date >= plan_today))
                   if x.worker_id in wname and x.worker_id not in out_of_scope}
     pinned_set |= {(w.name, d) for w in avail for d in extra_days}        # в нерабочие дни автопланирование никого не загружает
@@ -312,7 +312,8 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
              input_hash=input_hash(inp),
              params={"today": inp.config.today.isoformat(), "strictness": inp.config.priority_strictness,
                      "fix_group_start": inp.config.fix_group_start_after_deadline, "efficiency": inp.config.efficiency,
-                     "scope_center_id": (overrides or {}).get("scope_center_id")})
+                     "scope_center_ids": (overrides or {}).get("scope_center_ids"),
+                     "scope_center_id": ((overrides or {}).get("scope_center_ids") or [None])[0] if len((overrides or {}).get("scope_center_ids") or []) == 1 else None})
     db.add(p)
     db.flush()
     saved: set = set()

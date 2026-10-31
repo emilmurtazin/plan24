@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import distribution, order_status
+from . import distribution, order_cleanup, order_status
 from .models import (DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Routing,
                      User, WorkCenter, Worker)
 
@@ -227,6 +227,8 @@ def _underperformance(db: Session, t: int, today: date, centers: dict, own) -> d
     start, end = weeks[0], today                       # сегодняшний день ещё не закончен — в расчёт не входит
     snaps = list(db.scalars(select(DayPlanSnapshot).where(DayPlanSnapshot.tenant_id == t, DayPlanSnapshot.plan_date >= start,
                                                           DayPlanSnapshot.plan_date < end)))
+    dead = order_cleanup.dead_ids(db, t)                 # удалённые заказы недовыполнением не считаются
+    snaps = [s for s in snaps if s.order_line_id not in dead]
     first = db.scalar(select(func.min(DayPlanSnapshot.plan_date)).where(DayPlanSnapshot.tenant_id == t))
     facts: dict = defaultdict(float)
     for d, ol, op, w, q in db.execute(select(Fact.fact_date, Fact.order_line_id, Fact.operation_id, Fact.worker_id,
@@ -258,8 +260,9 @@ def _reasons(db: Session, t: int, today: date, wcenter: dict, cname: dict, own) 
     names = {r.id: r.name for r in db.scalars(select(FactReason).where(FactReason.tenant_id == t))}
     ops = {o.id: o.name for o in db.scalars(select(Operation).where(Operation.tenant_id == t))}
     groups: dict = defaultdict(list)
+    dead = order_cleanup.dead_ids(db, t)
     for f in db.scalars(select(Fact).where(Fact.tenant_id == t, Fact.deleted_at.is_(None), Fact.fact_date >= start)):
-        if not (f.reason_id or (f.note or "").strip()):
+        if f.order_line_id in dead or not (f.reason_id or (f.note or "").strip()):
             continue
         if own is not None and wcenter.get(f.worker_id) != own:
             continue

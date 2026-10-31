@@ -196,7 +196,11 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click($('#rp2'));
   await until(() => $('#cmp'), 'окно перепланирования');
   if (/Вся организация/.test($('.modal').textContent)) throw new Error('«Вся организация» должна быть исключена');
-  if (!$('.modal #scope') || [...$('.modal #scope').options].some(o => o.value === '')) throw new Error('перепланирование — только по участкам');
+  if (!$('.modal #scope') || !$$('.modal #scope input[type=checkbox]').length) throw new Error('перепланирование — только по участкам (флажки участков)');
+  if ($$('.modal #scope input:checked').length !== 1) throw new Error('по умолчанию отмечен один участок');
+  click($('.modal [data-all]')); if ($$('.modal #scope input:checked').length !== $$('.modal #scope input').length) throw new Error('«Все участки» отмечает все');
+  click($('.modal [data-none]')); if ($$('.modal #scope input:checked').length) throw new Error('«Снять выбор» снимает все'); step('перепланирование: выбор нескольких участков флажками');
+  $$('.modal #scope input')[0].checked = true;
   step('перепланирование: выбор только из участков, «Вся организация» нет');
   click($('#cmp'));
   await until(() => $$('.cmp tr').length >= 5, 'таблица сравнения');
@@ -294,8 +298,19 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   opf.elements.pred_mode.value = 'list'; opf.elements.pred_mode.dispatchEvent(new win.Event('change', { bubbles: true }));
   await until(() => $('.modal form [name=pred]'), 'список операций-предшественников'); const pickName = $('.modal form [name=pred]').value; $('.modal form [name=pred]').checked = true;
   opf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
-  await until(() => $$('.modal table tbody tr').some(tr => tr.cells[1].textContent.trim() === lastName && [...tr.cells].slice(2).some(c => c.textContent.trim() === pickName)), 'предшественник сохранён и виден в таблице');
+  await until(() => $$('.modal table tbody tr').some(tr => tr.cells[1].textContent.trim() === lastName && [...tr.querySelectorAll('[data-pc]:checked')].some(i => i.value === pickName)), 'предшественник сохранён и виден в таблице');
   step('операция «' + lastName + '» зависит только от «' + pickName + '»');
+  // быстрая настройка прямо в таблице: без окна операции
+  const quickRow = $$('.modal table tbody tr').find(tr => tr.querySelector('[data-pm]') && tr.querySelector('[data-pm]').value === 'seq' && tr.querySelector('[data-pct]'));
+  const quickName = quickRow.cells[1].textContent.trim();
+  const qsel = quickRow.querySelector('[data-pm]'); qsel.value = 'list'; qsel.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => { const r = $$('.modal table tbody tr').find(t => t.cells[1].textContent.trim() === quickName); return r && r.querySelector('[data-pm]').value === 'list'; }, 'режим «только выбранные» сохранён в таблице');
+  const qrow = () => $$('.modal table tbody tr').find(t => t.cells[1].textContent.trim() === quickName);
+  const chip = qrow().querySelector('[data-pc]');
+  if (chip) { chip.checked = true; chip.dispatchEvent(new win.Event('change', { bubbles: true })); await until(() => qrow().querySelector('[data-pc]:checked'), 'предшественник отмечен в таблице'); }
+  const pct = qrow().querySelector('[data-pct]'); pct.value = '30'; pct.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => /Сохранено/.test($('#toast').textContent) && qrow().querySelector('[data-pct]').value === '30', 'партия 30% сохранена');
+  step('быстрая настройка в таблице: предшественники и партия «' + quickName + '» (30%) сохранены без окна операции');
   if (!/Уровень \d/.test($('.modal table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
   step('операции показывают требуемую квалификацию названием уровня');
   click(byText('.modal button', 'Закрыть'));

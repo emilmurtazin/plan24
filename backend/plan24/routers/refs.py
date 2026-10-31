@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, object_session
 
-from .. import audit, distribution
+from .. import audit, distribution, order_cleanup
 from ..db import DB
 from ..deps import ALL, CATALOG, MANAGERS, READERS, STAFF, get_or_404, require, scoped
 from ..models import (MAX_QUAL_LEVELS, AuditLog, OrderLineOperation, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
@@ -99,7 +99,11 @@ class ProjectPatch(BaseModel):
     version: Optional[int] = None
 
 
-make_crud(router, "/projects", Project, ProjectIn, ProjectPatch, "project")
+def _project_before_delete(db, user, obj):
+    order_cleanup.purge_dead_for(db, user.tenant_id, OrderLine.project_id, obj.id, "проект")
+
+
+make_crud(router, "/projects", Project, ProjectIn, ProjectPatch, "project", before_delete=_project_before_delete)
 
 
 class WorkerIn(BaseModel):
@@ -249,7 +253,17 @@ def _after_product(db, user, obj):
     db.add(Routing(tenant_id=user.tenant_id, product_id=obj.id, version_no=1, is_current=True))   # маршрут v1
 
 
-make_crud(router, "/products", Product, ProductIn, ProductPatch, "product", after_create=_after_product, write_roles=CATALOG)
+def _product_before_delete(db, user, obj):
+    """Изделие удаляется вместе со своими версиями маршрута и операциями — если по нему нет живых заказов."""
+    order_cleanup.purge_dead_for(db, user.tenant_id, OrderLine.product_id, obj.id, "изделие")
+    rids = list(db.scalars(select(Routing.id).where(Routing.tenant_id == user.tenant_id, Routing.product_id == obj.id)))
+    if rids:
+        db.execute(delete(Operation).where(Operation.tenant_id == user.tenant_id, Operation.routing_id.in_(rids)))
+        db.execute(delete(Routing).where(Routing.tenant_id == user.tenant_id, Routing.id.in_(rids)))
+
+
+make_crud(router, "/products", Product, ProductIn, ProductPatch, "product", after_create=_after_product, write_roles=CATALOG,
+          before_delete=_product_before_delete)
 
 
 def routing_out(r: Routing, used: bool) -> dict:
@@ -636,6 +650,7 @@ def _ol_after_create(db, user, obj):
 
 
 def _ol_before_delete(db, user, obj):
+    order_cleanup.detach_plan(db, user.tenant_id, obj.id)         # из истории и недовыполнения заказ исчезает
     distribution.clear(db, user, obj.id)
     db.execute(delete(WorkerOrderLine).where(WorkerOrderLine.order_line_id == obj.id,
                                              WorkerOrderLine.tenant_id == user.tenant_id))
