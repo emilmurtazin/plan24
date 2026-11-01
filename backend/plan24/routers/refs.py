@@ -772,6 +772,9 @@ class SettingsPatch(BaseModel):
     shift_hours: Optional[float] = Field(None, gt=0, le=24)
     fix_group_start: Optional[bool] = None
     fact_confirmation: Optional[bool] = None
+    realistic_mode: Optional[bool] = None
+    min_chunk_share: Optional[float] = Field(None, ge=0.1, le=1)
+    max_tasks_per_day: Optional[int] = Field(None, ge=1, le=10)
     qualifications: Optional[list[str]] = Field(None, min_length=1, max_length=MAX_QUAL_LEVELS)
 
 

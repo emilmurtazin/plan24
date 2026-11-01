@@ -221,6 +221,7 @@ def plan(inp: PlanInput) -> PlanResult:
     priority_last_day: dict = {}
 
     emitted: dict = {}          # (id позиции, операция) -> число операций по дням плана; нужно для старта партиями
+    tasks_by: dict = {}         # (имя работника, день) -> {(id позиции, операция)}: что он делает в этот день (реалистичный режим)
     op_track: dict = {}         # (id позиции, операция) -> (сколько изделий готово для следующих, день окончания); для предшественников
 
     def mark(order_id, op_name, day, qty):
@@ -231,6 +232,7 @@ def plan(inp: PlanInput) -> PlanResult:
 
     def emit(day, order, op, give, w, reason, frozen=False):
         mark(order.id, op.name, day, give)
+        tasks_by.setdefault((w.name, day), set()).add((order.id, op.name))
         result_items.append(PlanItem(work_days[day], order.id, order.project, order.product,
                                      op.name, give, w.name, reason, frozen))
 
@@ -240,7 +242,21 @@ def plan(inp: PlanInput) -> PlanResult:
             pool = [w for w in candidates if w.free[day] > 0.01]
             if day == 0:
                 pool = [w for w in pool if w.name not in loaded_today_set]
-            pool.sort(key=lambda w: (-(w.free[day] * w.perf), -w.perf))
+            if cfg.focus:
+                # постоянство: сначала те, кто делал эту же операцию вчера, затем делавшие такую же операцию по другому заказу;
+                # внутри — по остатку дня. В день не больше max_tasks_per_day разных заданий.
+                key_task = (order.id, op.name)
+                pool = [w for w in pool if key_task in tasks_by.get((w.name, day), ())
+                        or len(tasks_by.get((w.name, day), ())) < cfg.max_tasks_per_day]
+
+                def sticky(w):
+                    prev = tasks_by.get((w.name, day - 1), ()) if day > 0 else ()
+                    if key_task in prev:
+                        return 0
+                    return 1 if any(t[1] == op.name for t in prev) else 2
+                pool.sort(key=lambda w: (sticky(w), -(w.free[day] * w.perf), -w.perf))
+            else:
+                pool.sort(key=lambda w: (-(w.free[day] * w.perf), -w.perf))
             chosen, per_section = [], {}              # не больше max_n исполнителей одного участка на операцию
             for w in pool:
                 if per_section.get(w.section, 0) < w.max_n:
@@ -263,6 +279,8 @@ def plan(inp: PlanInput) -> PlanResult:
                     give = min(give, math.floor(cap["fn"](day) - cap["base"] - cap["placed"] + EPS))
                 if give <= 0:
                     continue
+                if cfg.focus and give < remaining and give * one_op < cfg.min_chunk_share - EPS:
+                    continue                             # мелкий кусок, которым операция не заканчивается, не назначаем
                 if cap is not None:
                     cap["placed"] += give
                 spend_time(w, day, give * one_op)
@@ -415,6 +433,7 @@ def plan(inp: PlanInput) -> PlanResult:
                 for di, pi in pinned_by_pair.get((order.id, op.name), ()):
                     already_ops += pi.qty
                     mark(order.id, op.name, di, pi.qty)
+                    tasks_by.setdefault((pi.worker, di), set()).add((order.id, op.name))
                     result_items.append(PlanItem(work_days[di], order.id, order.project, order.product, op.name,
                                                  pi.qty, pi.worker, pi.reason, False))
                     spend = pi.qty / op.norm_per_day

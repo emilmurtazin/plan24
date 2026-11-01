@@ -161,6 +161,10 @@ class PlannerSettings(Base):
     shift_hours: Mapped[float] = mapped_column(Float, default=8)           # только для отображения
     fix_group_start: Mapped[bool] = mapped_column(Boolean, default=False)  # D-04: выкл. по умолчанию
     fact_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)  # FR-22a
+    # реалистичное назначение: работник продолжает начатое, не больше N заданий в день, без мелких кусков
+    realistic_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_chunk_share: Mapped[float] = mapped_column(Float, default=0.5)
+    max_tasks_per_day: Mapped[int] = mapped_column(Integer, default=2)
     snapshot_on: Mapped[Optional[date]] = mapped_column(Date)           # когда последний раз сохранялся снимок плана по дням
     qualifications: Mapped[list] = mapped_column(JSON, default=default_quals)   # названия уровней квалификации; число уровней = длина списка
     updated_by: Mapped[Optional[int]] = mapped_column(Integer)

@@ -199,3 +199,83 @@ def test_api_predecessors_validation_rename_delete_and_copy(org):
     org.patch(f"/operations/{sb}", json={"predecessors": []})
     v2 = org.post(f"/products/{pid}/routings").json()
     assert [o["predecessors"] for o in v2["operations"]] == [[]]                               # копируется в новую версию
+
+
+# ------------------------------------------------------------------ реалистичное назначение
+def run_orders(orders, workers, **cfg):
+    ops = {"P": (Operation("A", 10, sequence=1),)}
+    return plan(PlanInput(order_lines=tuple(orders), products=ops, workers=tuple(workers), facts=(),
+                          config=PlanConfig(today=DAYS[0], work_days=DAYS, cap_load=True, priority_strictness=0, **cfg)))
+
+
+def mk_orders(*specs):
+    return [OrderLine(id=str(i + 1), project="П", product="P", qty=q, due=DAYS[-1], priority=pr) for i, (q, pr) in enumerate(specs)]
+
+
+def tasks_per_worker_day(res):
+    out: dict = {}
+    for it in res.items:
+        out.setdefault((it.worker, it.date), set()).add(it.order_id)
+    return out
+
+
+def test_realistic_mode_limits_tasks_per_worker_per_day():
+    orders = mk_orders((3, 1), (3, 2), (3, 3), (3, 4))                 # четыре маленьких заказа на одного работника
+    legacy = tasks_per_worker_day(run_orders(orders, [Worker(1, "w1")]))
+    real = tasks_per_worker_day(run_orders(orders, [Worker(1, "w1")], focus=True, max_tasks_per_day=2))
+    assert max(len(v) for v in legacy.values()) >= 3                   # раньше день забивался кусочками всех заказов
+    assert max(len(v) for v in real.values()) <= 2
+
+
+def test_realistic_mode_does_not_assign_tiny_leftover_pieces():
+    orders = mk_orders((7, 1), (100, 2))                               # первый заказ занимает 0,7 дня, остаётся 0,3
+    legacy = run_orders(orders, [Worker(1, "w1")])
+    real = run_orders(orders, [Worker(1, "w1")], focus=True, min_chunk_share=0.5)
+    day0 = lambda r, oid: sum(i.qty for i in r.items if i.date == DAYS[0] and i.order_id == oid)
+    assert day0(legacy, "2") == 3 and day0(real, "2") == 0             # остаток дня 0,3 — мелкий кусок, второму заказу не отдаём
+    assert sum(i.qty for i in real.items if i.order_id == "2") == 100  # а работа в итоге вся распланирована
+
+
+def test_realistic_mode_finishing_piece_is_allowed_even_if_small():
+    r = run_orders(mk_orders((7, 1), (3, 2)), [Worker(1, "w1")], focus=True, min_chunk_share=0.5)
+    assert sum(i.qty for i in r.items if i.order_id == "2" and i.date == DAYS[0]) == 3      # заказ заканчивается этим куском
+
+
+def test_realistic_mode_keeps_workers_on_unfinished_tasks_on_datasets():
+    """На наборах данных работник реже бросает незаконченное задание; мелких кусков нет."""
+    import dataclasses
+    from test_planning import DATASETS, build_input
+    from collections import defaultdict
+    for name in ("furniture", "windows", "panels", "edge_strictness_levels"):
+        ds, today = DATASETS[name]
+        inp = build_input(ds, today, cap_load=True)
+        stats = []
+        for focus in (False, True):
+            res = plan(dataclasses.replace(inp, config=dataclasses.replace(inp.config, focus=focus)))
+            last, by = defaultdict(str), defaultdict(lambda: defaultdict(set))
+            for it in res.items:
+                last[(it.order_id, it.operation)] = max(last[(it.order_id, it.operation)], str(it.date))
+                by[it.worker][str(it.date)].add((it.order_id, it.operation))
+            cut = opps = 0
+            for w, days in by.items():
+                ds_ = sorted(days)
+                for i, d in enumerate(ds_[:-1]):
+                    for t in days[d]:
+                        if d < last[t]:
+                            opps += 1
+                            cut += t not in days[ds_[i + 1]]
+            stats.append(cut / (opps or 1))
+        assert stats[1] < stats[0], f"{name}: прерванных заданий {stats[0]:.2f} → {stats[1]:.2f}"
+
+
+def test_api_realistic_mode_settings_and_plan_params(full_org):
+    s = full_org.get("/settings").json()
+    assert s["realistic_mode"] is True and s["min_chunk_share"] == 0.5 and s["max_tasks_per_day"] == 2     # по умолчанию включён
+    assert full_org.patch("/settings", json={"min_chunk_share": 0.05}).status_code == 422
+    assert full_org.patch("/settings", json={"max_tasks_per_day": 0}).status_code == 422
+    r = full_org.patch("/settings", json={"realistic_mode": False, "max_tasks_per_day": 3}).json()
+    assert r["realistic_mode"] is False and r["max_tasks_per_day"] == 3
+    p = full_org.replan_all().json()
+    assert p["params"]["realistic_mode"] is False and p["params"]["max_tasks_per_day"] == 3
+    full_org.patch("/settings", json={"realistic_mode": True})
+    assert full_org.replan_all().json()["params"]["realistic_mode"] is True

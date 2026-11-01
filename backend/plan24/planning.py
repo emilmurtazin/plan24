@@ -226,7 +226,9 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         min_start_share=ov.get("min_start_share", st.min_start_share),
         priority_strictness=float(ov.get("priority_strictness", st.priority_strictness)),
         freeze_days=freeze_days, cap_load=True,
-        fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start))
+        fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start),
+        focus=ov.get("realistic_mode", st.realistic_mode), min_chunk_share=ov.get("min_chunk_share", st.min_chunk_share),
+        max_tasks_per_day=ov.get("max_tasks_per_day", st.max_tasks_per_day))
     inp = PlanInput(order_lines=tuple(porders), products=pproducts, workers=pworkers, facts=facts, config=cfg,
                     all_workers_perf={w.name: w.perf for w in workers_all}, all_workers_eff=eff_all, fixed_workers=fixed_names,
                     pinned=tuple(sorted(pinned_list, key=str)), pinned_days=pinned_days)
@@ -312,6 +314,8 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
              input_hash=input_hash(inp),
              params={"today": inp.config.today.isoformat(), "strictness": inp.config.priority_strictness,
                      "fix_group_start": inp.config.fix_group_start_after_deadline, "efficiency": inp.config.efficiency,
+                     "realistic_mode": inp.config.focus, "min_chunk_share": inp.config.min_chunk_share,
+                     "max_tasks_per_day": inp.config.max_tasks_per_day,
                      "scope_center_ids": (overrides or {}).get("scope_center_ids"),
                      "scope_center_id": ((overrides or {}).get("scope_center_ids") or [None])[0] if len((overrides or {}).get("scope_center_ids") or []) == 1 else None})
     db.add(p)

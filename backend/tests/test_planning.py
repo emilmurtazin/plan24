@@ -43,6 +43,7 @@ def test_db_plan_equals_reference_plan(env, name):
     seed_dataset(s, s.get(User, o.data["user"]["id"]), ds, 0)
     s.commit(); s.close()
     env.state["today"] = today
+    assert o.patch("/settings", json={"realistic_mode": False}).status_code == 200      # эталон — поведение скрипта, без реалистичного режима
     assert o.replan_all().status_code == 201
     ref = plan_rows_script_format(run_ref(build_input(ds, today, cap_load=True)))
     mine = db_rows(o.data["user"]["tenant"]["id"])

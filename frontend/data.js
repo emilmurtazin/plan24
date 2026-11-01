@@ -373,6 +373,10 @@ SCREENS.settings = async v => {
     { name: 'shift_hours', label: 'Длительность смены, ч', type: 'number', min: 1, max: 24, step: 0.5, help: 'Только для отображения.' },
     { name: 'fact_confirmation', label: 'Факт сборщика подтверждает бригадир', type: 'checkbox', help: 'Пока не подтверждён, факт виден как «ждёт подтверждения», но в расчёт идёт.' },
     { name: 'fix_group_start', label: 'Не начинать следующую операцию раньше окончания предыдущей у опаздывающих заказов', type: 'checkbox', help: 'Исправляет особенность прежнего скрипта (D-04). По умолчанию выключено — как в скрипте.' }];
+  const REAL = [
+    { name: 'realistic_mode', label: 'Реалистичное назначение', type: 'checkbox', help: 'Работник продолжает начатую операцию, а не меняется каждый день; в день у него ограниченное число заданий; мелкие куски (меньше заданной доли дня) не назначаются. Выключено — как в исходном скрипте: день каждого заполняется остатками любых операций.' },
+    { name: 'min_chunk_share', label: 'Минимальный кусок работы, доля дня', type: 'number', min: 0.1, max: 1, step: 0.05, help: 'Меньше этого кусок не назначается (кроме последнего куска, которым операция заканчивается). 0,5 — не меньше полдня.' },
+    { name: 'max_tasks_per_day', label: 'Максимум заданий в день на работника', type: 'number', min: 1, max: 10, step: 1, help: 'Сколько разных операций (или заказов) работник может делать за день.' }];
   const FALL = SECTION_FIELDS;                       // общие значения, по умолчанию действующие на участках
   const val = (c, f) => c[f.name] != null ? `<b>${num(c[f.name])}</b>` : `<span class="muted">общ. ${num(s[f.name])}</span>`;
   v.innerHTML = `<h2 style="margin:0 0 10px">Планирование</h2>
@@ -381,6 +385,7 @@ SCREENS.settings = async v => {
     ${centers.length ? `<div class="card flush scroll">${table([{ label: 'Участок', get: c => c.name }, ...SECTION_FIELDS.map(f => ({ label: f.short, cls: 'num', html: c => val(c, f) }))], centers, c => `<button class="small secondary" data-ce="${c.id}">Настроить</button>`)}</div>` : '<p class="muted">Участков пока нет — добавьте их в «Работники → Участки».</p>'}
     <h3>Общие настройки</h3>
     <div class="card" style="max-width:640px"><form id="sf" novalidate>${F.map(f => fieldHtml(f, s[f.name])).join('')}
+    <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Приближение плана к реальной работе</legend>${REAL.map(f => fieldHtml(f, s[f.name])).join('')}</fieldset>
     <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Рабочие дни недели</legend><div class="row">${WDN.map(([k, l]) => `<label class="chk"><input type="checkbox" name="wd" value="${k}" ${days.has(+k) ? 'checked' : ''}> ${l}</label>`).join('')}</div></fieldset>
     <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Значения по умолчанию для участков</legend>${FALL.map(f => fieldHtml(f, s[f.name])).join('')}</fieldset>
     <div class="err" id="se" role="alert"></div><button type="submit">Сохранить</button></form></div>`;
@@ -388,7 +393,7 @@ SCREENS.settings = async v => {
     title: 'Планирование: ' + c.name, fields: SECTION_FIELDS.map(f => ({ ...f, help: f.help + ` Пусто — общее значение (${num(s[f.name])}).` })), values: c,
     onSubmit: async (vals, m) => { await PATCH(`/work-centers/${c.id}`, { ...vals, version: c.version }); m.close(); toast('Настройки участка сохранены. Пересчитайте план.'); SCREENS.settings(v); } }); });
   $('#sf').onsubmit = async e => {
-    e.preventDefault(); const form = e.target, body = readForm(form, [...F, ...FALL]);
+    e.preventDefault(); const form = e.target, body = readForm(form, [...F, ...REAL, ...FALL]);
     for (const f of FALL) if (body[f.name] == null) delete body[f.name];                // общее значение не может быть пустым
     body.work_weekdays = $$('[name=wd]:checked', form).map(i => i.value).join(',');
     if (!body.work_weekdays) { $('#se').textContent = 'Отметьте хотя бы один рабочий день'; return; }
