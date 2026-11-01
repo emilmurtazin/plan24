@@ -242,6 +242,10 @@ def plan(inp: PlanInput) -> PlanResult:
             pool = [w for w in candidates if w.free[day] > 0.01]
             if day == 0:
                 pool = [w for w in pool if w.name not in loaded_today_set]
+            prefer = order.op_prefer.get(op.name) if order.op_prefer else None
+
+            def rank(w):
+                return 0 if prefer and w.name in prefer else 1 if prefer else 0       # назначенные вручную — первыми
             if cfg.focus:
                 # постоянство: сначала те, кто делал эту же операцию вчера, затем делавшие такую же операцию по другому заказу;
                 # внутри — по остатку дня. В день не больше max_tasks_per_day разных заданий.
@@ -254,9 +258,9 @@ def plan(inp: PlanInput) -> PlanResult:
                     if key_task in prev:
                         return 0
                     return 1 if any(t[1] == op.name for t in prev) else 2
-                pool.sort(key=lambda w: (sticky(w), -(w.free[day] * w.perf), -w.perf))
+                pool.sort(key=lambda w: (rank(w), sticky(w), -(w.free[day] * w.perf), -w.perf))
             else:
-                pool.sort(key=lambda w: (-(w.free[day] * w.perf), -w.perf))
+                pool.sort(key=lambda w: (rank(w), -(w.free[day] * w.perf), -w.perf))
             chosen, per_section = [], {}              # не больше max_n исполнителей одного участка на операцию
             for w in pool:
                 if per_section.get(w.section, 0) < w.max_n:

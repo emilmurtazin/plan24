@@ -279,3 +279,85 @@ def test_api_realistic_mode_settings_and_plan_params(full_org):
     assert p["params"]["realistic_mode"] is False and p["params"]["max_tasks_per_day"] == 3
     full_org.patch("/settings", json={"realistic_mode": True})
     assert full_org.replan_all().json()["params"]["realistic_mode"] is True
+
+
+# ------------------------------------------------------------------ назначенные вручную исполнители операции
+def test_manual_assignee_goes_first_without_changing_default_behaviour():
+    ws = [Worker(1, "w1"), Worker(2, "w2", perf=2)]
+    legacy = run_orders(mk_orders((10, 1)), ws)
+    assert {i.worker for i in legacy.items if i.date == DAYS[0]} >= {"w2"} and legacy.items[0].worker == "w2"      # лучший по производительности первым
+    ops = {"P": (Operation("A", 10, sequence=1),)}
+    order = OrderLine(id="1", project="П", product="P", qty=10, due=DAYS[-1], priority=1, op_prefer={"A": frozenset({"w1"})})
+    res = plan(PlanInput(order_lines=(order,), products=ops, workers=tuple(ws), facts=(),
+                         config=PlanConfig(today=DAYS[0], work_days=DAYS, cap_load=True)))
+    assert res.items[0].worker == "w1"                                  # назначенный — первым, хотя слабее
+    assert sum(i.qty for i in res.items) == 10                          # а работа всё равно распланирована целиком
+
+
+def test_strict_assignee_is_the_only_one_who_works_the_operation():
+    ws = [Worker(1, "w1"), Worker(2, "w2", perf=2)]
+    ops = {"P": (Operation("A", 10, sequence=1),)}
+    order = OrderLine(id="1", project="П", product="P", qty=30, due=DAYS[-1], priority=1, op_workers={"A": frozenset({"w1"})})
+    res = plan(PlanInput(order_lines=(order,), products=ops, workers=tuple(ws), facts=(),
+                         config=PlanConfig(today=DAYS[0], work_days=DAYS, cap_load=True)))
+    assert {i.worker for i in res.items} == {"w1"} and sum(i.qty for i in res.items) == 30
+
+
+def test_api_set_executors_and_plan_follows(full_org):
+    o = full_org
+    o.replan_all()
+    ol = o.get("/plan-grid/orders").json()["items"][0]["order_line_id"]
+    g = o.get("/plan-grid", params={"order_line_id": ol}).json()
+    op = next(x for x in g["operations"] if len(x["eligible"]) >= 2)
+    assert op["assignees"] == [] and op["assign_strict"] is True and op["section_ids"]
+    pick = op["eligible"][-1]
+    r = o.put("/plan-grid/executors", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [pick], "strict": True})
+    assert r.status_code == 200 and r.json()["assignees"] == [pick]
+    assert o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"][g["operations"].index(op)]["assignees"] == [pick]
+    o.patch("/settings", json={"freeze_days": 0})
+    o.post("/plans/replan", json={"work_center_ids": op["section_ids"]})
+    s = o.get("/plan-grid", params={"order_line_id": ol}).json()
+    who = {c["worker_id"] for cell in s["operations"][g["operations"].index(op)]["cells"].values() for c in cell}
+    assert who <= {pick}                                                  # «только он»: больше этой операцией никто не занят
+    # проверки: чужой участок, несуществующий работник, очистка
+    assert o.put("/plan-grid/executors", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [999999]}).status_code == 404
+    assert o.put("/plan-grid/executors", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": []}).json()["assignees"] == []
+    assert o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"][g["operations"].index(op)]["assignees"] == []
+
+
+def test_foreman_manages_only_own_section_executors(full_org):
+    o = full_org
+    o.replan_all()
+    me = o.get("/auth/me", "foreman").json()
+    mine = me["work_center_id"]
+    ols = o.get("/plan-grid/orders", "foreman").json()["items"]
+    assert ols
+    ol = ols[0]["order_line_id"]
+    g = o.get("/plan-grid", "foreman", params={"order_line_id": ol}).json()
+    op = g["operations"][0]
+    own = next(w for w in g["workers"] if w["center"] and w["id"] in op["eligible"])
+    r = o.put("/plan-grid/executors", "foreman", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [own["id"]], "strict": False})
+    assert r.status_code == 200 and r.json()["assign_strict"] is False
+    other = next(w for w in o.get("/workers").json()["items"] if w["work_center_id"] != mine and w["status"] == "available" and w["auto_plan"])
+    assert o.put("/plan-grid/executors", "foreman", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [other["id"]]}).status_code in (403, 404, 422)
+    # назначение руководителя на другой участок бригадир не стирает
+    cs = op["section_ids"]
+    if len(cs) > 1:
+        foreign = next(w["id"] for w in o.get("/workers").json()["items"] if w["work_center_id"] in cs and w["work_center_id"] != mine)
+        o.put("/plan-grid/executors", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [own["id"], foreign]})
+        o.put("/plan-grid/executors", "foreman", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": []})
+        left = o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"][0]["assignees"]
+        assert foreign in left and own["id"] not in left
+
+
+def test_worker_with_assignments_can_be_deleted(full_org):
+    o = full_org
+    o.replan_all()
+    ol = o.get("/plan-grid/orders").json()["items"][0]["order_line_id"]
+    op = next(x for x in o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"] if x["eligible"])
+    w = op["eligible"][0]
+    assert o.put("/plan-grid/executors", json={"order_line_id": ol, "operation_id": op["operation_id"], "worker_ids": [w]}).status_code == 200
+    r = o.delete(f"/workers/{w}")
+    assert r.status_code in (204, 409)                    # 409 — у работника есть факты/план; назначение при этом не мешает
+    if r.status_code == 204:
+        assert w not in next(x for x in o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"] if x["operation_id"] == op["operation_id"])["assignees"]

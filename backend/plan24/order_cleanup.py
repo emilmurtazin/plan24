@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from .models import (DayPlanSnapshot, ExtraTask, Fact, OrderLine, OrderLineOperation, PlanItem, WorkerOrderLine)
+from .models import (DayPlanSnapshot, ExtraTask, Fact, OperationAssignee, OrderLine, OrderLineOperation, PlanItem, WorkerOrderLine)
 
 
 def dead_ids(db: Session, tenant_id: int) -> set:
@@ -25,7 +25,7 @@ def purge(db: Session, tenant_id: int, ids: list) -> None:
     """Стереть позиции и всё, что на них ссылается (факты, строки планов, снимки, распределение, допуски)."""
     if not ids:
         return
-    for model in (Fact, PlanItem, DayPlanSnapshot, OrderLineOperation, WorkerOrderLine):
+    for model in (Fact, PlanItem, DayPlanSnapshot, OrderLineOperation, WorkerOrderLine, OperationAssignee):
         db.execute(delete(model).where(model.tenant_id == tenant_id, model.order_line_id.in_(ids)))
     db.execute(update(ExtraTask).where(ExtraTask.tenant_id == tenant_id, ExtraTask.order_line_id.in_(ids)).values(order_line_id=None))
     db.execute(delete(OrderLine).where(OrderLine.tenant_id == tenant_id, OrderLine.id.in_(ids)))

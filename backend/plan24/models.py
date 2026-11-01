@@ -265,6 +265,17 @@ class WorkerOrderLine(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
 
 
+class OperationAssignee(Base):
+    """Исполнитель операции позиции заказа, назначенный вручную (бригадиром или руководителем).
+    strict: True — операцию делают только назначенные; False — назначенные в первую очередь, остальных планировщик добавит при нехватке."""
+    __tablename__ = "operation_assignees"
+    order_line_id: Mapped[int] = mapped_column(ForeignKey("order_lines.id"), primary_key=True)
+    operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id"), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    strict: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class OrderLineOperation(Base):
     """Распределение операций позиции заказа по участкам: операция выполняется работниками назначенных участков.
     У операции может быть несколько участков. Нет строк = операция не распределена (ошибка планирования)."""

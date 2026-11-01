@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, object_session
 from .. import audit, distribution, order_cleanup
 from ..db import DB
 from ..deps import ALL, CATALOG, MANAGERS, READERS, STAFF, get_or_404, require, scoped
-from ..models import (MAX_QUAL_LEVELS, AuditLog, OrderLineOperation, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
+from ..models import (MAX_QUAL_LEVELS, AuditLog, OperationAssignee, OrderLineOperation, Fact, FactReason, Holiday, Operation, OrderLine, PlannerSettings, Product, Project,
                       Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine)
 from .crud import make_crud, row
 
@@ -170,9 +170,14 @@ def _worker_update(db, user, obj, data):
 
 # работники: руководители — все, бригадир — полный доступ к работникам своего участка (создание, правка, удаление, допуски, отсутствия);
 # перевести работника на другой участок бригадир не может — это право руководителя проекта
+def _worker_before_delete(db, user, obj):
+    """Удаляемый работник исчезает из назначенных исполнителей операций (ссылка не должна мешать удалению)."""
+    db.execute(delete(OperationAssignee).where(OperationAssignee.tenant_id == user.tenant_id, OperationAssignee.worker_id == obj.id))
+
+
 make_crud(router, "/workers", Worker, WorkerIn, WorkerPatch, "worker", fk={"work_center_id": WorkCenter},
           read_roles=READERS, write_roles=STAFF, row_scope=_worker_scope, row_check=_worker_check,
-          before_create=_worker_create, before_update=_worker_update)
+          before_create=_worker_create, before_update=_worker_update, before_delete=_worker_before_delete)
 
 
 class AbsenceIn(BaseModel):

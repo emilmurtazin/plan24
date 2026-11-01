@@ -167,7 +167,18 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
     const chip = mine()[mine().length - 1], q = +chip.querySelector('input.gq').value, who = chip.querySelector('.gn').textContent;
     if (!(q >= 1)) throw new Error('норма не подтянулась: ' + q);
     step(`«Назначение»: заказ целиком — ${opsN} операций × 7 дней; выбор работника «${who}» подтянул норму: ${q}`);
-    click(chip.querySelector('.gx')); await until(() => mine().length === had && $$('.gchip').length === total0, 'назначение снято');
+  // исполнитель операции целиком: выбор работника в строке операции, «только они», применение к плану
+  { const exSel = $('table.gridt .gex-add'); if (!exSel) throw new Error('в строке операции нет выбора исполнителя');
+    const exOpt = [...exSel.options].find(o => o.value); if (!exOpt) throw new Error('нет доступных исполнителей');
+    exSel.value = exOpt.value; exSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => $('table.gridt .xchip') && $('table.gridt .gex-strict input'), 'исполнитель операции назначен');
+    const exAp = await until(() => byText('table.gridt button', 'Применить к плану'), 'кнопка «Применить к плану»');
+    click(exAp); await until(() => /План обновлён с учётом исполнителей/.test($('#toast').textContent), 'план обновлён с учётом исполнителей');
+    await until(() => $('table.gridt .xchip'), 'исполнитель остался в строке операции');
+    step('исполнитель операции назначен одним выбором и применён к плану: ' + $('table.gridt .xchip').textContent.replace('×', '').trim());
+    click($('table.gridt .xchip button')); await until(() => !$('table.gridt .xchip'), 'исполнитель убран'); }
+    await until(() => mine().length === had + 1, 'ручное назначение осталось после применения исполнителей'); click(mine()[mine().length - 1].querySelector('.gx'));     // таблица перерисована — ищем кнопку заново
+    await until(() => mine().length === had && $$('.gchip').length === total0, 'назначение снято');
     step('«×» снимает назначение'); }
   click(byText('#drawer button', 'Дашборд')); click(byText('#drawer button', 'Выполнение')); await goExec('План на день'); await until(() => $$('.wcard').length, 'возврат к плану дня');
 

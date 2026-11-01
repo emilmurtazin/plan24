@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import audit, distribution, planning, snapshots
 from ..db import DB
 from ..deps import STAFF, get_or_404, get_today, require, scoped
-from ..models import (DayPin, ExtraTask, Fact, Operation, OrderLine, OrderLineOperation, PlanItem, PlannerSettings, Product, Project,
+from ..models import (DayPin, ExtraTask, Fact, OperationAssignee, Operation, OrderLine, OrderLineOperation, PlanItem, PlannerSettings, Product, Project,
                       User, WorkCenter, Worker, WorkerAbsence)
 from . import dayedit as de
 
@@ -137,6 +137,12 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
             {"item_id": it.id, "worker_id": it.worker_id, "worker": w.name if w else "?", "qty": it.qty, "locked": it.is_locked,
              "capacity": round(_capacity(op, w, eff(w)), 1) if w else None})
 
+    manual: dict = {}                   # операция -> ([id назначенных исполнителей], «только они»)
+    for a in db.scalars(select(OperationAssignee).where(OperationAssignee.tenant_id == user.tenant_id, OperationAssignee.order_line_id == ol.id)
+                        .order_by(OperationAssignee.worker_id)):
+        ids, _ = manual.get(a.operation_id, ([], a.strict))
+        ids.append(a.worker_id)
+        manual[a.operation_id] = (ids, a.strict)
     out_ops = []
     for op in ops:
         required = math.ceil(ol.qty * op.per_item - 1e-9)
@@ -152,7 +158,8 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
                         "over": max(0, done + planned - required),            # запланировано больше, чем нужно
                         "complete": done + planned >= required,               # весь объём выполнен или полностью в плане
                         "sections": sorted(centers[c] for c in cs if c in centers),
-                        "eligible": eligible, "distributed": bool(cs) or not has_centers,
+                        "eligible": eligible, "distributed": bool(cs) or not has_centers, "section_ids": sorted(cs),
+                        "assignees": manual.get(op.id, ([], True))[0], "assign_strict": manual.get(op.id, ([], True))[1],
                         "cells": {d.isoformat(): cells.get((op.id, d.isoformat()), []) for d in days}})
     return {"order": _label(db, ol), "start": start.isoformat(), "today": today.isoformat(), "efficiency": eff(), "plan_id": plan.id,
             "days": [{"date": d.isoformat(), "wd": WD[d.weekday()], "workday": planning.is_work_day(db, user.tenant_id, d), "past": d < today} for d in days],
@@ -160,6 +167,51 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
             "workers": [{"id": w.id, "name": w.name, "skill": w.skill, "perf": w.perf, "status": w.status, "center": centers.get(w.work_center_id),
                          "absent": sorted(absent.get(w.id, [])), "load": {d.isoformat(): round(loads.get((w.id, d), 0.0), 3) for d in days}}
                         for w in workers]}
+
+
+# ------------------------------------------------------------------ исполнители операции
+class ExecutorsIn(BaseModel):
+    order_line_id: int
+    operation_id: int
+    worker_ids: list[int] = Field(default_factory=list, max_length=30)
+    strict: bool = True                 # True — операцию делают только они; False — они в первую очередь, остальных добавит планировщик
+
+
+@router.put("/plan-grid/executors")
+def set_executors(body: ExecutorsIn, user: User = Depends(require(*STAFF)), db: Session = DB):
+    """Назначить исполнителей операции заказа (заменяет прежний список). Планировщик учтёт их при следующем перепланировании.
+    Бригадир управляет только работниками своего участка: назначения других участков, сделанные руководителем, остаются."""
+    ol = _order_or_404(db, user, body.order_line_id)
+    op = get_or_404(db, Operation, body.operation_id, user)
+    if op.routing_id != ol.routing_id:
+        raise HTTPException(404, "Операция не относится к этой позиции")
+    cs = _centers_of(db, ol.id, op.id)
+    has_centers = db.scalar(select(WorkCenter.id).where(WorkCenter.tenant_id == user.tenant_id).limit(1)) is not None
+    if user.role == "foreman" and user.work_center_id not in cs:
+        raise HTTPException(404, "У этой операции нет вашего участка")
+    wanted = list(dict.fromkeys(body.worker_ids))
+    for wid in wanted:
+        w = de._worker(db, user, wid)                       # бригадир — только свой участок
+        if has_centers and w.work_center_id not in cs:
+            raise HTTPException(422, f"{w.name}: участок работника не выполняет эту операцию")
+        if w.status != "available" or not w.auto_plan:
+            raise HTTPException(422, f"{w.name}: работник недоступен для автопланирования")
+        if w.skill < op.min_skill:
+            raise HTTPException(422, f"{w.name}: квалификации не хватает для этой операции")
+    mine = {w.id for w in db.scalars(scoped(Worker, user)) if user.role != "foreman" or w.work_center_id == user.work_center_id}
+    old = list(db.scalars(select(OperationAssignee).where(OperationAssignee.tenant_id == user.tenant_id,
+                                                          OperationAssignee.order_line_id == ol.id, OperationAssignee.operation_id == op.id)))
+    kept = [a for a in old if a.worker_id not in mine]       # чужие участки бригадир не трогает
+    for a in old:
+        if a.worker_id in mine:
+            db.delete(a)
+    db.flush()
+    for wid in wanted:
+        db.add(OperationAssignee(tenant_id=user.tenant_id, order_line_id=ol.id, operation_id=op.id, worker_id=wid, strict=body.strict))
+    for a in kept:                                           # режим «только они» общий для операции
+        a.strict = body.strict
+    audit.log(db, user, "order_line", ol.id, "set_executors", {"operation_id": op.id, "worker_ids": wanted, "strict": body.strict})
+    return {"operation_id": op.id, "assignees": sorted(set(wanted) | {a.worker_id for a in kept}), "assign_strict": body.strict}
 
 
 # ------------------------------------------------------------------ назначить / убрать

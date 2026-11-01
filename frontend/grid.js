@@ -30,6 +30,28 @@ SCREENS.grid = async v => {
     const w2 = $('.gridwrap', v); if (w2) w2.scrollLeft = scroll;
   };
   const wk = g => Object.fromEntries(g.workers.map(w => [w.id, w]));
+  const pending = new Set();           // операции, где исполнители изменены, а план ещё не пересчитан
+
+  /* Исполнитель операции: назначить конкретных работников на всю операцию заказа, без выбора по дням */
+  function executors(g, op) {
+    const W = wk(g), ids = op.assignees, mine = ids.map(id => W[id]).filter(Boolean), other = ids.length - mine.length;
+    const save = (list, strict) => run(() => PUT('/plan-grid/executors', { order_line_id: S.gridOrder, operation_id: op.operation_id, worker_ids: list, strict }).then(r => { pending.add(op.operation_id); return r; }), 'Исполнители сохранены');
+    const cand = op.eligible.map(id => W[id]).filter(w => w && !ids.includes(w.id) && w.status === 'available');
+    const add = gh('select', { class: 'gadd gex-add', 'aria-label': 'Назначить исполнителя: ' + op.name }, gh('option', { value: '' }, mine.length ? '+ ещё исполнитель' : '+ назначить исполнителя'),
+      cand.map(w => gh('option', { value: w.id }, `${w.name}${w.center ? ' · ' + w.center : ''}`)));
+    add.onchange = () => { if (add.value) save([...mine.map(w => w.id), +add.value], op.assign_strict); };
+    const strict = mine.length ? gh('label', { class: 'chk gex-strict', title: 'Включено: операцию делают только назначенные. Выключено: назначенные идут первыми, а при нехватке планировщик добавит остальных.' },
+      gh('input', { type: 'checkbox', checked: op.assign_strict, onchange: e => save(mine.map(w => w.id), e.target.checked) }), ' только они') : null;
+    const apply = pending.has(op.operation_id) ? gh('button', { class: 'small gex-apply', title: 'Перепланировать участок: назначенные исполнители будут учтены',
+      onclick: async () => {
+        try { await POST('/plans/replan', { work_center_ids: S.me.role === 'foreman' ? [S.me.work_center_id] : op.section_ids }); pending.clear(); S.plan = undefined; toast('План обновлён с учётом исполнителей'); await load(); }
+        catch (e) { toast(errText(e), true); }
+      } }, 'Применить к плану') : null;
+    return gh('div', { class: 'gex' },
+      mine.length ? gh('div', { class: 'gex-chips' }, mine.map(w => gh('span', { class: 'xchip', title: w.name }, w.name, gh('button', { 'aria-label': 'Убрать исполнителя ' + w.name, onclick: () => save(mine.filter(x => x.id !== w.id).map(x => x.id), op.assign_strict) }, '×')))) : null,
+      other ? gh('div', { class: 'gmeta', text: `ещё ${other} на других участках` }) : null,
+      cand.length ? add : (mine.length ? null : gh('div', { class: 'gmeta', text: 'нет доступных исполнителей' })), strict, apply);
+  }
 
   /* вызов с показом предупреждений и перерисовкой */
   const run = async (fn, okText) => {
@@ -85,7 +107,8 @@ SCREENS.grid = async v => {
           gh('div', { class: 'gmeta', text: `норма ${num(op.norm_per_day)}/день · нужно ${num(op.required)}` }),
           gh('div', { class: 'gmeta', text: `сделано ${num(op.done)} · в плане ${num(op.planned)}` }),
           note,
-          op.sections.length ? gh('div', { class: 'gmeta', text: op.sections.join(', ') }) : null),
+          op.sections.length ? gh('div', { class: 'gmeta', text: op.sections.join(', ') }) : null,
+          executors(g, op)),
         g.days.map(d => cell(g, op, d)));
     });
     v.replaceChildren(
@@ -94,7 +117,7 @@ SCREENS.grid = async v => {
           gh('b', { class: 'lrange', text: `${fmtD(g.days[0].date)} – ${fmtD(g.days[6].date)}` }), gh('button', { class: 'secondary small', 'aria-label': 'Неделя вперёд', onclick: () => shift(7) }, '›'),
           gh('button', { class: 'small secondary', onclick: () => { S.gridStart = null; load(); } }, 'Сегодня'))),
       gh('label', { class: 'f' }, 'Заказ', sel),
-      gh('p', { class: 'hint' }, 'Выберите работника в ячейке — подставится норма (с учётом производительности, остатка по заказу и свободной части дня), а день работника закрепится: перепланирование назначенное не изменит. Количество можно поправить. ⚠ — квалификация ниже требуемой. «×» снимает назначение (если у работника в этот день больше ничего нет, закрепление снимается). Прошедшие дни доступны только для просмотра.'),
+      gh('p', { class: 'hint' }, 'Выберите работника в ячейке — подставится норма (с учётом производительности, остатка по заказу и свободной части дня), а день работника закрепится: перепланирование назначенное не изменит. Количество можно поправить. Чтобы закрепить работника за операцией целиком, выберите его в строке операции («Исполнитель») и нажмите «Применить к плану». ⚠ — квалификация ниже требуемой. «×» снимает назначение (если у работника в этот день больше ничего нет, закрепление снимается). Прошедшие дни доступны только для просмотра.'),
       gh('div', { class: 'glegend' }, gh('span', { class: 'lg full' }, 'весь объём в плане'), gh('span', { class: 'lg over' }, 'запланировано больше нужного'), gh('span', { class: 'lg short' }, 'есть неназначенный остаток')),
       gh('div', { class: 'card flush gridwrap' }, gh('table', { class: 'gridt' }, head, rows)));
   }

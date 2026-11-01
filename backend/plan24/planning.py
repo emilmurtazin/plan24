@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import (DayPin, Fact, Holiday, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
+from .models import (DayPin, Fact, Holiday, OperationAssignee, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings,
                     Product, Project, Routing, User, WorkCenter, Worker, WorkerAbsence, WorkerOrderLine, utcnow)
 from . import snapshots
 from .planner import (PinnedItem, FactRow, Operation as POp, OrderLine as POrder, PlanConfig, PlanInput, Worker as PWorker,
@@ -105,6 +105,11 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     assigned: dict = defaultdict(lambda: defaultdict(set))          # order_line_id -> operation_id -> {work_center_id}
     for a in db.scalars(q(OrderLineOperation)):
         assigned[a.order_line_id][a.operation_id].add(a.work_center_id)
+    manual: dict = {}                    # (позиция, операция) -> ({id работников}, «только они»)
+    for a in db.scalars(q(OperationAssignee)):
+        ids, _ = manual.get((a.order_line_id, a.operation_id), (set(), a.strict))
+        ids.add(a.worker_id)
+        manual[(a.order_line_id, a.operation_id)] = (ids, a.strict)
     ctx = Ctx(worker_by_name={w.name: w for w in workers_all})
     pproducts, porders = {}, []
     for o in orders:
@@ -128,9 +133,23 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         if has_centers:
             op_workers = {op.name: frozenset(w.name for w in avail if w.work_center_id in assigned[o.id][op.id])
                           for op in routings[o.routing_id].operations if assigned[o.id].get(op.id)}
+        # исполнители, назначенные вручную: «только они» сужают круг работников операции, «в первую очередь» — сортируют
+        op_prefer = {}
+        for op in routings[o.routing_id].operations:
+            who = manual.get((o.id, op.id))
+            if not who:
+                continue
+            got = frozenset(w.name for w in avail if w.id in who[0])
+            if who[1]:
+                if op_workers is None:
+                    op_workers = {x.name: frozenset(w.name for w in avail) for x in routings[o.routing_id].operations}
+                op_workers[op.name] = got
+            elif got:
+                op_prefer[op.name] = got
         porders.append(POrder(id=key, project=projects[o.project_id].name, product=pk, qty=o.qty, due=o.due_date,
                               priority=float(o.priority),
-                              allowed_workers=None if len(names) == len(avail) else names, op_workers=op_workers))
+                              allowed_workers=None if len(names) == len(avail) else names, op_workers=op_workers,
+                              op_prefer=op_prefer or None))
     prod_key_of = {ctx.key_by_order_id[o.id]: pkey(o) for o in orders}
 
     # настройки участков: у работника — значения его участка, а если не заданы — общие (из PlannerSettings)

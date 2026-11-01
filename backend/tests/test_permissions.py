@@ -47,6 +47,7 @@ CASES = [
     ("GET", "/plan-grid?order_line_id=999999", None, STAFF),
     ("POST", "/plan-grid/assign", {"order_line_id": 999999, "operation_id": 1, "plan_date": "2099-01-01", "worker_id": 1}, STAFF),
     ("DELETE", "/plan-grid/assign/999999", None, STAFF),
+    ("PUT", "/plan-grid/executors", {"order_line_id": 999999, "operation_id": 1, "worker_ids": []}, STAFF),
     ("POST", "/plan-day/workers", {"name": "Матрица-врем", "work_center_id": 1}, STAFF),
     ("POST", "/extra-tasks", {"plan_date": "2099-01-01", "worker_id": 1, "title": "x", "hours": 1}, STAFF),
     ("PATCH", "/extra-tasks/999999", {"title": "y"}, STAFF),
