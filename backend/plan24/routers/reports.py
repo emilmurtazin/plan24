@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import dashboard as dashboard_service
-from .. import distribution, order_status, reports_service, snapshots
+from .. import distribution, order_status, progress, reports_service, snapshots
 from ..db import DB
 from ..deps import READERS, STAFF, ALL, get_or_404, get_today, require, scoped
 from ..models import (Fact, Operation, OrderLine, Plan, PlanItem, Product, Project, User, WorkCenter, Worker)
@@ -51,10 +51,10 @@ def status(user: User = Depends(require(*READERS)), db: Session = DB, today: dat
     p = _active(db, user)
     if not p:
         return {"plan_id": None, "rows": []}
-    rows = _own_rows(db, user, p.summary.get("status", []))
+    rows, _ = progress.refresh_rows(db, user.tenant_id, _own_rows(db, user, p.summary.get("status", [])))   # свежий % выполнения, без удалённых
     idle = order_status.idle_by_order(db, user, today, [r["order_line_id"] for r in rows if r.get("order_line_id")],
                                       user.work_center_id if user.role == "foreman" else None)
-    rows = [{**r, "progress": r.get("progress", 0.0), "idle_pct": (idle.get(r.get("order_line_id")) or {}).get("pct")} for r in rows]
+    rows = [{**r, "idle_pct": (idle.get(r.get("order_line_id")) or {}).get("pct")} for r in rows]
     return {"plan_id": p.id, "created_at": p.created_at.isoformat(), "rows": rows}
 
 

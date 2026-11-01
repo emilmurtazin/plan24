@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import distribution, order_cleanup, order_status
+from . import distribution, order_cleanup, order_status, progress as progress_calc
 from .models import (DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Routing,
                      User, WorkCenter, Worker)
 
@@ -56,11 +56,8 @@ def build(db: Session, user: User, today: date) -> dict:
     if own is not None:
         mine = distribution.order_ids_of_center(db, user, own)
         rows = [r for r in rows if r.get("order_line_id") in mine]
+    rows, prog = progress_calc.refresh_rows(db, t, rows)        # свежий % выполнения; удалённые заказы убраны; готовые — «Готово»
     by_status = Counter(r["status"] for r in rows)
-    ol_ids = [r["order_line_id"] for r in rows]
-    prog = _progress(db, t, ol_ids)
-    for r in rows:
-        r["progress"] = prog["per_order"].get(r["order_line_id"], 0.0)
     risk = sorted((r for r in rows if r["status"] == "Риск опоздания"), key=lambda r: (r.get("due") or "9999"))
     soon = sorted((r for r in rows if r["status"] != "Готово" and r.get("due")), key=lambda r: r["due"])[:5]
 
@@ -76,18 +73,71 @@ def build(db: Session, user: User, today: date) -> dict:
     reasons = _reasons(db, t, today, wcenter, cname, own)
     # ---------- потребность в ресурсах ----------
     resources = _resources(db, user, rows, risk, load, sections, workers, today)
+    missing = missing_fact_summary(db, user, today)
+    summary = _summary(rows, prog, kpi, under, resources, missing, reasons, today)
 
     return {
-        "plan_id": plan.id if plan else None, "today": today.isoformat(),
-        "progress": {"percent": prog["percent"], "done": prog["done"], "required": prog["required"], "orders": len(rows)},
+        "plan_id": plan.id if plan else None, "today": today.isoformat(), "summary": summary,
+        "progress": {"percent": prog["percent"], "done": prog["done"], "required": prog["required"], "orders": len(rows),
+                     "done_work": round(prog["done_work"], 1), "total_work": round(prog["total_work"], 1)},
         "kpi": kpi, "orders_month": orders_month,
-        "missing_fact": missing_fact_summary(db, user, today),
+        "missing_fact": missing,
         "by_status": dict(by_status), "risk": risk[:8], "soonest": soon,
         "workers": _workers(workers, sections, quals, cname),
         "resources": resources, "reasons": reasons, "load": load, "underperformance": under,
         "week_peak_load": max([v for s in load["series"] for v in s["values"] if v is not None], default=0),
         "loaded_today": plan.summary.get("loaded_today", []) if plan else [],
     }
+
+
+# ------------------------------------------------------------------ сводка для руководителя
+def _fmt(d: str) -> str:
+    y, m, dd = d.split("-")
+    return f"{dd}.{m}"
+
+
+def _summary(rows: list, prog: dict, kpi: dict, under: dict, resources: dict, missing: dict, reasons: list, today: date) -> dict:
+    """Главные цифры и список «Требует внимания» — то, что руководителю нужно увидеть первым."""
+    active = [r for r in rows if r["status"] not in ("Готово", "Нет операций")]
+    on_track = sum(1 for r in active if r["status"] == "В работе")
+    at_risk = sum(1 for r in active if r["status"] == "Риск опоздания")
+    no_plan = sum(1 for r in active if r["status"] == "Нет плана")
+    load = kpi.get("load_3m")
+    attention: list = []
+    late = []
+    for r in active:
+        if r["status"] == "Риск опоздания" and r.get("due") and r.get("forecast"):
+            late.append(((date.fromisoformat(r["forecast"]) - date.fromisoformat(r["due"])).days, r))
+    late.sort(key=lambda x: (-x[0], x[1].get("due") or ""))
+    for days, r in late[:5]:
+        attention.append({"kind": "late", "level": "high", "order_line_id": r["order_line_id"],
+                          "title": f"Заказ {r['id']} · {r['product']}", "progress": r.get("progress", 0.0),
+                          "text": f"Позже срока на {days} дн.: срок {_fmt(r['due'])}, прогноз {_fmt(r['forecast'])}"})
+    for r in [r for r in active if r["status"] == "Нет плана"][:2]:
+        attention.append({"kind": "noplan", "level": "high", "order_line_id": r["order_line_id"],
+                          "title": f"Заказ {r['id']} · {r['product']}", "progress": r.get("progress", 0.0),
+                          "text": "Не помещается в горизонт планирования или нет подходящих работников"})
+    for s in sorted(resources.get("sections", []), key=lambda s: -(s.get("add_workers") or 0)):
+        if s.get("add_workers"):
+            attention.append({"kind": "resource", "level": "medium", "section_id": s["section_id"],
+                              "title": f"Участок «{s['section']}»: нужно +{s['add_workers']} чел.",
+                              "text": "Чтобы закончить заказы в риске к сроку при текущих нормах"})
+        if sum(1 for a in attention if a["kind"] == "resource") >= 2:
+            break
+    if missing.get("days"):
+        attention.append({"kind": "facts", "level": "medium", "first": missing["first"],
+                          "title": f"Не внесён факт: {missing['tasks']} заданий за {missing['days']} дн.",
+                          "text": f"Начиная с {_fmt(missing['first'])}"})
+    rep = next((r for r in reasons if r["repeating"]), None)
+    if rep:
+        attention.append({"kind": "reason", "level": "low", "title": f"Повторяется причина: {rep['reason']}",
+                          "text": f"{rep['count']} раз за 90 дней, последний — {_fmt(rep['last_date'])}"})
+    return {"active": len(active), "done": sum(1 for r in rows if r["status"] == "Готово"),
+            "on_track": on_track, "at_risk": at_risk, "no_plan": no_plan,
+            "on_time_pct": round(on_track / len(active) * 100) if active else None,
+            "progress_pct": prog["percent"], "work_left_days": round(max(0.0, prog["total_work"] - prog["done_work"]), 1),
+            "load_pct": load, "load_state": None if load is None else "over" if load >= 100 else "high" if load >= 85 else "ok",
+            "adherence": under.get("adherence"), "attention": attention[:8]}
 
 
 # ------------------------------------------------------------------ части
@@ -251,8 +301,15 @@ def _underperformance(db: Session, t: int, today: date, centers: dict, own) -> d
     series = [{"section_id": i, "section": centers.get(i, "Без участка"), "planned": [round(x, 1) for x in planned[i]],
                "under": [round(x, 1) for x in under[i]],
                "percent": [round(u / p * 100, 1) if p else None for u, p in zip(under[i], planned[i])]} for i in ids]
+    tot_p = [sum(planned[i][k] for i in ids) for k in range(WEEKS)]
+    tot_u = [sum(under[i][k] for i in ids) for k in range(WEEKS)]
+    last_p, last_u = sum(tot_p[-4:]), sum(tot_u[-4:])                  # последние 4 недели и 4 недели до них
+    prev_p, prev_u = sum(tot_p[-8:-4]), sum(tot_u[-8:-4])
+    adherence = {"percent": round(100 - last_u / last_p * 100, 1) if last_p else None,
+                 "prev_percent": round(100 - prev_u / prev_p * 100, 1) if prev_p else None}
     return {"weeks": [w.isoformat() for w in weeks], "series": series, "since": first.isoformat() if first else None,
-            "has_data": bool(snaps)}
+            "has_data": bool(snaps), "total_percent": [round(u / p * 100, 1) if p else None for u, p in zip(tot_u, tot_p)],
+            "adherence": adherence}
 
 
 def _reasons(db: Session, t: int, today: date, wcenter: dict, cname: dict, own) -> list:

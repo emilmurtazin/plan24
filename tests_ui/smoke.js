@@ -80,16 +80,18 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   // --- пустое состояние и демо ---
   await until(() => byText('h1', 'Начнём'), 'онбординг'); step('пустая организация → онбординг');
   click($('#demo'));
-  await until(() => $$('.kpi').length >= 5, 'обзор с KPI', 15000);
-  for (const t of ['проектов в работе', 'проектов в очереди', 'проектов с риском срыва сроков', 'работников с заданиями', 'загрузка на ближайшие 3 месяца']) if (!$$('.kpi').some(k => k.textContent.includes(t))) throw new Error('нет показателя «' + t + '»');
-  if ($$('.kpi').length !== 5) throw new Error('показателей должно быть 5, а их ' + $$('.kpi').length);
+  await until(() => $$('.tile').length >= 4, 'обзор: главные показатели', 15000);
+  for (const t of ['Заказы в срок', 'Выполнение', 'Загрузка', 'Исполнение плана']) if (!$$('.tile').some(k => k.textContent.includes(t))) throw new Error('нет показателя «' + t + '»');
+  if ($$('.tile').length !== 4) throw new Error('главных показателей должно быть 4, а их ' + $$('.tile').length);
   if (/уже загружен|загружены сегодня/i.test($('#view').textContent)) throw new Error('сообщение о загруженных сегодня должно быть убрано');
-  if ($$('#view h2').filter(x => x.textContent.includes('Статус заказов')).length !== 1 || $$('#view .card table').length < 1) throw new Error('нужна одна таблица статуса заказов');
+  if ($$('#view h2').filter(x => x.textContent.includes('Ближайшие сроки')).length !== 1) throw new Error('нужен один блок «Ближайшие сроки»');
   if ($('#rp.hact') === null || $('#view #rp')) throw new Error('кнопка «Перепланировать» должна быть только в шапке');
-  step('демо загружено, план построен, KPI: ' + $$('.kpi').map(k => k.textContent.replace(/\s+/g, ' ')).join(' / '));
-  for (const h of ['Статус заказов', 'Потребность в ресурсах', 'Повторяющиеся проблемы и причины отклонений', 'Работники', 'Загрузка участков на 3 месяца вперёд', 'Недовыполнение плана по участкам за 3 месяца']) if (!$$('#view h2').some(x => x.textContent.includes(h))) throw new Error('на дашборде нет раздела «' + h + '»');
+  step('демо загружено, план построен, показатели: ' + $$('.tile').map(k => k.textContent.replace(/\s+/g, ' ').slice(0, 70)).join(' / '));
+  for (const h of ['Требует внимания', 'Ближайшие сроки', 'Загрузка участков по неделям', 'Исполнение плана', 'Потребность в ресурсах', 'Повторяющиеся проблемы и причины отклонений', 'Работники', 'Загрузка участков на 3 месяца вперёд', 'Недовыполнение плана по участкам за 3 месяца']) if (!$$('#view h2').some(x => x.textContent.includes(h))) throw new Error('на дашборде нет раздела «' + h + '»');
+  if (!$$('#view .heat .heat-c').length) throw new Error('нет тепловой карты загрузки участков');
+  if (!$('#view details.more') || $('#view details.more').open) throw new Error('подробности должны быть свёрнуты по умолчанию');
   if (!/По участкам/.test($('#view').textContent) || !/По квалификациям/.test($('#view').textContent)) throw new Error('нет таблиц работников по участкам и квалификациям');
-  const loadSvg = $('#view svg.chart'); if (!loadSvg || $$('#view svg.chart path').length < 2) throw new Error('нет графика загрузки по участкам (линии по каждому участку)');
+  const loadSvg = $('#view svg.chart'); if (!loadSvg || $$('#view svg.chart path').length < 2) throw new Error('нет графика загрузки по участкам (линии по каждому участку) в разделе «Подробнее»');
   if (!/Данные таблицей/.test($('#view').textContent)) throw new Error('у графика нет таблицы с данными');
   step('дашборд: все разделы на месте; график загрузки — линий ' + $$('#view svg.chart path').length + ', узлов ' + $$('#view svg.chart circle').length + ', графики недовыполнения: ' + (/Пока нет данных за прошедшие дни/.test($('#view').textContent) ? 'истории ещё нет (как и должно быть)' : 'есть'));
 

@@ -15,7 +15,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import distribution
+from . import distribution, progress
 from .models import (DayPlanSnapshot, Fact, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings, Product,
                      Project, Routing, User, WorkCenter, Worker)
 
@@ -172,8 +172,7 @@ def build(db: Session, user: User, ol: OrderLine, today: date) -> dict:
             "bottleneck_critical": bool(is_b and order_late), "late": late, "problems": problems, "recommendations": recs,
             "staffing": staffing,
         })
-    req = sum(c["required"] for c in calc) or 1
-    prog = sum(min(c["done"], c["required"]) for c in calc) / req
+    prog = progress.order_progress(ol.qty, ops, {c["op"].id: c["done"] for c in calc})["percent"] / 100
     product, project = db.get(Product, ol.product_id), db.get(Project, ol.project_id)
     return {
         "plan_id": plan.id if plan else None,
