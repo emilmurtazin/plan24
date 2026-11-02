@@ -122,3 +122,26 @@ def test_plan_adherence_over_last_weeks(full_org):
     o.post("/facts", json={"fact_date": day.isoformat(), "order_line_id": oid, "operation_id": op, "worker_id": w, "qty": 5})
     a = o.get("/reports/overview").json()["summary"]["adherence"]
     assert a["percent"] == 50.0 and a["prev_percent"] is None
+
+
+def test_people_today_by_company_and_section(full_org):
+    o = full_org
+    o.replan_all()
+    p = o.get("/reports/overview").json()["people_today"]
+    allw = p["all"]
+    assert allw["total"] == len(o.get("/workers").json()["items"]) and p["has_plan"]
+    assert allw["with_tasks"] + allw["without_tasks"] + allw["off"] == allw["total"]
+    assert allw["with_tasks"] == o.get("/reports/overview").json()["kpi"]["workers_with_tasks"]       # то же число, что и в KPI
+    secs = p["by_section"]
+    assert secs and sum(s["total"] for s in secs) == allw["total"] and sum(s["with_tasks"] for s in secs) == allw["with_tasks"]
+    assert all(s["with_tasks"] <= s["total"] for s in secs)
+    # отсутствующий сегодня не ждёт заданий и учитывается отдельно
+    w = o.get("/workers").json()["items"][0]
+    before = p["all"]["off"]
+    assert o.post("/absences", json={"worker_id": w["id"], "date_from": TODAY.isoformat(), "date_to": TODAY.isoformat(), "reason": "отпуск"}).status_code in (200, 201)
+    assert o.get("/reports/overview").json()["people_today"]["all"]["off"] == before + 1
+
+
+def test_people_today_for_empty_org(org):
+    p = org.get("/reports/overview").json()["people_today"]
+    assert p["all"] == {"total": 0, "with_tasks": 0, "off": 0, "without_tasks": 0} and p["by_section"] == [] and p["has_plan"] is False

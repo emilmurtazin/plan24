@@ -76,6 +76,21 @@ function tilesHtml(sm) {
   return `<div class="tiles">${t1}${t2}${t3}${t4}</div>`;
 }
 
+/* работники с заданиями на сегодня: по компании и по каждому участку */
+function peopleHtml(P) {
+  const a = P && P.all;
+  if (!a || !a.total) return '';
+  const sec = P.by_section.map(s => `<div class="pp-s" title="${esc(s.section)}: заданий на сегодня у ${s.with_tasks} из ${s.total} работников${s.off ? ', не работают: ' + s.off : ''}">
+    <div class="pp-sh"><b>${esc(s.section)}</b><span><b>${s.with_tasks}</b> из ${s.total}</span></div>
+    <div class="bar"><i style="width:${s.total ? s.with_tasks / s.total * 100 : 0}%;background:var(--blue)"></i></div>
+    <small class="muted">${s.off ? 'не работают: ' + s.off : '&nbsp;'}</small></div>`).join('');
+  return `<div class="card people"><div class="pp-main"><h2>Работники сегодня</h2>
+    <div class="tile-big">${a.with_tasks}<small> из ${a.total}</small></div>
+    <div class="tile-sub">имеют задания на сегодня${P.has_plan ? '' : ' · план ещё не построен'}</div>
+    <div class="chips">${a.off ? `<span class="chip-s s-amber">не работают: ${a.off}</span>` : ''}${a.without_tasks ? `<span class="chip-s s-red">без задания: ${a.without_tasks}</span>` : ''}</div></div>
+    <div class="pp-grid">${sec}</div></div>`;
+}
+
 function attentionHtml(sm) {
   const items = sm.attention || [];
   if (!items.length) return `<div class="card"><h2>Требует внимания</h2><div class="allgood"><span>✓</span><div><b>Всё под контролем</b><small>заказы укладываются в сроки, невыполненных заданий нет</small></div></div></div>`;
@@ -129,7 +144,7 @@ function adherenceHtml(U, reasons) {
 async function dashboardView(plan) {
   const d = await GET('/reports/overview'), sm = d.summary, w = d.workers;
   const R = d.resources, L = d.load, U = d.underperformance;
-  let h = `<div class="dash"><div class="dash-h"><h1>Обзор производства</h1><span class="muted">${fmtDY(d.today)}${plan && plan.created_at ? ' · план от ' + fmtDY(plan.created_at) : ''}</span></div>${tilesHtml(sm)}
+  let h = `<div class="dash"><div class="dash-h"><h1>Обзор производства</h1><span class="muted">${fmtDY(d.today)}${plan && plan.created_at ? ' · план от ' + fmtDY(plan.created_at) : ''}</span></div>${tilesHtml(sm)}${peopleHtml(d.people_today)}
     <div class="dash-2">${attentionHtml(sm)}${soonHtml(d)}</div>
     <div class="dash-2">${heatHtml(L)}${adherenceHtml(U, d.reasons)}</div>
     <details class="more" id="more"><summary>Подробнее: ресурсы, причины, работники, графики по участкам</summary><div class="more-body">`;

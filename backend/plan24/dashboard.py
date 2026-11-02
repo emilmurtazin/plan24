@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from . import distribution, order_cleanup, order_status, progress as progress_calc
 from .models import (DayPlanSnapshot, ExtraTask, Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Routing,
-                     User, WorkCenter, Worker)
+                     User, WorkCenter, Worker, WorkerAbsence)
 
 WEEKS = 13                      # ≈ 3 месяца
 MONTH_DAYS = 30                 # окно «Статуса заказов» на дашборде: плановый срок заверш. — ближайший месяц
@@ -84,6 +84,7 @@ def build(db: Session, user: User, today: date) -> dict:
         "missing_fact": missing,
         "by_status": dict(by_status), "risk": risk[:8], "soonest": soon,
         "workers": _workers(workers, sections, quals, cname),
+        "people_today": _people_today(db, t, plan, today, workers, sections, cname),
         "resources": resources, "reasons": reasons, "load": load, "underperformance": under,
         "week_peak_load": max([v for s in load["series"] for v in s["values"] if v is not None], default=0),
         "loaded_today": plan.summary.get("loaded_today", []) if plan else [],
@@ -149,6 +150,33 @@ def missing_fact_summary(db: Session, user: User, today: date) -> dict:
             "last": days[-1]["date"] if days else None}
 
 
+def _busy_today(db: Session, t: int, plan: Optional[Plan], today: date) -> set:
+    """Работники, у которых на сегодня есть задание: строка плана или работа вне перечня."""
+    busy = set()
+    if plan:
+        busy |= {w for (w,) in db.execute(select(PlanItem.worker_id).where(
+            PlanItem.plan_id == plan.id, PlanItem.plan_date == today, PlanItem.qty > 0).distinct())}
+    busy |= {w for (w,) in db.execute(select(ExtraTask.worker_id).where(
+        ExtraTask.tenant_id == t, ExtraTask.plan_date == today).distinct())}
+    return busy
+
+
+def _people_today(db: Session, t: int, plan: Optional[Plan], today: date, workers: list, sections: list, cname: dict) -> dict:
+    """Сколько работников из скольких получили задания на сегодня: по компании и по каждому участку.
+    «Не работают сегодня» — отпуск, больничный, отсутствие или недоступный статус: они входят в «всего», но заданий не ждут."""
+    absent_ids = {w for (w,) in db.execute(select(WorkerAbsence.worker_id).where(
+        WorkerAbsence.tenant_id == t, WorkerAbsence.date_from <= today, WorkerAbsence.date_to >= today))}
+    busy = _busy_today(db, t, plan, today)
+
+    def cnt(ws):
+        off = [w for w in ws if w.status != "available" or w.id in absent_ids]
+        return {"total": len(ws), "with_tasks": sum(1 for w in ws if w.id in busy), "off": len(off),
+                "without_tasks": sum(1 for w in ws if w.id not in busy and w not in off)}
+    ids = [s["id"] for s in sections] + ([NO_SECTION] if any(w.work_center_id is None for w in workers) else [])
+    return {"all": cnt(workers), "has_plan": plan is not None,
+            "by_section": [{"section_id": i, "section": cname[i], **cnt([w for w in workers if (w.work_center_id or NO_SECTION) == i])} for i in ids]}
+
+
 def _kpi(db: Session, t: int, rows: list, per_order: dict, plan: Optional[Plan], today: date, workers: list, own) -> dict:
     """Пять показателей дашборда.
 
@@ -171,13 +199,7 @@ def _kpi(db: Session, t: int, rows: list, per_order: dict, plan: Optional[Plan],
     queued = projects - started
 
     wids = {w.id for w in workers}
-    busy = set()
-    if plan:
-        busy |= {w for (w,) in db.execute(select(PlanItem.worker_id).where(
-            PlanItem.plan_id == plan.id, PlanItem.plan_date == today, PlanItem.qty > 0).distinct())}
-    busy |= {w for (w,) in db.execute(select(ExtraTask.worker_id).where(
-        ExtraTask.tenant_id == t, ExtraTask.plan_date == today).distinct())}
-    busy &= wids
+    busy = _busy_today(db, t, plan, today) & wids
 
     load_pct, horizon = None, None
     lm = (plan.summary.get("load") if plan else None) or {}

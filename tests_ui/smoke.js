@@ -82,6 +82,7 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click($('#demo'));
   await until(() => $$('.tile').length >= 4, 'обзор: главные показатели', 15000);
   for (const t of ['Заказы в срок', 'Выполнение', 'Загрузка', 'Исполнение плана']) if (!$$('.tile').some(k => k.textContent.includes(t))) throw new Error('нет показателя «' + t + '»');
+  if (!$('#view .people') || !/\d+\s*из\s*\d+/.test($('#view .people .tile-big').textContent) || !$$('#view .people .pp-s').length) throw new Error('нет блока «Работники сегодня» (всего и по участкам)');
   if ($$('.tile').length !== 4) throw new Error('главных показателей должно быть 4, а их ' + $$('.tile').length);
   if (/уже загружен|загружены сегодня/i.test($('#view').textContent)) throw new Error('сообщение о загруженных сегодня должно быть убрано');
   if ($$('#view h2').filter(x => x.textContent.includes('Ближайшие сроки')).length !== 1) throw new Error('нужен один блок «Ближайшие сроки»');

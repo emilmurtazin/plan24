@@ -312,3 +312,10 @@ details.more>summary::-webkit-details-marker{display:none}details.more>summary::
 .gex-add{max-width:100%}.gex-strict{font-size:12px;color:var(--muted)}.gex-strict input{min-height:0;width:auto}
 .gex-apply{min-height:26px;padding:0 10px;font-size:12px}
 table.gridt .gop{width:200px}
+
+/* работники сегодня */
+.dash .card.people{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:12px 28px;align-items:center;margin-bottom:14px}
+.pp-main h2{margin-bottom:6px}.pp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px 22px}
+.pp-sh{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:4px}.pp-sh b:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pp-sh span{white-space:nowrap;color:var(--muted)}.pp-sh span b{color:var(--ink)}
+.pp-s .bar{margin:0 0 3px;height:8px}.pp-s small{font-size:12px}
+@media (max-width:900px){.dash .card.people{grid-template-columns:1fr}}
