@@ -230,17 +230,19 @@ async function openRouting(product, selId, onClose) {
       ? (cand.length ? `<div class="qpl">${cand.map(x => `<label class="chip"><input type="checkbox" data-pc value="${esc(x.name)}" ${sel.has(x.name) ? 'checked' : ''}><span>${esc(x.name)}</span></label>`).join('')}</div>${sel.size ? '' : '<div class="muted qpn">ничего не выбрано — стартует сразу</div>'}` : '<div class="muted qpn">нет операций с меньшим порядком — стартует сразу</div>') : ''}</div>`;
   };
   const pctCell = o => `<span class="qpct"><input class="inl" type="number" min="1" max="100" step="any" placeholder="100" value="${o.start_after_pct ?? ''}" data-pct="${o.id}" aria-label="Партия, %: ${esc(o.name)}"> %</span>`;
-  const m = modal(`<h2>${esc(product.name)}: версии и операции</h2>
+  const v = $('#view'); S.nav++;                            // маршрут открывается на весь экран, а не окном поверх каталога
+  v.innerHTML = `<div class="rt-page"><div class="rt-top"><button class="secondary small" data-x>← К изделиям</button><span class="muted">Каталог изделий</span></div><h2 class="rt-title">${esc(product.name)}: версии и операции</h2>
     <div class="row" style="margin-bottom:10px">${rts.map(r => `<button class="small ${r.id === cur.id ? '' : 'secondary'}" data-v="${r.id}">${esc(verLabel(r))}${r.is_current ? ' · текущая' : ''}</button>`).join('')}<span class="grow"></span><button class="small secondary" data-nv>Новая версия</button></div>
     <div class="row" style="margin-bottom:8px"><b>Версия: ${esc(verLabel(cur))}</b> <span class="muted">· операций: ${cur.operations.length}</span><span class="grow"></span><button class="small secondary" data-rn>Переименовать версию</button></div>
     <p class="muted">${cur.used ? 'Версия используется в заказах: структуру (порядок, норму, квалификацию, количество на изделие) менять нельзя, чтобы не сломать идущие заказы. Можно переименовать версию и операции, изменить блокировку и партию. Для остального создайте новую версию.' : 'Предшественников и «Партию, %» можно менять прямо в таблице — сохраняется сразу. Одинаковый «Порядок» — операции идут параллельно. По умолчанию операция ждёт весь предыдущий порядок; в «Предшественниках» можно указать, от каких именно операций она зависит, и тогда простоев не будет. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
-    <div class="scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
+    <div class="scroll rt-scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
     { label: 'Предшественники', html: o => predCell(o) },
     { label: 'Партия, %', html: o => pctCell(o) },
     { label: 'Блок', html: o => o.hold_qty ? `<span class="warn">${num(o.hold_qty)}${o.hold_until ? ' до ' + fmtDY(o.hold_until) : ''}</span> ${esc(o.hold_reason)}` : '—' }], cur.operations,
       o => `<button class="small secondary" data-oe="${o.id}">${canEdit ? 'Изменить' : 'Название / блок / партия'}</button>${canEdit ? ` <button class="small danger" data-od="${o.id}">Удалить</button>` : ''}`)}</div>
-    <div class="row" style="margin-top:12px">${canEdit ? '<button data-oa>+ Операция</button>' : ''}<button class="secondary" data-x>Закрыть</button></div>`, true);
-  const done = () => { m.close(); if (onClose) onClose(); };
+    <div class="row" style="margin-top:12px">${canEdit ? '<button data-oa>+ Операция</button>' : ''}</div></div>`;
+  const m = { el: $('.rt-page', v), close() { } };          // блок создаётся заново при каждой перерисовке: обработчики не накапливаются
+  const done = () => show('catalog');
   const again = () => { m.close(); openRouting(product, cur.id, onClose); };
   $('[data-x]', m.el).onclick = done;
   $$('[data-v]', m.el).forEach(b => b.onclick = () => { m.close(); openRouting(product, +b.dataset.v, onClose); });

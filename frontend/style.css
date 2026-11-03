@@ -319,3 +319,10 @@ table.gridt .gop{width:200px}
 .pp-sh{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:4px}.pp-sh b:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pp-sh span{white-space:nowrap;color:var(--muted)}.pp-sh span b{color:var(--ink)}
 .pp-s .bar{margin:0 0 3px;height:8px}.pp-s small{font-size:12px}
 @media (max-width:900px){.dash .card.people{grid-template-columns:1fr}}
+
+/* маршрут изделия на весь экран */
+main:has(.rt-page){max-width:1680px}
+.rt-top{display:flex;align-items:center;gap:12px;margin-bottom:6px}.rt-title{margin:0 0 12px}
+.rt-scroll{max-height:calc(100vh - 290px);min-height:260px}
+.rt-page table th,.rt-page table td{padding:9px 12px}
+.rt-page .qp{min-width:260px}

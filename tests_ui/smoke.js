@@ -304,17 +304,17 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('#drawer button', 'Проекты и Заказы')); await until(() => $('#dt'), 'проекты и заказы'); click(byText('#view nav.seg button', 'Заказы')); await until(() => $$('#dt tr').length > 3, 'заказы');
   click(byText('#drawer button', 'Каталог изделий'));
   await until(() => $('[data-rt]'), 'кнопка маршрута'); click($('[data-rt]'));
-  await until(() => $('.modal table'), 'маршрут'); 
-  step('маршрут: ' + ($('.modal .muted').textContent.slice(0, 80)) + '…');
-  click(byText('.modal button', 'Новая версия'));
+  await until(() => $('#view .rt-page table'), 'маршрут'); 
+  step('маршрут: ' + ($('#view .rt-page .muted').textContent.slice(0, 80)) + '…');
+  click(byText('#view .rt-page button', 'Новая версия'));
   await until(() => $('.modal form'), 'форма новой версии'); const nvf = $('.modal form'); setv(nvf.elements.name, 'Усиленная'); nvf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
-  await until(() => /v2 · Усиленная/.test($('.modal h2').parentElement.textContent), 'версия 2 с названием'); step('создана версия «v2 · Усиленная», операций: ' + ($$('.modal table tr').length - 1));
-  click(byText('.modal button', 'Переименовать версию'));
+  await until(() => /v2 · Усиленная/.test($('#view .rt-page').textContent), 'версия 2 с названием'); step('создана версия «v2 · Усиленная», операций: ' + ($$('#view .rt-page table tr').length - 1));
+  click(byText('#view .rt-page button', 'Переименовать версию'));
   await until(() => $('.modal form'), 'форма переименования'); const rnf = $('.modal form'); setv(rnf.elements.name, 'Усиленная-2'); rnf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
-  await until(() => /v2 · Усиленная-2/.test($('.modal h2').parentElement.textContent), 'новое название версии'); step('версия переименована: v2 · Усиленная-2');
+  await until(() => /v2 · Усиленная-2/.test($('#view .rt-page').textContent), 'новое название версии'); step('версия переименована: v2 · Усиленная-2');
   // предшественники: операция не ждёт весь предыдущий порядок, а только выбранные операции
-  if (!/Предшественники/.test($('.modal table').textContent)) throw new Error('в таблице операций нет колонки «Предшественники»');
-  const opRows = $$('.modal table tbody tr').map(tr => [parseFloat(tr.cells[0].textContent.replace(',', '.')), tr]).sort((a, b) => b[0] - a[0]);
+  if (!/Предшественники/.test($('#view .rt-page table').textContent)) throw new Error('в таблице операций нет колонки «Предшественники»');
+  const opRows = $$('#view .rt-page table tbody tr').map(tr => [parseFloat(tr.cells[0].textContent.replace(',', '.')), tr]).sort((a, b) => b[0] - a[0]);
   const lastOp = opRows[0][1], lastName = lastOp.cells[1].textContent.trim();
   click(lastOp.querySelector('[data-oe]')); await until(() => $('.modal form [name=pred_mode]'), 'форма операции с предшественниками');
   const opf = $('.modal form'); if (opf.querySelector('[data-predlist]').hidden !== true) throw new Error('список предшественников должен быть скрыт в режиме «по порядку»');
@@ -322,22 +322,23 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   opf.elements.pred_mode.value = 'list'; opf.elements.pred_mode.dispatchEvent(new win.Event('change', { bubbles: true }));
   await until(() => $('.modal form [name=pred]'), 'список операций-предшественников'); const pickName = $('.modal form [name=pred]').value; $('.modal form [name=pred]').checked = true;
   opf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
-  await until(() => $$('.modal table tbody tr').some(tr => tr.cells[1].textContent.trim() === lastName && [...tr.querySelectorAll('[data-pc]:checked')].some(i => i.value === pickName)), 'предшественник сохранён и виден в таблице');
+  await until(() => $$('#view .rt-page table tbody tr').some(tr => tr.cells[1].textContent.trim() === lastName && [...tr.querySelectorAll('[data-pc]:checked')].some(i => i.value === pickName)), 'предшественник сохранён и виден в таблице');
   step('операция «' + lastName + '» зависит только от «' + pickName + '»');
   // быстрая настройка прямо в таблице: без окна операции
-  const quickRow = $$('.modal table tbody tr').find(tr => tr.querySelector('[data-pm]') && tr.querySelector('[data-pm]').value === 'seq' && tr.querySelector('[data-pct]'));
+  const quickRow = $$('#view .rt-page table tbody tr').find(tr => tr.querySelector('[data-pm]') && tr.querySelector('[data-pm]').value === 'seq' && tr.querySelector('[data-pct]'));
   const quickName = quickRow.cells[1].textContent.trim();
   const qsel = quickRow.querySelector('[data-pm]'); qsel.value = 'list'; qsel.dispatchEvent(new win.Event('change', { bubbles: true }));
-  await until(() => { const r = $$('.modal table tbody tr').find(t => t.cells[1].textContent.trim() === quickName); return r && r.querySelector('[data-pm]').value === 'list'; }, 'режим «только выбранные» сохранён в таблице');
-  const qrow = () => $$('.modal table tbody tr').find(t => t.cells[1].textContent.trim() === quickName);
+  await until(() => { const r = $$('#view .rt-page table tbody tr').find(t => t.cells[1].textContent.trim() === quickName); return r && r.querySelector('[data-pm]').value === 'list'; }, 'режим «только выбранные» сохранён в таблице');
+  const qrow = () => $$('#view .rt-page table tbody tr').find(t => t.cells[1].textContent.trim() === quickName);
   const chip = qrow().querySelector('[data-pc]');
   if (chip) { chip.checked = true; chip.dispatchEvent(new win.Event('change', { bubbles: true })); await until(() => qrow().querySelector('[data-pc]:checked'), 'предшественник отмечен в таблице'); }
   const pct = qrow().querySelector('[data-pct]'); pct.value = '30'; pct.dispatchEvent(new win.Event('change', { bubbles: true }));
   await until(() => /Сохранено/.test($('#toast').textContent) && qrow().querySelector('[data-pct]').value === '30', 'партия 30% сохранена');
   step('быстрая настройка в таблице: предшественники и партия «' + quickName + '» (30%) сохранены без окна операции');
-  if (!/Уровень \d/.test($('.modal table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
+  if (!/Уровень \d/.test($('#view .rt-page table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
   step('операции показывают требуемую квалификацию названием уровня');
-  click(byText('.modal button', 'Закрыть'));
+  if ($('.modal')) throw new Error('таблица операций должна быть на весь экран, без окна поверх');
+  click($('#view [data-x]'));
   await until(() => /v2 · Усиленная-2/.test($('#dt').textContent), 'каталог обновился'); step('каталог показывает текущую версию «v2 · Усиленная-2»');
   click($('[data-import]')); await until(() => $('.modal [data-file]'), 'окно загрузки каталога');
   setFile($('.modal [data-file]'), 'Изделие;Ед.;Порядок;Операция;Норма в день;Квалификация;На изделие\r\nИмпорт-Стол;шт;1;Раскрой;12,5;1;1\r\nИмпорт-Стол;шт;2;Сборка;0;1;1\r\n', 'c.csv');
