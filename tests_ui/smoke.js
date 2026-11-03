@@ -168,6 +168,16 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
     const chip = mine()[mine().length - 1], q = +chip.querySelector('input.gq').value, who = chip.querySelector('.gn').textContent;
     if (!(q >= 1)) throw new Error('норма не подтянулась: ' + q);
     step(`«Назначение»: заказ целиком — ${opsN} операций × 7 дней; выбор работника «${who}» подтянул норму: ${q}`);
+  // положение экрана сохраняется: после изменения таблица не прыгает наверх
+  { const gw = $('.gridwrap'); gw.scrollLeft = 7; gw.scrollTop = 5; win.scrollTo = (x, y) => { win.__scrolled = y; }; Object.defineProperty(win, 'scrollY', { value: 120, configurable: true });
+    const before = [gw.scrollLeft, gw.scrollTop]; const addSel = $$('table.gridt select.gadd:not(.gex-add)').find(s => [...s.options].some(o => o.value) && !s.closest('td').querySelector('.gchip'));      // пустая ячейка
+    if (addSel) { const idx = $$('td.gcell').indexOf(addSel.closest('td')), key = addSel.dataset.fk; addSel.focus(); addSel.value = [...addSel.options].find(o => o.value).value; addSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await until(() => $('.gridwrap') !== gw && $('.gridwrap'), 'таблица перерисована');
+      const gw2 = $('.gridwrap'); if (gw2.scrollLeft !== before[0] || gw2.scrollTop !== before[1]) throw new Error('таблица прыгнула: ' + [gw2.scrollLeft, gw2.scrollTop] + ' вместо ' + before);
+      if (win.__scrolled !== 120) throw new Error('положение страницы не восстанавливается: ' + win.__scrolled);
+      step('после изменения экран остался на месте (прокрутка таблицы ' + before.join('/') + ' и страницы)');
+      const mineChip = $$('td.gcell')[idx].querySelector('.gchip .gx'); if (!mineChip) throw new Error('назначение не появилось'); click(mineChip);                // убираем созданное, чтобы не влиять на следующие шаги
+      await until(() => !$$('td.gcell')[idx].querySelector('.gchip'), 'назначение снято'); } }
   // исполнитель операции целиком: выбор работника в строке операции, «только они», применение к плану
   { const exSel = $('table.gridt .gex-add'); if (!exSel) throw new Error('в строке операции нет выбора исполнителя');
     const exOpt = [...exSel.options].find(o => o.value); if (!exOpt) throw new Error('нет доступных исполнителей');

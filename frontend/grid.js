@@ -20,14 +20,19 @@ SCREENS.grid = async v => {
   const { items: orders } = await GET('/plan-grid/orders');
   if (!orders.length) { v.innerHTML = '<h2>Назначение</h2><div class="card empty">Нет позиций заказов в работе, по которым можно назначать. Добавьте заказ или постройте план.</div>'; return; }
   if (!orders.some(o => o.order_line_id === S.gridOrder)) S.gridOrder = orders[0].order_line_id;
-  let scroll = 0;
-  const load = async () => {
-    const wrap = $('.gridwrap', v); if (wrap) scroll = wrap.scrollLeft;
+  /* После изменений таблица перерисовывается, но экран остаётся на том же месте: запоминаем прокрутку страницы и самой таблицы
+     (по обеим осям) и фокус, а после перерисовки возвращаем. Смена заказа или недели — с начала. */
+  const load = async (fresh) => {
+    const wrap = $('.gridwrap', v), act = document.activeElement;
+    const keep = fresh ? null : { x: wrap ? wrap.scrollLeft : 0, y: wrap ? wrap.scrollTop : 0, page: window.scrollY, focus: act && v.contains(act) ? act.dataset.fk || null : null };
     let g;
     try { g = await GET(`/plan-grid?order_line_id=${S.gridOrder}` + (S.gridStart ? `&start=${S.gridStart}` : '')); }
     catch (e) { if (e instanceof Stale) return; v.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; return; }
     S.gridStart = g.start; draw(g);
-    const w2 = $('.gridwrap', v); if (w2) w2.scrollLeft = scroll;
+    if (!keep) return;
+    const w2 = $('.gridwrap', v); if (w2) { w2.scrollLeft = keep.x; w2.scrollTop = keep.y; }
+    if (keep.page > 0) window.scrollTo(0, keep.page);
+    if (keep.focus) { const el = v.querySelector(`[data-fk="${keep.focus}"]`); if (el) el.focus({ preventScroll: true }); }
   };
   const wk = g => Object.fromEntries(g.workers.map(w => [w.id, w]));
   const pending = new Set();           // операции, где исполнители изменены, а план ещё не пересчитан
@@ -37,11 +42,11 @@ SCREENS.grid = async v => {
     const W = wk(g), ids = op.assignees, mine = ids.map(id => W[id]).filter(Boolean), other = ids.length - mine.length;
     const save = (list, strict) => run(() => PUT('/plan-grid/executors', { order_line_id: S.gridOrder, operation_id: op.operation_id, worker_ids: list, strict }).then(r => { pending.add(op.operation_id); return r; }), 'Исполнители сохранены');
     const cand = op.eligible.map(id => W[id]).filter(w => w && !ids.includes(w.id) && w.status === 'available');
-    const add = gh('select', { class: 'gadd gex-add', 'aria-label': 'Назначить исполнителя: ' + op.name }, gh('option', { value: '' }, mine.length ? '+ ещё исполнитель' : '+ назначить исполнителя'),
+    const add = gh('select', { class: 'gadd gex-add', 'data-fk': 'ex' + op.operation_id, 'aria-label': 'Назначить исполнителя: ' + op.name }, gh('option', { value: '' }, mine.length ? '+ ещё исполнитель' : '+ назначить исполнителя'),
       cand.map(w => gh('option', { value: w.id }, `${w.name}${w.center ? ' · ' + w.center : ''}`)));
     add.onchange = () => { if (add.value) save([...mine.map(w => w.id), +add.value], op.assign_strict); };
     const strict = mine.length ? gh('label', { class: 'chk gex-strict', title: 'Включено: операцию делают только назначенные. Выключено: назначенные идут первыми, а при нехватке планировщик добавит остальных.' },
-      gh('input', { type: 'checkbox', checked: op.assign_strict, onchange: e => save(mine.map(w => w.id), e.target.checked) }), ' только они') : null;
+      gh('input', { type: 'checkbox', 'data-fk': 'sx' + op.operation_id, checked: op.assign_strict, onchange: e => save(mine.map(w => w.id), e.target.checked) }), ' только они') : null;
     const apply = pending.has(op.operation_id) ? gh('button', { class: 'small gex-apply', title: 'Перепланировать участок: назначенные исполнители будут учтены',
       onclick: async () => {
         try { await POST('/plans/replan', { work_center_ids: S.me.role === 'foreman' ? [S.me.work_center_id] : op.section_ids }); pending.clear(); S.plan = undefined; toast('План обновлён с учётом исполнителей'); await load(); }
@@ -65,7 +70,7 @@ SCREENS.grid = async v => {
     const list = gh('div', { class: 'gl' });
     for (const it of items) {
       const w = W[it.worker_id], ld = w ? w.load[d.date] : 0;
-      const inp = gh('input', { type: 'number', min: 1, step: 1, value: it.qty, class: 'gq', disabled: d.past, 'aria-label': 'Количество' + (it.capacity ? ` (норма ${num(it.capacity)})` : '') });
+      const inp = gh('input', { type: 'number', min: 1, step: 1, value: it.qty, class: 'gq', 'data-fk': 'q' + it.item_id, disabled: d.past, 'aria-label': 'Количество' + (it.capacity ? ` (норма ${num(it.capacity)})` : '') });
       let t; inp.oninput = () => { clearTimeout(t); t = setTimeout(() => { const q = Math.round(+inp.value); if (q >= 1) run(() => PATCH(`/plan-day/items/${it.item_id}`, { qty: q }).then(r => ({ warnings: r.warnings }))); }, 700); };
       list.append(gh('div', { class: 'gchip' + (ld > 1.0001 ? ' over' : '') , title: `${it.worker}: загрузка дня ${Math.round(ld * 100)}%${it.capacity ? ', норма ' + num(it.capacity) + ' за день' : ''}${it.locked ? ' · день закреплён' : ''}` },
         gh('span', { class: 'gn', text: it.worker }), inp,
@@ -75,7 +80,7 @@ SCREENS.grid = async v => {
     const have = new Set(items.map(i => i.worker_id));
     const cand = d.past ? [] : op.eligible.map(id => W[id]).filter(w => w && !have.has(w.id));
     if (cand.length) {
-      const sel = gh('select', { class: 'gadd', 'aria-label': 'Назначить работника' }, gh('option', { value: '' }, '＋ работник'),
+      const sel = gh('select', { class: 'gadd', 'data-fk': 'a' + op.operation_id + d.date, 'aria-label': 'Назначить работника' }, gh('option', { value: '' }, '＋ работник'),
         cand.sort((a, b) => (a.load[d.date] || 0) - (b.load[d.date] || 0)).map(w => {
           const abs = w.absent.includes(d.date), free = Math.max(0, Math.round((1 - (w.load[d.date] || 0)) * 100));
           return gh('option', { value: w.id, class: abs ? 'abs' : '' }, `${w.name}${w.skill < op.min_skill ? ' ⚠' : ''} · ${abs ? 'отсутствует' : 'свободно ' + free + '%'}`);
@@ -92,8 +97,8 @@ SCREENS.grid = async v => {
     const o = g.order;
     const sel = gh('select', { id: 'gord', 'aria-label': 'Заказ' }, orders.map(x => gh('option', { value: x.order_line_id, selected: x.order_line_id === S.gridOrder },
       `${x.project} · ${x.order} · ${x.product} · ${num(x.qty)} шт${x.due_date ? ' · срок ' + fmtDY(x.due_date) : ''}`)));
-    sel.onchange = () => { S.gridOrder = +sel.value; load(); };
-    const shift = n => { const d = new Date(g.start + 'T00:00:00'); d.setDate(d.getDate() + n); S.gridStart = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); load(); };
+    sel.onchange = () => { S.gridOrder = +sel.value; load(true); };
+    const shift = n => { const d = new Date(g.start + 'T00:00:00'); d.setDate(d.getDate() + n); S.gridStart = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); load(true); };
     const head = gh('tr', null, gh('th', { class: 'gop', text: 'Операция' }), g.days.map(d => gh('th', { class: (d.workday ? '' : 'off') + (d.past ? ' past' : '') + (d.date === g.today ? ' today' : '') }, fmtD(d.date), gh('small', { text: d.wd + (d.workday ? '' : ' · вых.') }))));
     /* состояние объёма операции: больше нужного — оранжевым, весь объём (сделан + в плане) — зелёным, остаток не назначен — красным */
     const opState = op => op.over > 0 ? 'over' : (op.required - op.done <= 0 || op.complete) ? 'full' : op.unplanned > 0 ? 'short' : '';
@@ -115,7 +120,7 @@ SCREENS.grid = async v => {
       gh('div', { class: 'row', style: 'margin-bottom:8px' }, gh('h2', { class: 'grow', style: 'margin:0', text: 'Назначение на неделю' }),
         gh('span', { class: 'row noprint' }, gh('button', { class: 'secondary small', 'aria-label': 'Неделя назад', onclick: () => shift(-7) }, '‹'),
           gh('b', { class: 'lrange', text: `${fmtD(g.days[0].date)} – ${fmtD(g.days[6].date)}` }), gh('button', { class: 'secondary small', 'aria-label': 'Неделя вперёд', onclick: () => shift(7) }, '›'),
-          gh('button', { class: 'small secondary', onclick: () => { S.gridStart = null; load(); } }, 'Сегодня'))),
+          gh('button', { class: 'small secondary', onclick: () => { S.gridStart = null; load(true); } }, 'Сегодня'))),
       gh('label', { class: 'f' }, 'Заказ', sel),
       gh('p', { class: 'hint' }, 'Выберите работника в ячейке — подставится норма (с учётом производительности, остатка по заказу и свободной части дня), а день работника закрепится: перепланирование назначенное не изменит. Количество можно поправить. Чтобы закрепить работника за операцией целиком, выберите его в строке операции («Исполнитель») и нажмите «Применить к плану». ⚠ — квалификация ниже требуемой. «×» снимает назначение (если у работника в этот день больше ничего нет, закрепление снимается). Прошедшие дни доступны только для просмотра.'),
       gh('div', { class: 'glegend' }, gh('span', { class: 'lg full' }, 'весь объём в плане'), gh('span', { class: 'lg over' }, 'запланировано больше нужного'), gh('span', { class: 'lg short' }, 'есть неназначенный остаток')),
