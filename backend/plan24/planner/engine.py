@@ -33,6 +33,24 @@ def _js_round(x: float) -> int:
     return math.floor(x + 0.5)
 
 
+def _toposort(ops: list) -> list:
+    """Операции одного порядка: сначала те, от кого зависят другие операции этого же порядка (устойчиво; без зависимостей — как есть)."""
+    if not any(o.predecessors for o in ops):
+        return ops
+    names, done, out, rest = {o.name for o in ops}, set(), [], list(ops)
+    while rest:
+        for o in rest:
+            if all(p not in names or p in done for p in (o.predecessors or ())):
+                out.append(o)
+                done.add(o.name)
+                rest.remove(o)
+                break
+        else:                                       # цикл (API его не допускает) — оставшиеся как есть
+            out.extend(rest)
+            break
+    return out
+
+
 class _W:
     """Рабочее состояние исполнителя: свободная ёмкость по дням (в долях дня)."""
     __slots__ = ("name", "perf", "skill", "free", "allowed_key", "eff", "section", "max_n", "load_thr", "start_share")
@@ -359,6 +377,7 @@ def plan(inp: PlanInput) -> PlanResult:
             min_start_day = min_start_for_order
             if gi > 0:
                 min_start_day = max(min_start_for_order, group_progress[gi - 1][1])
+            group_ops = _toposort(group_ops)          # предшественник из того же порядка планируется раньше зависимой операции
             # Зависимости: у операции без predecessors (None) — весь предыдущий порядок, как в скрипте; с predecessors — только
             # перечисленные операции (пустой список — старт сразу). Партия: старт, когда они выполнены на start_after_pct %.
             def _progressive(o):

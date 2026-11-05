@@ -337,6 +337,34 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   step('быстрая настройка в таблице: предшественники и партия «' + quickName + '» (30%) сохранены без окна операции');
   if (!/Уровень \d/.test($('#view .rt-page table').textContent)) throw new Error('в операциях нет требуемой квалификации с названием уровня');
   step('операции показывают требуемую квалификацию названием уровня');
+  // структура версии: добавить операцию, переставить стрелками, удалить; предшественник из того же порядка; удалить версию
+  { const rows = () => $$('#view .rt-page table tbody tr'), names = () => rows().map(t => t.cells[1].textContent.trim());
+    const n0 = rows().length;
+    click($('#view [data-oa]')); await until(() => $('.modal form [name=name]'), 'форма новой операции');
+    const nf = $('.modal form'); setv(nf.elements.name, 'Контроль качества'); setv(nf.elements.sequence, '5'); setv(nf.elements.norm_per_day, '20'); setv(nf.elements.per_item, '1');
+    nf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+    await until(() => rows().length === n0 + 1 && names().includes('Контроль качества'), 'новая операция в таблице'); step('операция «Контроль качества» добавлена в версию');
+    const rowOf = nm => rows().find(t => t.cells[1].textContent.trim() === nm), idx = nm => names().indexOf(nm);
+    const before = idx('Контроль качества'); click(rowOf('Контроль качества').querySelector('[data-mv=up]'));
+    await until(() => idx('Контроль качества') === before - 1, 'операция поднялась на строку выше'); step('порядок: операция поднята стрелкой ↑');
+    click(rowOf('Контроль качества').querySelector('[data-mv=down]')); await until(() => idx('Контроль качества') === before, 'операция опущена обратно'); step('порядок: операция опущена стрелкой ↓');
+    if (!rows()[0].querySelector('[data-mv=up]').disabled || !rows().at(-1).querySelector('[data-mv=down]').disabled) throw new Error('у первой строки ↑ и у последней ↓ должны быть недоступны');
+    // предшественник из того же порядка: выставляем двум операциям один порядок и выбираем одну предшественником другой
+    click(rowOf('Контроль качества').querySelector('[data-oe]')); await until(() => $('.modal form [name=pred_mode]'), 'форма операции');
+    const ef = $('.modal form'), sameSeq = rows().filter(t => t.cells[1].textContent.trim() !== 'Контроль качества')[0];
+    setv(ef.elements.sequence, sameSeq.cells[0].textContent.trim().replace(',', '.')); ef.elements.pred_mode.value = 'list'; ef.elements.pred_mode.dispatchEvent(new win.Event('change', { bubbles: true }));
+    const sameName = sameSeq.cells[1].textContent.trim();
+    await until(() => [...$$('.modal form [name=pred]')].some(i => i.value === sameName), 'в предшественниках есть операция того же порядка (' + sameName + ')');
+    step('в предшественниках доступна операция из того же порядка: «' + sameName + '»');
+    click(byText('.modal button', 'Отмена')); await until(() => !$('.modal'), 'форма закрыта');
+    click(rowOf('Контроль качества').querySelector('[data-od]')); await until(() => byText('.modal button', 'Да'), 'подтверждение удаления'); click(byText('.modal button', 'Да'));
+    await until(() => rows().length === n0 && !names().includes('Контроль качества'), 'операция удалена'); step('операция удалена из версии');
+    // удаление версии: создаём лишнюю версию и удаляем её
+    click(byText('#view .rt-page button', 'Новая версия')); await until(() => $('.modal form'), 'форма новой версии'); $('.modal form').dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+    await until(() => /v3/.test($('#view .rt-page').textContent) && byText('#view .rt-page button', 'Удалить версию') && !byText('#view .rt-page button', 'Удалить версию').disabled, 'создана версия v3');
+    click(byText('#view .rt-page button', 'Удалить версию')); await until(() => byText('.modal button', 'Да'), 'подтверждение удаления версии'); click(byText('.modal button', 'Да'));
+    await until(() => /Версия удалена/.test($('#toast').textContent) && !/v3/.test($('#view .rt-page').textContent.split('Версия:')[0] || ''), 'версия удалена');
+    step('версия v3 создана и удалена; текущей снова стала предыдущая'); }
   if ($('.modal')) throw new Error('таблица операций должна быть на весь экран, без окна поверх');
   click($('#view [data-x]'));
   await until(() => /v2 · Усиленная-2/.test($('#dt').textContent), 'каталог обновился'); step('каталог показывает текущую версию «v2 · Усиленная-2»');

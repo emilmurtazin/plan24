@@ -27,9 +27,11 @@ def test_routing_is_immutable_once_used_but_hold_is_editable(org):
     pid, rid = mk_product(org)
     assert mk_order(org, pid).status_code == 201
     op = org.get(f"/products/{pid}/routings").json()[0]["operations"][0]
-    assert org.post(f"/routings/{rid}/operations", json={"name": "Покраска", "norm_per_day": 5}).status_code == 409
-    assert org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99}).status_code == 409
-    assert org.delete(f"/operations/{op['id']}").status_code == 409
+    assert org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99}).status_code == 409      # норма, квалификация, объём — только новой версией
+    assert org.patch(f"/operations/{op['id']}", json={"per_item": 2}).status_code == 409
+    added = org.post(f"/routings/{rid}/operations", json={"name": "Покраска", "norm_per_day": 5, "sequence": 3})   # операции добавлять можно
+    assert added.status_code == 201 and "orders_distributed" in added.json()
+    assert org.delete(f"/operations/{added.json()['id']}").status_code == 204                      # и удалять, если по ним нет факта
     ok = org.patch(f"/operations/{op['id']}", json={"hold_qty": 4, "hold_reason": "ждём фурнитуру"})
     assert ok.status_code == 200 and ok.json()["hold_qty"] == 4
 

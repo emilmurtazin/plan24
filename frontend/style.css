@@ -326,3 +326,5 @@ main:has(.rt-page){max-width:1680px}
 .rt-scroll{max-height:calc(100vh - 290px);min-height:260px}
 .rt-page table th,.rt-page table td{padding:9px 12px}
 .rt-page .qp{min-width:260px}
+
+.rt-act{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}.rt-act button[disabled]{opacity:.35;cursor:default}

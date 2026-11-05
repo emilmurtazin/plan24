@@ -61,6 +61,8 @@ CASES = [
     ("POST", "/routings/999999/operations", {"name": "x", "norm_per_day": 1}, CATALOG),
     ("PATCH", "/operations/999999", {"hold_qty": 1}, CATALOG),
     ("DELETE", "/operations/999999", None, CATALOG),
+    ("POST", "/operations/999999/move", {"direction": "up"}, CATALOG),
+    ("DELETE", "/routings/999999", None, CATALOG),
     ("PATCH", "/settings", {"max_workers_per_op": 4}, MANAGERS),
     ("GET", "/audit", None, MANAGERS),
     ("GET", "/telegram/status", None, STAFF),

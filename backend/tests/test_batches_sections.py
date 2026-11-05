@@ -361,3 +361,81 @@ def test_worker_with_assignments_can_be_deleted(full_org):
     assert r.status_code in (204, 409)                    # 409 — у работника есть факты/план; назначение при этом не мешает
     if r.status_code == 204:
         assert w not in next(x for x in o.get("/plan-grid", params={"order_line_id": ol}).json()["operations"] if x["operation_id"] == op["operation_id"])["assignees"]
+
+
+# ------------------------------------------------------------------ этап 3: структура версии, предшественники в том же порядке
+def ops_of(org, pid):
+    return {o["name"]: o for o in org.get(f"/products/{pid}/routings").json()[0]["operations"]}
+
+
+def test_predecessor_from_the_same_order_and_cycles(org):
+    pid, rid = mk_product(org, ops=(("Раскрой", 40, 1), ("Кромка", 40, 1), ("Сборка", 6, 2)))
+    ops = ops_of(org, pid)
+    kr, rk = ops["Кромка"]["id"], ops["Раскрой"]["id"]
+    assert org.patch(f"/operations/{kr}", json={"predecessors": ["Раскрой"]}).status_code == 200            # тот же порядок — теперь можно
+    r = org.patch(f"/operations/{rk}", json={"predecessors": ["Кромка"]})                                    # а так — круг
+    assert r.status_code == 422 and "круг" in r.json()["title"]
+    assert org.patch(f"/operations/{ops['Сборка']['id']}", json={"sequence": 1}).status_code == 200
+    assert org.patch(f"/operations/{rk}", json={"sequence": 3}).status_code == 422                           # от «Раскрой» зависит «Кромка»
+
+
+def test_engine_plans_same_order_predecessor_first():
+    ops = [Operation("B", 20, sequence=1, predecessors=("A",)), Operation("A", 5, sequence=1)]       # B описана раньше A, но зависит от неё
+    r = run(ops, W, ASSIGN)
+    a, b = by_op(r, "A"), by_op(r, "B")
+    assert min(b) >= max(a) and sum(b.values()) == 40 and sum(a.values()) == 40
+
+
+def test_move_operation_up_down_and_renumber(org):
+    pid, rid = mk_product(org, ops=(("Раскрой", 40, 1), ("Кромка", 40, 2), ("Сборка", 6, 3)))
+    ops = ops_of(org, pid)
+    seq = lambda: {n: o["sequence"] for n, o in ops_of(org, pid).items()}
+    assert org.post(f"/operations/{ops['Сборка']['id']}/move", json={"direction": "up"}).status_code == 200
+    assert seq() == {"Раскрой": 1, "Кромка": 3, "Сборка": 2}                                                   # поменялись местами
+    assert org.post(f"/operations/{ops['Раскрой']['id']}/move", json={"direction": "up"}).json() is not None
+    assert seq()["Раскрой"] == 1                                                                              # выше некуда — без изменений
+    org.patch(f"/operations/{ops['Кромка']['id']}", json={"sequence": 2})                                      # теперь Кромка и Сборка в одном порядке
+    assert org.post(f"/operations/{ops['Кромка']['id']}/move", json={"direction": "down"}).status_code == 200
+    assert seq() == {"Раскрой": 1, "Сборка": 2, "Кромка": 3}                                                   # выделилась из группы и стала ниже
+    assert org.post(f"/operations/{ops['Кромка']['id']}/move", json={"direction": "sideways"}).status_code == 422
+    org.patch(f"/operations/{ops['Кромка']['id']}", json={"predecessors": ["Сборка"]})
+    r = org.post(f"/operations/{ops['Сборка']['id']}/move", json={"direction": "down"})                       # «Кромка» окажется раньше предшественника
+    assert r.status_code == 200 and seq()["Сборка"] < seq()["Кромка"] or r.status_code == 422
+
+
+def test_used_version_allows_add_delete_move_but_not_fact_operations(full_org):
+    o = full_org
+    pid = o.get("/products").json()["items"][0]["id"]
+    r = o.get(f"/products/{pid}/routings").json()[0]
+    assert r["used"]
+    n0 = len(r["operations"])
+    new = o.post(f"/routings/{r['id']}/operations", json={"name": "Контроль", "norm_per_day": 50, "sequence": 99})
+    assert new.status_code == 201 and new.json()["orders_distributed"] >= 1               # попала во все заказы этой версии
+    ol = next(x for x in o.get("/order-lines").json()["items"] if x["product_id"] == pid)
+    assert o.replan_all().status_code == 201
+    assert any(x["name"] == "Контроль" for x in o.get(f"/reports/order-status", params={"order_line_id": ol["id"]}).json()["operations"])
+    assert o.post(f"/operations/{new.json()['id']}/move", json={"direction": "up"}).status_code == 200
+    assert o.delete(f"/operations/{new.json()['id']}").status_code == 204
+    assert len(o.get(f"/products/{pid}/routings").json()[0]["operations"]) == n0
+    first = r["operations"][0]                                                              # операция с внесённым фактом не удаляется
+    status = o.get("/reports/order-status", params={"order_line_id": ol["id"]}).json()["operations"][0]
+    assert o.post("/facts", json={"fact_date": TODAY.isoformat(), "order_line_id": ol["id"], "operation_id": status["operation_id"],
+                                  "worker_id": o.w1["id"], "qty": 1, "note": "тест"}).status_code == 200
+    d = o.delete(f"/operations/{status['operation_id']}")
+    assert d.status_code == 409 and "факт" in d.json()["title"]
+
+
+def test_delete_routing_version(org):
+    pid, rid = mk_product(org, ops=(("Раскрой", 40, 1), ("Сборка", 6, 2)))
+    assert org.delete(f"/routings/{rid}").status_code == 409                                  # единственная версия
+    v2 = org.post(f"/products/{pid}/routings").json()
+    assert org.delete(f"/routings/{v2['id']}").status_code == 204                             # текущая v2 удалена → текущей снова v1
+    rs = org.get(f"/products/{pid}/routings").json()
+    assert [r["version_no"] for r in rs] == [1] and rs[0]["is_current"] is True
+    v3 = org.post(f"/products/{pid}/routings").json()
+    assert mk_order(org, pid).status_code == 201                                              # заказ ляжет на текущую версию
+    used = next(r for r in org.get(f"/products/{pid}/routings").json() if r["used"])
+    assert org.delete(f"/routings/{used['id']}").status_code == 409 and "заказ" in org.delete(f"/routings/{used['id']}").json()["title"]
+    other = next(r for r in org.get(f"/products/{pid}/routings").json() if not r["used"])
+    assert org.delete(f"/routings/{other['id']}").status_code == 204
+    assert org.delete("/routings/999999").status_code == 404

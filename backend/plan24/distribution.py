@@ -26,6 +26,26 @@ def auto_assign(db: Session, user: User, order_line_id: int, routing_id: int) ->
                                   work_center_id=cs[0].id))
 
 
+def extend_to_orders(db: Session, user: User, routing_id: int, new_op: Operation) -> tuple:
+    """Новая операция в версии, уже стоящей в заказах: у каждой живой позиции она получает участки соседней операции
+    (ближайшей по порядку), а если участок в организации один — его. → (распределено позиций, не распределено)."""
+    others = list(db.scalars(select(Operation).where(Operation.routing_id == routing_id, Operation.id != new_op.id)))
+    before = sorted([o for o in others if o.sequence <= new_op.sequence], key=lambda o: (o.sequence, o.id))
+    sib = before[-1] if before else (sorted(others, key=lambda o: (o.sequence, o.id))[0] if others else None)
+    cs = centers_of(db, user)
+    done = missing = 0
+    for ol in db.scalars(select(OrderLine).where(OrderLine.tenant_id == user.tenant_id, OrderLine.routing_id == routing_id,
+                                                  OrderLine.deleted_at.is_(None))):
+        centers = set(db.scalars(select(OrderLineOperation.work_center_id).where(
+            OrderLineOperation.order_line_id == ol.id, OrderLineOperation.operation_id == sib.id))) if sib else set()
+        if not centers and len(cs) == 1:
+            centers = {cs[0].id}
+        for c in centers:
+            db.add(OrderLineOperation(tenant_id=user.tenant_id, order_line_id=ol.id, operation_id=new_op.id, work_center_id=c))
+        done, missing = done + bool(centers), missing + (not centers)
+    return done, missing
+
+
 def clear(db: Session, user: User, order_line_id: int) -> None:
     db.execute(delete(OrderLineOperation).where(OrderLineOperation.order_line_id == order_line_id,
                                                 OrderLineOperation.tenant_id == user.tenant_id))

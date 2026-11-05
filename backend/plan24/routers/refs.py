@@ -363,7 +363,7 @@ class OperationPatch(BaseModel):
 
 
 HOLD_FIELDS = {"hold_qty", "hold_reason", "hold_until"}
-SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
+SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors", "sequence"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
 
 
 def levels_count(db, user) -> int:
@@ -375,7 +375,7 @@ def check_level(db, user, value, what: str):
     n = levels_count(db, user)
     if value is not None and value > n:
         raise HTTPException(422, f"{what}: в организации {n} ур. квалификации. Число уровней настраивается в «Организация → Об организации»")
-_IMMUTABLE = "Маршрут используется в позициях заказов. Создайте новую версию маршрута (изменять можно только название и блокировку операции)"
+_IMMUTABLE = "Маршрут используется в позициях заказов: норму, квалификацию и объём на изделие менять нельзя — создайте новую версию маршрута (название, порядок, предшественников, партию и блокировку менять можно, операции — добавлять и удалять)"
 
 
 def _clean_predecessors(db, routing_id: int, name: str, sequence: float, preds, exclude_id: int | None = None):
@@ -389,16 +389,26 @@ def _clean_predecessors(db, routing_id: int, name: str, sequence: float, preds, 
             raise HTTPException(422, "Операция не может быть своим предшественником")
         if n not in others:
             raise HTTPException(422, f"Предшественник «{n}» не найден в маршруте")
-        if others[n].sequence >= sequence:
-            raise HTTPException(422, f"Предшественник «{n}» должен идти раньше: порядок {others[n].sequence:g} не меньше {sequence:g}")
+        if others[n].sequence > sequence:
+            raise HTTPException(422, f"Предшественник «{n}» должен идти раньше или в том же порядке: у него порядок {others[n].sequence:g}, у операции — {sequence:g}")
+    seen: set = set()
+
+    def depends_on_me(n: str) -> bool:                     # зависит ли n (прямо или через цепочку) от этой операции
+        if n == name:
+            return True
+        if n in seen:
+            return False
+        seen.add(n)
+        return any(depends_on_me(p) for p in (others[n].predecessors or []) if p in others or p == name)
+    for n in names:
+        if depends_on_me(n):
+            raise HTTPException(422, f"«{n}» уже зависит от этой операции: так получится замкнутый круг")
     return names
 
 
 @router.post("/routings/{rid}/operations", status_code=201)
 def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
     r = get_or_404(db, Routing, rid, user)
-    if _routing_used(db, user, rid):
-        raise HTTPException(409, _IMMUTABLE)
     if db.scalar(select(Operation.id).where(Operation.routing_id == rid, Operation.name == body.name)):
         raise HTTPException(409, "Операция с таким названием уже есть в маршруте")
     check_level(db, user, body.min_skill, "Требуемая квалификация")
@@ -406,8 +416,11 @@ def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CAT
     data["predecessors"] = _clean_predecessors(db, rid, body.name, body.sequence, body.predecessors)
     o = Operation(tenant_id=user.tenant_id, routing_id=rid, **data)
     db.add(o); db.flush()
-    audit.log(db, user, "operation", o.id, "create", body.model_dump())
-    return row(o)
+    done = missing = 0
+    if _routing_used(db, user, rid):                         # версия уже в заказах: новая операция попадает во все эти заказы
+        done, missing = distribution.extend_to_orders(db, user, rid, o)
+    audit.log(db, user, "operation", o.id, "create", {**body.model_dump(), "orders_distributed": done, "orders_undistributed": missing})
+    return {**row(o), "orders_distributed": done, "orders_undistributed": missing}
 
 
 @router.patch("/operations/{oid}")
@@ -433,8 +446,8 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
         data["predecessors"] = new_preds
     if "sequence" in data:                       # порядок изменился: у тех, кто ссылается на эту операцию, он должен остаться больше
         for x in others:
-            if x.predecessors and o.name in x.predecessors and x.sequence <= new_seq:
-                raise HTTPException(422, f"Операция «{x.name}» зависит от этой: её порядок должен быть больше {new_seq:g}")
+            if x.predecessors and o.name in x.predecessors and x.sequence < new_seq:
+                raise HTTPException(422, f"Операция «{x.name}» зависит от этой: её порядок не может быть меньше {new_seq:g}")
     changes = {k: [getattr(o, k), v] for k, v in data.items() if getattr(o, k) != v}
     old_name = o.name
     for k, (_, v) in changes.items():
@@ -453,13 +466,87 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
 def delete_operation(oid: int, user: User = Depends(require(*CATALOG)), db: Session = DB):
     o = get_or_404(db, Operation, oid, user)
     if _routing_used(db, user, o.routing_id):
-        raise HTTPException(409, _IMMUTABLE)
+        if db.scalar(select(func.count()).select_from(Operation).where(Operation.routing_id == o.routing_id)) <= 1:
+            raise HTTPException(409, "Это единственная операция версии, которая используется в заказах: удалить её нельзя")
+        facts = db.scalar(select(func.count()).select_from(Fact).where(
+            Fact.tenant_id == user.tenant_id, Fact.operation_id == o.id, Fact.deleted_at.is_(None),
+            Fact.order_line_id.in_(select(OrderLine.id).where(OrderLine.tenant_id == user.tenant_id, OrderLine.deleted_at.is_(None)))))
+        if facts:
+            raise HTTPException(409, f"По операции уже внесён факт ({facts}). Удалить её нельзя, чтобы не потерять выполненную работу")
+    order_cleanup.drop_operations(db, user.tenant_id, [o.id])
     for x in db.scalars(select(Operation).where(Operation.routing_id == o.routing_id, Operation.id != o.id)):
         if x.predecessors and o.name in x.predecessors:      # удалённый предшественник убирается из списка; если список опустел — снова «по порядку»
             left = [n for n in x.predecessors if n != o.name]
             x.predecessors = left or None
     db.delete(o)
     audit.log(db, user, "operation", oid, "delete")
+
+
+class MoveIn(BaseModel):
+    direction: str = Field(pattern="^(up|down)$")
+
+
+@router.post("/operations/{oid}/move")
+def move_operation(oid: int, body: MoveIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Сдвинуть операцию на порядок выше или ниже. Операция из группы параллельных выделяется в отдельный порядок рядом с группой,
+    одиночная меняется местами с соседним порядком. Номера порядка затем пересчитываются в 1, 2, 3…; предшественники сохраняются
+    (если сдвиг их нарушает — отказ с пояснением). Работает и для версии, уже стоящей в заказах."""
+    o = get_or_404(db, Operation, oid, user)
+    ops = list(db.scalars(select(Operation).where(Operation.routing_id == o.routing_id)))
+    seqs = sorted({x.sequence for x in ops})
+    i = seqs.index(o.sequence)
+    alone = sum(1 for x in ops if x.sequence == o.sequence) == 1
+    if body.direction == "up":
+        if alone and i == 0:
+            return routing_out(db.get(Routing, o.routing_id), _routing_used(db, user, o.routing_id))
+        new = (seqs[i - 1] if alone else o.sequence) - 0.5
+    else:
+        if alone and i == len(seqs) - 1:
+            return routing_out(db.get(Routing, o.routing_id), _routing_used(db, user, o.routing_id))
+        new = (seqs[i + 1] if alone else o.sequence) + 0.5
+    trial = {x.id: (new if x.id == o.id else x.sequence) for x in ops}
+    rank = {v: k + 1 for k, v in enumerate(sorted(set(trial.values())))}
+    by_name = {x.name: x for x in ops}
+    for x in ops:                                         # предшественники не должны оказаться позже зависимой операции
+        for p in (x.predecessors or []):
+            if p in by_name and rank[trial[by_name[p].id]] > rank[trial[x.id]]:
+                raise HTTPException(422, f"Так «{x.name}» окажется раньше своего предшественника «{p}». Сначала измените предшественников")
+    changes = {}
+    for x in ops:
+        v = float(rank[trial[x.id]])
+        if x.sequence != v:
+            changes[x.id] = [x.sequence, v]
+            x.sequence = v
+            x.version += 1
+    audit.log(db, user, "operation", o.id, "move", {"direction": body.direction, "sequence": changes})
+    db.flush()
+    r = db.get(Routing, o.routing_id)
+    db.refresh(r)
+    return routing_out(r, _routing_used(db, user, o.routing_id))
+
+
+@router.delete("/routings/{rid}", status_code=204)
+def delete_routing(rid: int, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Удалить версию маршрута. Нельзя, если она в живых заказах или если это единственная версия изделия.
+    Удалённые заказы на неё стираются окончательно; если удалена текущая версия, текущей становится самая новая из оставшихся."""
+    r = get_or_404(db, Routing, rid, user)
+    if _routing_used(db, user, rid):
+        n = db.scalar(select(func.count()).select_from(OrderLine).where(OrderLine.tenant_id == user.tenant_id, OrderLine.routing_id == rid,
+                                                                        OrderLine.deleted_at.is_(None)))
+        raise HTTPException(409, f"Версия используется в заказах ({n}). Удалите эти заказы или переведите их на другую версию")
+    left = list(db.scalars(select(Routing).where(Routing.tenant_id == user.tenant_id, Routing.product_id == r.product_id, Routing.id != rid)
+                           .order_by(Routing.version_no.desc())))
+    if not left:
+        raise HTTPException(409, "Это единственная версия изделия: удалить её нельзя")
+    order_cleanup.purge_dead_for(db, user.tenant_id, OrderLine.routing_id, rid, "версию")
+    order_cleanup.drop_operations(db, user.tenant_id, [o.id for o in r.operations])
+    db.execute(delete(Operation).where(Operation.tenant_id == user.tenant_id, Operation.routing_id == rid))
+    was_current = r.is_current
+    audit.log(db, user, "routing", rid, "delete", {"product_id": r.product_id, "version_no": r.version_no, "name": r.name})
+    db.expire(r)
+    db.execute(delete(Routing).where(Routing.tenant_id == user.tenant_id, Routing.id == rid))
+    if was_current:
+        left[0].is_current = True
 
 
 # ------------------------------------------------------------------ загрузка каталога из файла

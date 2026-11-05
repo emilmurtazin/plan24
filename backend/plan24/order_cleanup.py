@@ -21,6 +21,18 @@ def detach_plan(db: Session, tenant_id: int, order_line_id: int) -> None:
     db.execute(delete(PlanItem).where(PlanItem.tenant_id == tenant_id, PlanItem.order_line_id == order_line_id))
 
 
+def drop_operations(db: Session, tenant_id: int, op_ids: list) -> None:
+    """Перед удалением операций: убрать то, что ссылается на них (строки планов, снимки, участки и исполнители позиций).
+    Факты живых заказов сюда не доходят — удаление операции с фактом запрещено; факты удалённых заказов стираются."""
+    if not op_ids:
+        return
+    for model in (PlanItem, DayPlanSnapshot, OrderLineOperation, OperationAssignee):
+        db.execute(delete(model).where(model.tenant_id == tenant_id, model.operation_id.in_(op_ids)))
+    dead = dead_ids(db, tenant_id)
+    if dead:
+        db.execute(delete(Fact).where(Fact.tenant_id == tenant_id, Fact.operation_id.in_(op_ids), Fact.order_line_id.in_(dead)))
+
+
 def purge(db: Session, tenant_id: int, ids: list) -> None:
     """Стереть позиции и всё, что на них ссылается (факты, строки планов, снимки, распределение, допуски)."""
     if not ids:
