@@ -328,3 +328,15 @@ main:has(.rt-page){max-width:1680px}
 .rt-page .qp{min-width:260px}
 
 .rt-act{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}.rt-act button[disabled]{opacity:.35;cursor:default}
+
+/* карточка работника */
+.wc-page{max-width:1100px;margin:0 auto}.wc-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}.wc-head h2{margin:0}.wc-head h2 small{font-weight:400;font-size:14px;margin-left:6px}
+.wc-tiles{grid-template-columns:repeat(3,1fr);margin:12px 0}.wc-bar{margin:6px 0 12px;align-items:center}
+.wc-day{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:10px 14px;margin-bottom:10px}.wc-day.off,.wc-day.abs{opacity:.75}
+.wc-day header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.wc-day ul{list-style:none;margin:8px 0 0;padding:0}
+.wc-item{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.wc-t{min-width:0}.wc-t b{display:block}.wc-t span{display:block;font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wc-q input{width:74px;text-align:right}.wc-d input{min-height:32px;padding:2px 6px}
+.wc-extra{display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);color:var(--muted)}.wc-empty{margin:6px 0 0}
+.wc-load{display:flex;align-items:center;gap:8px;min-width:120px}.wc-load .bar{flex:1;margin:0;height:8px}.wc-load.high .bar i{background:var(--amber)}.wc-load.over .bar i{background:var(--red)}.wc-load.over small{color:var(--red);font-weight:600}
+@media (max-width:800px){.wc-item{grid-template-columns:1fr auto}.wc-tiles{grid-template-columns:1fr}}

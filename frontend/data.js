@@ -116,8 +116,8 @@ const TABS = {
         { name: 'skill', label: 'Квалификация', type: 'select', options: qOpts(r.quals), required: true, num: true, help: 'Уровни настраиваются в «Организация → Об организации»' },
         { name: 'status', label: 'Статус', type: 'select', required: true, options: [{ v: 'available', l: 'Доступен' }, { v: 'unavailable', l: 'Недоступен' }] },
         { name: 'auto_plan', label: 'Участвует в автопланировании', type: 'checkbox', help: 'Выключено — планировщик не даёт работнику заказы сам; задания ему ставят вручную в «Выполнение → План на день». Так добавляются временные работники.' }],
-      extra: r => `<button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
-      after: (box, refs, rows, reload) => { $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
+      extra: r => `<button class="small" data-wc="${r.id}">Карточка</button> <button class="small" data-ac="${r.id}">Допуски</button> <button class="small" data-ab="${r.id}">Отпуска</button> <button class="small" data-tg="${r.id}">Telegram</button> `,
+      after: (box, refs, rows, reload) => { $$('[data-wc]', box).forEach(b => b.onclick = () => openWorkerCard(refs.W[b.dataset.wc])); $$('[data-tg]', box).forEach(b => b.onclick = () => openTelegram('worker', +b.dataset.tg, refs.W[b.dataset.tg].name, reload)); $$('[data-ac]', box).forEach(b => b.onclick = () => openAccess(refs.W[b.dataset.ac], refs)); $$('[data-ab]', box).forEach(b => b.onclick = () => openAbsences(refs.W[b.dataset.ab])); }
     }
   },
   centers: {

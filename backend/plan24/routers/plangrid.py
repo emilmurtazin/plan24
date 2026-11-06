@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import audit, distribution, planning, snapshots
 from ..db import DB
 from ..deps import STAFF, get_or_404, get_today, require, scoped
-from ..models import (DayPin, ExtraTask, Fact, OperationAssignee, Operation, OrderLine, OrderLineOperation, PlanItem, PlannerSettings, Product, Project,
+from ..models import (DayPin, ExtraTask, Fact, OperationAssignee, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings, Product, Project,
                       User, WorkCenter, Worker, WorkerAbsence)
 from . import dayedit as de
 
@@ -167,6 +167,62 @@ def grid(order_line_id: int, start: Optional[date] = None, user: User = Depends(
             "workers": [{"id": w.id, "name": w.name, "skill": w.skill, "perf": w.perf, "status": w.status, "center": centers.get(w.work_center_id),
                          "absent": sorted(absent.get(w.id, [])), "load": {d.isoformat(): round(loads.get((w.id, d), 0.0), 3) for d in days}}
                         for w in workers]}
+
+
+# ------------------------------------------------------------------ карточка работника: предстоящие назначения
+WD_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+@router.get("/workers/{wid}/assignments")
+def worker_assignments(wid: int, days: int = Query(14, ge=1, le=60), user: User = Depends(require(*STAFF)), db: Session = DB,
+                       today: date = Depends(get_today)):
+    """Все предстоящие назначения работника по дням: строки плана и работы вне перечня, загрузка, отпуска, закрепление дней.
+    Изменяются они теми же запросами, что и в «Плане на день» (/plan-day/items, /extra-tasks)."""
+    w = de._worker(db, user, wid)                            # бригадир — только работники своего участка
+    plan = db.scalar(scoped(Plan, user).where(Plan.status == "active"))
+    last = today + timedelta(days=days - 1)
+    span = [today + timedelta(days=i) for i in range(days)]
+    items = list(db.scalars(select(PlanItem).where(PlanItem.plan_id == plan.id, PlanItem.worker_id == w.id, PlanItem.plan_date >= today,
+                                                   PlanItem.plan_date <= last).order_by(PlanItem.plan_date, PlanItem.id))) if plan else []
+    extras = list(db.scalars(select(ExtraTask).where(ExtraTask.tenant_id == user.tenant_id, ExtraTask.worker_id == w.id,
+                                                     ExtraTask.plan_date >= today, ExtraTask.plan_date <= last).order_by(ExtraTask.plan_date, ExtraTask.id)))
+    ops = {o.id: o for o in db.scalars(select(Operation).where(Operation.tenant_id == user.tenant_id))}
+    need = {i.order_line_id for i in items} | {x.order_line_id for x in extras if x.order_line_id}
+    orders = {o.id: o for o in db.scalars(select(OrderLine).where(OrderLine.tenant_id == user.tenant_id, OrderLine.id.in_(need)))} if need else {}
+    labels = {oid: _label(db, o) for oid, o in orders.items()}
+    absences = list(db.scalars(select(WorkerAbsence).where(WorkerAbsence.tenant_id == user.tenant_id, WorkerAbsence.worker_id == w.id,
+                                                          WorkerAbsence.date_from <= last, WorkerAbsence.date_to >= today)))
+    pins = {p.plan_date for p in db.scalars(select(DayPin).where(DayPin.tenant_id == user.tenant_id, DayPin.worker_id == w.id,
+                                                                  DayPin.plan_date >= today, DayPin.plan_date <= last))}
+    eff = _eff(db, user.tenant_id)
+    load = _day_loads(db, user, [w.id], span, eff, plan.id) if plan else {}
+    center = db.get(WorkCenter, w.work_center_id) if w.work_center_id else None
+    out_days, n_items = [], 0
+    for d in span:
+        its = [i for i in items if i.plan_date == d]
+        absent = next((a for a in absences if a.date_from <= d <= a.date_to), None)
+        n_items += len(its)
+        out_days.append({
+            "date": d.isoformat(), "wd": WD_RU[d.weekday()], "workday": planning.is_work_day(db, user.tenant_id, d), "pinned": d in pins,
+            "absent": absent.reason or "отсутствие" if absent else None, "load": round(load.get((w.id, d), 0.0), 3),
+            "items": [{"id": i.id, "order_line_id": i.order_line_id, "order": labels[i.order_line_id]["order"] if i.order_line_id in labels else "",
+                       "product": labels[i.order_line_id]["product"] if i.order_line_id in labels else "",
+                       "project": labels[i.order_line_id]["project"] if i.order_line_id in labels else "",
+                       "due_date": labels[i.order_line_id]["due_date"] if i.order_line_id in labels else None,
+                       "operation_id": i.operation_id, "operation": ops[i.operation_id].name if i.operation_id in ops else "",
+                       "qty": i.qty, "manual": i.reason_code == "MANUAL", "locked": bool(i.is_locked), "frozen": bool(i.is_frozen)} for i in its],
+            "extra": [{"id": x.id, "title": x.title, "hours": x.hours, "order_line_id": x.order_line_id,
+                       "order": labels[x.order_line_id]["order"] if x.order_line_id in labels else None}
+                      for x in extras if x.plan_date == d]})
+    busy = [d for d in out_days if d["items"] or d["extra"]]
+    work = [d for d in out_days if d["workday"] and not d["absent"]]
+    return {"worker": {"id": w.id, "name": w.name, "skill": w.skill, "perf": w.perf, "status": w.status, "auto_plan": w.auto_plan,
+                       "work_center_id": w.work_center_id, "section": center.name if center else None},
+            "from": today.isoformat(), "to": last.isoformat(), "has_plan": plan is not None, "days": out_days,
+            "absences": [{"from": a.date_from.isoformat(), "to": a.date_to.isoformat(), "reason": a.reason} for a in absences],
+            "totals": {"tasks": n_items, "days_busy": len(busy), "days_free": sum(1 for d in work if not d["items"] and not d["extra"]),
+                       "avg_load": round(sum(d["load"] for d in work) / len(work), 3) if work else None,
+                       "overloaded": sum(1 for d in out_days if d["load"] > 1.0 + 1e-9)}}
 
 
 # ------------------------------------------------------------------ исполнители операции

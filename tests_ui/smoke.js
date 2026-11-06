@@ -386,6 +386,28 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   step('Telegram: выдан код ' + $('#tgc').textContent.match(/[A-Z2-9]{4}-[A-Z2-9]{4}/)[0] + ', ссылка на бота: ' + !!$('#tgc a'));
   click(byText('.modal button', 'Закрыть'));
 
+  // --- карточка работника: предстоящие назначения и их изменение ---
+  { const wb = $$('[data-wc]').find(b => { const tr = b.closest('tr'); return tr && !/Временный/.test(tr.textContent); });
+    if (!wb) throw new Error('у работника нет кнопки «Карточка»');
+    click(wb); await until(() => $('.wc-page .wc-day'), 'карточка работника');
+    if ($$('.wc-page .wc-day').length !== 14 || $$('.wc-page .tile').length !== 3) throw new Error('карточка: ожидалось 14 дней и 3 показателя, а их ' + $$('.wc-page .wc-day').length + '/' + $$('.wc-page .tile').length);
+    step('карточка работника: ' + $('.wc-page h2').textContent.replace(/\s+/g, ' ').slice(0, 60) + '; назначений: ' + $$('.wc-page .wc-item').length);
+    const rows0 = $$('.wc-page .wc-item').length;
+    // добавить назначение на первый рабочий день и убрать его
+    click($('#wc-add')); await until(() => $('.modal #wcf [name=op] option[value]:not([value=""])'), 'список операций в форме назначения');
+    const wf = $('.modal #wcf'); wf.elements.date.value = $$('.wc-page .wc-day:not(.off):not(.abs)').find(d => !d.querySelector('.wc-item')).querySelector('[data-wadd]').dataset.wadd;      // свободный день: назначение не сольётся с существующим
+    wf.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true }));
+    await until(() => $$('.wc-page .wc-item').length === rows0 + 1, 'новое назначение появилось в карточке'); step('назначение добавлено прямо из карточки');
+    // изменить количество у добавленного задания
+    const q = $$('.wc-page [data-wq]').find(i => i.closest('.wc-item')); const newest = $$('.wc-page .wc-item').find(li => /назначено вручную/.test(li.textContent));
+    const qi = newest.querySelector('[data-wq]'); const was = +qi.value; qi.value = String(was + 1); qi.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => { const li = $$('.wc-page .wc-item').find(x => /назначено вручную/.test(x.textContent)); return li && +li.querySelector('[data-wq]').value === was + 1; }, 'количество изменено');
+    step('количество изменено в карточке: ' + was + ' → ' + (was + 1));
+    // убрать добавленное
+    click($$('.wc-page .wc-item').find(x => /назначено вручную/.test(x.textContent)).querySelector('[data-wx]')); await until(() => byText('.modal button', 'Да'), 'подтверждение'); click(byText('.modal button', 'Да'));
+    await until(() => $$('.wc-page .wc-item').length === rows0, 'назначение убрано'); step('назначение убрано из карточки');
+    click($('.wc-page [data-x]')); await until(() => $('[data-wc]'), 'возврат к списку работников'); }
+
   // --- настройки ---
   // уровни квалификации: форма работника — список; переименование и добавление уровней в «Об организации»
   click(byText('#view nav.seg button', 'Работники')); await until(() => $('[data-add]'), 'работники');

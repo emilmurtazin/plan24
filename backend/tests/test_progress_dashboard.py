@@ -145,3 +145,47 @@ def test_people_today_by_company_and_section(full_org):
 def test_people_today_for_empty_org(org):
     p = org.get("/reports/overview").json()["people_today"]
     assert p["all"] == {"total": 0, "with_tasks": 0, "off": 0, "without_tasks": 0} and p["by_section"] == [] and p["has_plan"] is False
+
+
+# ------------------------------------------------------------------ карточка работника
+def test_worker_card_lists_upcoming_assignments_and_matches_plan_day(full_org):
+    o = full_org
+    o.patch("/settings", json={"freeze_days": 0})
+    o.replan_all()
+    ws = o.get("/workers").json()["items"]
+    card_ = None
+    for w in ws:
+        c = o.get(f"/workers/{w['id']}/assignments", params={"days": 21}).json()
+        if c["totals"]["tasks"]:
+            card_ = c
+            break
+    assert card_ is not None and card_["has_plan"] and len(card_["days"]) == 21
+    assert card_["worker"]["name"] and card_["totals"]["days_busy"] >= 1 and 0 <= card_["totals"]["avg_load"] <= 5
+    day = next(d for d in card_["days"] if d["items"])
+    it = day["items"][0]
+    assert it["order"] and it["operation"] and it["qty"] > 0 and day["load"] > 0
+    # то же задание видно в «Плане на день» и меняется тем же запросом, что и там
+    r = o.patch(f"/plan-day/items/{it['id']}", json={"qty": it["qty"] + 1})
+    assert r.status_code == 200
+    again = o.get(f"/workers/{card_['worker']['id']}/assignments", params={"days": 21}).json()
+    assert next(i for d in again["days"] for i in d["items"] if i["id"] == it["id"])["qty"] == it["qty"] + 1
+
+
+def test_worker_card_permissions_absence_and_no_plan(full_org):
+    o = full_org
+    w = o.get("/workers").json()["items"][0]
+    nop = o.get(f"/workers/{w['id']}/assignments").json()
+    assert nop["has_plan"] is False and nop["totals"]["tasks"] == 0 and len(nop["days"]) == 14        # до первого плана — пусто, но не ошибка
+    o.replan_all()
+    assert o.post("/absences", json={"worker_id": w["id"], "date_from": TODAY.isoformat(), "date_to": (TODAY + timedelta(days=2)).isoformat(), "reason": "отпуск"}).status_code in (200, 201)
+    c = o.get(f"/workers/{w['id']}/assignments", params={"days": 5}).json()
+    assert c["days"][0]["absent"] == "отпуск" and c["absences"] and c["days"][4]["absent"] is None
+    assert o.get(f"/workers/{w['id']}/assignments", params={"days": 99}).status_code == 422
+    assert o.get("/workers/999999/assignments").status_code == 404
+    # бригадир видит только работников своего участка
+    me = o.get("/auth/me", "foreman").json()
+    other = next(x for x in o.get("/workers").json()["items"] if x["work_center_id"] != me["work_center_id"])
+    mine = next(x for x in o.get("/workers").json()["items"] if x["work_center_id"] == me["work_center_id"])
+    assert o.get(f"/workers/{other['id']}/assignments", "foreman").status_code in (403, 404)
+    assert o.get(f"/workers/{mine['id']}/assignments", "foreman").status_code == 200
+    assert o.get(f"/workers/{w['id']}/assignments", "worker").status_code == 403
