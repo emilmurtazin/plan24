@@ -10,12 +10,24 @@ from urllib.parse import urlsplit
 
 from .. import config, db as dbm, snapshots
 from . import bot, client, notifications
+from .. import report_schedules
 
 log = logging.getLogger("plan24.telegram")
 
 
 def _session():
     return dbm.job_session()          # движок создаётся один раз при первом обращении, а не на каждое сообщение
+
+
+def _reports(s) -> int:
+    """Регулярные отчёты в группы (раздел «Организация → Отчёты в Telegram»). Сбой не останавливает планировщик."""
+    try:
+        return report_schedules.run_due(s, datetime.now(timezone.utc))
+    except Exception as e:                                          # noqa: BLE001
+        s.rollback(); log.error("reports run failed: %s", type(e).__name__)
+        return 0
+    finally:
+        s.close()
 
 
 def route_text(cfg) -> str:
@@ -86,12 +98,13 @@ def main(argv):
         c.delete_webhook(); print("Вебхук удалён")
     elif cmd == "notify":
         s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); client.deliver(out)
-        print("Сообщений отправлено:", len(out))
+        n = _reports(s)
+        print("Сообщений отправлено:", len(out), "| отчётов в группы:", n)
     elif cmd == "scheduler":
         probe(c, cfg)
         while True:
             s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); s.close()
-            client.deliver(out); time.sleep(60)
+            client.deliver(out); _reports(_session()); time.sleep(60)
     elif cmd == "poll":          # без публичного HTTPS: бот опрашивает Telegram сам (вебхук при этом должен быть удалён)
         offset, delay = 0, 1
         probe(c, cfg)                                                  # итог проверки связи — в лог при каждом старте

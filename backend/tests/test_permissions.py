@@ -85,6 +85,13 @@ CASES = [
     ("POST", "/users/import", {"rows": [{"email": "bad", "first_name": "А", "last_name": "Б", "role": "viewer"}], "dry_run": True}, {O}),
     ("POST", "/products/import", {"rows": [{"product": "Imp-perm", "operation": "Оп", "norm_per_day": "5"}], "dry_run": True}, CATALOG),
     ("PATCH", "/auth/profile", {}, ALL),
+    ("GET", "/report-schedules", None, {O}),
+    ("POST", "/report-schedules", {"name": "Матрица", "chat_ref": "-1001234567890", "send_time": "08:00"}, {O}),
+    ("POST", "/report-schedules/preview", {"name": "Матрица", "chat_ref": "-1001234567890", "send_time": "08:00"}, {O}),
+    ("PATCH", "/report-schedules/999999", {"name": "x"}, {O}),
+    ("DELETE", "/report-schedules/999999", None, {O}),
+    ("POST", "/report-schedules/999999/preview", None, {O}),
+    ("POST", "/report-schedules/999999/send", None, {O}),
 ]
 
 

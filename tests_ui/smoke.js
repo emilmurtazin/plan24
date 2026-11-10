@@ -492,6 +492,20 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   });
   step('приглашение: ссылка из письма → свой пароль → вход, роль «наблюдатель», e-mail подтверждён');
 
+  // --- «Организация → Отчёты в Telegram»: регулярный отчёт в группу ---
+  click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Отчёты в Telegram'), 'вкладка отчётов'); click(byText('#view nav.seg button', 'Отчёты в Telegram'));
+  await until(() => byText('#rt-add', '+ Отчёт'), 'список отчётов'); click($('#rt-add'));
+  await until(() => $('.modal form [name=chat_ref]'), 'форма отчёта');
+  { const f = $('.modal form'); setv(f.elements.name, 'Утренняя сводка'); setv(f.elements.chat_ref, '-1001234567890'); setv(f.elements.send_time, '07:45');
+    const sec = $$('.modal [name=sec]'); if (!sec.length) throw new Error('в форме отчёта нет участков'); sec[0].checked = true;
+    $$('.modal [name=mt]').forEach(i => { i.checked = ['progress', 'workers'].includes(i.value); });
+    click(byText('.modal button', 'Предпросмотр')); await until(() => $$('.modal').length > 1 && $$('.modal pre').length, 'предпросмотр отчёта');
+    if (!/Участок «/.test($$('.modal pre').map(p => p.textContent).join('\n'))) throw new Error('в предпросмотре нет блока участка');
+    click($$('.modal').pop().querySelector('[data-x]'));
+    f.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true })); }
+  await until(() => byText('#view td', 'Утренняя сводка') && !$('.modal'), 'отчёт в списке');
+  if (!byText('#view td', '07:45 МСК')) throw new Error('в списке нет времени отчёта по Москве');
+  step('отчёты в Telegram: создан отчёт по участку с выбором метрик, предпросмотр и список');
   click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Журнал'), 'вкладки организации'); click(byText('#view nav.seg button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 

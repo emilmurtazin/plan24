@@ -62,7 +62,7 @@ def handle_update(db: Session, upd: dict, out: list) -> None:
         db.execute(delete(TelegramUpdate).where(TelegramUpdate.created_at < utcnow() - timedelta(days=7)))
     chat_id = _chat_id(upd)
     if chat_id is None:
-        return
+        return _group_command(upd, out)
     # Организация неизвестна, пока не найдена привязка чата: поиск — в режиме «только чтение до входа».
     # Дальше все обращения к данным идут уже в контексте организации привязанного человека.
     dbm.auth_scope(db, True)
@@ -82,6 +82,18 @@ def handle_update(db: Session, upd: dict, out: list) -> None:
     except Exception as e:                                           # noqa: BLE001 — один плохой апдейт не должен ронять бота
         log.error("bot update failed: %s", type(e).__name__)
         say(out, chat_id, "Что-то пошло не так. Попробуйте ещё раз чуть позже.")
+
+
+def _group_command(upd: dict, out: list) -> None:
+    """В группах бот отвечает только на /chatid: сообщает номер группы, который администратор вводит в «Отчёты в Telegram».
+    Номер группы не секрет и данных организации не раскрывает; остальное в группах по-прежнему игнорируется."""
+    msg = upd.get("message") or {}
+    chat = msg.get("chat") or {}
+    if chat.get("type") not in ("group", "supergroup", "channel"):
+        return
+    cmd = (msg.get("text") or "").strip().split(" ")[0].lower().split("@")[0]
+    if cmd in ("/chatid", "/id"):
+        say(out, chat["id"], f"Номер этой группы: {chat['id']}\nУкажите его в Plan 24: Организация → Отчёты в Telegram.")
 
 
 def _chat_id(upd: dict) -> Optional[int]:
