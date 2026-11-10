@@ -438,7 +438,7 @@ SCREENS.users = async v => {
 };
 
 /* ---------- журнал ---------- */
-const ENT = { settings: 'Настройки', order_line: 'Позиция заказа', worker: 'Исполнитель', fact: 'Факт', plan: 'План', user: 'Пользователь', product: 'Изделие', operation: 'Операция', routing: 'Маршрут', project: 'Проект', worker_access: 'Допуски', absence: 'Отсутствие', holiday: 'Праздник', work_center: 'Участок', fact_reason: 'Причина', tenant: 'Организация', demo: 'Демо', day_pin: 'Закрепление дня', extra_task: 'Работа вне перечня', report_schedule: 'Отчёт в Telegram' };
+const ENT = { settings: 'Настройки', order_line: 'Позиция заказа', worker: 'Исполнитель', fact: 'Факт', plan: 'План', user: 'Пользователь', product: 'Изделие', operation: 'Операция', routing: 'Маршрут', project: 'Проект', worker_access: 'Допуски', absence: 'Отсутствие', holiday: 'Праздник', work_center: 'Участок', fact_reason: 'Причина', tenant: 'Организация', demo: 'Демо', day_pin: 'Закрепление дня', extra_task: 'Работа вне перечня', report_schedule: 'Отчёт в Telegram', problem_route: 'Группа для проблем', problem: 'Проблема' };
 const ACT = { create: 'создание', update: 'изменение', delete: 'удаление', replan: 'перепланирование', activate: 'откат плана', confirm: 'подтверждение', register: 'регистрация', load: 'загрузка', password_change: 'смена пароля', pin: 'закрепление', import: 'загрузка из файла', profile_update: 'изменение профиля' };
 SCREENS.audit = async v => {
   let before = 0, all = [];

@@ -506,6 +506,12 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   await until(() => byText('#view td', 'Утренняя сводка') && !$('.modal'), 'отчёт в списке');
   if (!byText('#view td', '07:45 МСК')) throw new Error('в списке нет времени отчёта по Москве');
   step('отчёты в Telegram: создан отчёт по участку с выбором метрик, предпросмотр и список');
+  await until(() => $('#pr-add'), 'блок «Проблемы с участков»'); click($('#pr-add'));
+  await until(() => $('.modal form [name=chat_ref]'), 'форма группы для проблем');
+  { const f = $('.modal form'); setv(f.elements.name, 'Диспетчер сборки'); setv(f.elements.chat_ref, '-1002222222222'); $$('.modal [name=sec]')[0].checked = true;
+    f.dispatchEvent(new win.Event('submit', { cancelable: true, bubbles: true })); }
+  await until(() => byText('#rt-pb td', 'Диспетчер сборки') && !$('.modal'), 'группа для проблем в списке');
+  step('проблемы с участков: группа Telegram добавлена и показана в списке');
   click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Журнал'), 'вкладки организации'); click(byText('#view nav.seg button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 

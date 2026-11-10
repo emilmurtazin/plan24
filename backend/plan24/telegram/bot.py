@@ -633,7 +633,10 @@ def _problem_send(db, chat_id, actor, st: dict, comment: str, media_message_id: 
     n = core.send_problem(db, actor, chat_id, p["type"], comment, media_message_id, out)
     if not n:
         return say(out, chat_id, "Бригадир участка пока не подключён к Telegram — позвоните ему или скажите лично.", menu_keyboard("worker"))
-    say(out, chat_id, f"Передал бригадиру ({n}). Если срочно — позвоните.", menu_keyboard("worker"))
+    g = getattr(n, "groups", 0)
+    say(out, chat_id, (f"Передал бригадиру ({n - g}) и в группу участка. Если срочно — позвоните." if g and n - g else
+                       "Передал в группу участка. Если срочно — позвоните." if g else f"Передал бригадиру ({n}). Если срочно — позвоните."),
+        menu_keyboard("worker"))
 
 
 def _ack_problem(db, chat_id, mid, actor, name, worker_id: int, out: list):

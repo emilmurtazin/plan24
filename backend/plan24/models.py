@@ -484,3 +484,17 @@ class ReportSchedule(Base):
     last_status: Mapped[Optional[str]] = mapped_column(String(8))      # ok | error
     last_error: Mapped[Optional[str]] = mapped_column(String(300))
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+
+
+class ProblemRoute(Base):
+    """Куда дублировать проблемы, о которых сообщают работники: группа Telegram для всех или для выбранных участков."""
+    __tablename__ = "problem_routes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_true())
+    chat_ref: Mapped[str] = mapped_column(String(64))                 # id группы или @имя
+    section_ids: Mapped[list] = mapped_column(JSON, default=list)     # пусто — проблемы всех участков
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_status: Mapped[Optional[str]] = mapped_column(String(8))      # результат последней проверки: ok | error
+    last_error: Mapped[Optional[str]] = mapped_column(String(300))

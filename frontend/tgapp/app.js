@@ -388,7 +388,7 @@ async function problemScreen() {
   const chips = h('div', { class: 'row wrap' }), area = h('textarea', { placeholder: 'Опишите коротко (необязательно)', maxlength: '500' });
   const send = h('button', { class: 'wide', disabled: true, onclick: e => act(e.currentTarget, async () => {
     const r = await api('POST', '/problem', { type, comment: area.value.trim() });
-    toast(r.delivered ? `Передал бригадиру (${r.delivered}). Если срочно — позвоните` : 'Бригадир не подключён к Telegram — позвоните ему или скажите лично', { err: !r.delivered });
+    toast(r.delivered ? (r.groups ? 'Передал бригадиру и в группу участка. Если срочно — позвоните' : `Передал бригадиру (${r.delivered}). Если срочно — позвоните`) : 'Бригадир не подключён к Telegram — позвоните ему или скажите лично', { err: !r.delivered });
     area.value = ''; type = null; draw();
   }) }, 'Отправить бригадиру');
   const draw = () => { chips.replaceChildren(...TYPES.map(([k, l]) => h('button', { class: 'chip' + (type === k ? ' on' : ''), onclick: () => { type = k; draw(); } }, l))); send.disabled = !type; };

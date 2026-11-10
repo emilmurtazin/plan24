@@ -209,7 +209,7 @@ def problem(body: ProblemIn, bg: BackgroundTasks, c: Ctx = Depends(tg_ctx)):
     out: list = []
     n = core.send_problem(c.db, c.actor, c.link.chat_id, body.type, body.comment.strip(), None, out)
     _send(bg, out)
-    return {"delivered": n}
+    return {"delivered": int(n), "groups": getattr(n, "groups", 0)}
 
 
 class AbsenceIn(BaseModel):

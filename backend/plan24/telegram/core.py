@@ -19,8 +19,8 @@ from .. import facts_service, planning, reports_service
 from ..facts_service import Actor, FactError
 from fastapi import HTTPException
 from ..deps import get_or_404
-from ..models import (ExtraTask, Fact, FactReason, Operation, OrderLine, Product, Project, TelegramLink, TelegramState, Tenant, User, Worker,
-                      WorkerAbsence, utcnow)
+from ..models import (ExtraTask, Fact, FactReason, Operation, OrderLine, Product, ProblemRoute, Project, TelegramLink, TelegramState, Tenant, User, Worker,
+                      WorkCenter, WorkerAbsence, utcnow)
 from ..timeutil import today_in
 from . import events
 from .ui import copy_message, fnum, kb, say
@@ -169,21 +169,49 @@ def remind(db: Session, actor, chat_id: int, out: list) -> dict:
 
 
 # ------------------------------------------------------------------ проблема (сборщик → бригадир)
+class Delivered(int):
+    """Сколько получателей у проблемы (бригадиры + группы); .groups — сколько из них группы Telegram."""
+    groups = 0
+
+
+def problem_groups(db: Session, tenant_id: int, center_id: Optional[int]) -> list:
+    """Группы Telegram, куда администратор велел отправлять проблемы этого участка (без повторов)."""
+    refs: list = []
+    for r in db.scalars(select(ProblemRoute).where(ProblemRoute.tenant_id == tenant_id, ProblemRoute.enabled.is_(True)).order_by(ProblemRoute.id)):
+        if (not r.section_ids or (center_id is not None and center_id in r.section_ids)) and r.chat_ref not in refs:
+            refs.append(r.chat_ref)
+    return refs
+
+
 def send_problem(db: Session, actor, worker_chat_id: int, ptype: str, comment: str, media_message_id: Optional[int], out: list) -> int:
-    """→ сколько бригадиров получили сообщение (0 — бригадир не подключён к Telegram). Обращение пишется в журнал."""
+    """→ сколько получателей (бригадиры и группы Telegram); 0 — некому (бригадир не подключён, групп нет). Обращение пишется в журнал.
+    Группы участка (Организация → Отчёты в Telegram → «Проблемы с участков») получают сообщение сразу, в момент создания."""
     w = db.get(Worker, actor.worker_id)
     links = events.foreman_links(db, actor.tenant_id, w.work_center_id, only_alerts=False)       # о проблеме сообщаем всегда
-    audit.log(db, actor, "problem", w.id, "report", {"type": ptype, "media": media_message_id is not None, "comment": comment[:200]})
-    if not links:
-        return 0
+    groups = problem_groups(db, actor.tenant_id, w.work_center_id)
+    audit.log(db, actor, "problem", w.id, "report", {"type": ptype, "media": media_message_id is not None, "comment": comment[:200],
+                                                     "groups": len(groups)})
+    n = Delivered(len(links) + len(groups))
+    n.groups = len(groups)
+    if not n:
+        return n
     tasks = [t for t in rows(db, actor) if t["plan_qty"]][:4]
-    text = f"⚠ Проблема: {PROBLEMS[ptype]}\nОт: {w.name}" + (f"\n{comment}" if comment else "") + \
-        ("\nСегодня у него: " + "; ".join(f"{t['operation']} · {t['order']}" for t in tasks) if tasks else "")
+    today = ("\nСегодня у него: " + "; ".join(f"{t['operation']} · {t['order']}" for t in tasks)) if tasks else ""
+    text = f"⚠ Проблема: {PROBLEMS[ptype]}\nОт: {w.name}" + (f"\n{comment}" if comment else "") + today
     for l in links:
         say(out, l.chat_id, text, kb([[("👍 Принял", f"ak:{w.id}"), (f"👤 {w.name[:24]}", f"w:{w.id}")]]))
         if media_message_id:
             copy_message(out, l.chat_id, worker_chat_id, media_message_id)
-    return len(links)
+    if groups:
+        center = db.get(WorkCenter, w.work_center_id) if w.work_center_id else None
+        gtext = f"⚠ Проблема на участке «{center.name if center else 'без участка'}»: {PROBLEMS[ptype]}\nОт: {w.name}" + \
+            (f"\n{comment}" if comment else "") + today
+        for ref in groups:
+            tgt = int(ref) if ref.lstrip("-").isdigit() else ref
+            say(out, tgt, gtext)
+            if media_message_id:
+                copy_message(out, tgt, worker_chat_id, media_message_id)
+    return n
 
 
 def ack_problem(db: Session, actor, name: str, worker_id: int, out: list) -> str:

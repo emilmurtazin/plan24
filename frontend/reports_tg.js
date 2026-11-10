@@ -24,6 +24,7 @@ SCREENS.tgreports = async v => {
     r => `<button class="small secondary" data-e="${r.id}">Изменить</button> <button class="small secondary" data-p="${r.id}">Предпросмотр</button> <button class="small" data-s="${r.id}">Отправить сейчас</button> <button class="small secondary" data-t="${r.id}">${r.enabled ? 'Выключить' : 'Включить'}</button> <button class="small danger" data-d="${r.id}">Удалить</button>`)}</div>`;
   const find = el => d.items.find(r => r.id == el.dataset.e || r.id == el.dataset.p || r.id == el.dataset.s || r.id == el.dataset.t || r.id == el.dataset.d);
   const reload = () => SCREENS.tgreports(v);
+  const pbox = document.createElement('div'); pbox.id = 'rt-pb'; v.appendChild(pbox); rtProblems(pbox).catch(e => { pbox.innerHTML = `<div class="card err">${esc(errText(e))}</div>`; });
   $('#rt-add', v).onclick = () => rtForm(d, null, reload);
   $$('[data-e]', v).forEach(b => b.onclick = () => rtForm(d, find(b), reload));
   $$('[data-p]', v).forEach(b => b.onclick = async () => { try { rtShow((await POST(`/report-schedules/${find(b).id}/preview`)).messages); } catch (e) { toast(errText(e), true); } });
@@ -79,5 +80,43 @@ function rtForm(d, r, reload) {
     const btn = $('button[type=submit]', m.el); btn.disabled = true;
     try { if (r) await PATCH(`/report-schedules/${r.id}`, body()); else await POST('/report-schedules', body()); m.close(); toast('Отчёт сохранён'); reload(); }
     catch (x) { er.textContent = errText(x); btn.disabled = false; }
+  };
+}
+
+/* Проблемы работников: в момент создания дублируются в группу Telegram (для всех участков или выбранных) */
+async function rtProblems(box) {
+  const d = await GET('/problem-routes'), reload = () => rtProblems(box);
+  const secName = id => d.sections.find(s => s.id === id)?.name || 'участок удалён';
+  box.innerHTML = `<div class="row" style="margin:24px 0 10px"><h2 class="grow" style="margin:0">Проблемы с участков</h2><button id="pr-add" ${d.items.length >= d.limit ? 'disabled' : ''}>+ Группа</button></div>
+    <p class="hint">Когда работник сообщает о проблеме (в боте или мини-приложении), сообщение сразу приходит бригадиру и в выбранную группу — с участком, именем, типом проблемы, комментарием и фото. Можно указать свою группу для каждого участка.</p>
+    <div class="card flush scroll">${table([{ label: 'Название', html: r => `<b>${esc(r.name)}</b>` }, { label: 'Группа', get: r => r.chat_ref },
+    { label: 'Участки', get: r => r.section_ids.length ? r.section_ids.map(secName).join(', ') : 'все участки' },
+    { label: 'Статус', html: r => !r.enabled ? '<span class="badge b-none">выключена</span>' : r.last_status === 'error' ? `<span class="badge b-risk">⚠ ошибка</span><div class="muted" style="font-size:13px">${esc(r.last_error)}</div>` : r.last_status === 'ok' ? '<span class="badge b-done">✔ связь проверена</span>' : '<span class="muted">не проверялась</span>' }], d.items,
+    r => `<button class="small secondary" data-pe="${r.id}">Изменить</button> <button class="small" data-pt="${r.id}">Проверить связь</button> <button class="small secondary" data-po="${r.id}">${r.enabled ? 'Выключить' : 'Включить'}</button> <button class="small danger" data-pd="${r.id}">Удалить</button>`)}</div>`;
+  const row = b => d.items.find(r => r.id == b.dataset.pe || r.id == b.dataset.pt || r.id == b.dataset.po || r.id == b.dataset.pd);
+  $('#pr-add', box).onclick = () => rtProblemForm(d, null, reload);
+  $$('[data-pe]', box).forEach(b => b.onclick = () => rtProblemForm(d, row(b), reload));
+  $$('[data-pt]', box).forEach(b => b.onclick = async () => { try { await POST(`/problem-routes/${row(b).id}/test`); toast('Пробное сообщение отправлено'); } catch (e) { toast(errText(e), true); } reload(); });
+  $$('[data-po]', box).forEach(b => b.onclick = async () => { const r = row(b); try { await PATCH(`/problem-routes/${r.id}`, { enabled: !r.enabled }); reload(); } catch (e) { toast(errText(e), true); } });
+  $$('[data-pd]', box).forEach(b => b.onclick = async () => { const r = row(b); if (!await confirmBox(`Удалить «${r.name}»?`)) return; try { await DEL(`/problem-routes/${r.id}`); reload(); } catch (e) { toast(errText(e), true); } });
+}
+function rtProblemForm(d, r, reload) {
+  const val = r || { name: '', chat_ref: '', section_ids: [], enabled: true };
+  const bot = d.bot.username ? '@' + d.bot.username.replace(/^@/, '') : 'бота Plan 24';
+  const m = modal(`<h2>${r ? esc(r.name) : 'Новая группа для проблем'}</h2><form novalidate>
+    <label class="f">Название *<input name="name" value="${esc(val.name)}" maxlength="120" placeholder="Например: Сборка — диспетчер" required></label>
+    <label class="f">Группа Telegram *<input name="chat_ref" value="${esc(val.chat_ref)}" placeholder="-1001234567890 или @имя_группы" required>
+      <span style="font-size:13px">Добавьте ${esc(bot)} в группу, отправьте в ней /chatid и вставьте номер. После сохранения нажмите «Проверить связь».</span></label>
+    <fieldset style="border:1px solid var(--line);border-radius:6px;margin-bottom:10px"><legend class="muted">Проблемы каких участков отправлять</legend>
+      ${d.sections.length ? `<div class="row">${d.sections.map(s => `<label class="chip"><input type="checkbox" name="sec" value="${s.id}" ${val.section_ids.includes(s.id) ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>
+      <div class="muted" style="font-size:13px;margin-top:6px">Ничего не отмечено — проблемы всех участков.</div>` : '<div class="muted">Участков пока нет — будут приходить все проблемы.</div>'}</fieldset>
+    <label class="chk"><input type="checkbox" name="enabled" ${val.enabled ? 'checked' : ''}> <span>Включена</span></label>
+    <div class="err" data-err role="alert"></div><div class="row"><button type="submit">Сохранить</button><button type="button" class="secondary" data-x>Отмена</button></div></form>`);
+  const form = $('form', m.el); $('[data-x]', m.el).onclick = m.close;
+  form.onsubmit = async e => {
+    e.preventDefault(); const er = $('[data-err]', m.el); er.textContent = '';
+    const body = { name: form.elements.name.value, chat_ref: form.elements.chat_ref.value, section_ids: $$('[name=sec]:checked', form).map(i => +i.value), enabled: form.elements.enabled.checked };
+    try { if (r) await PATCH(`/problem-routes/${r.id}`, body); else await POST('/problem-routes', body); m.close(); toast('Сохранено'); reload(); }
+    catch (x) { er.textContent = errText(x); }
   };
 }
