@@ -317,7 +317,7 @@ async function openRouting(product, selId, onClose) {
   const oa = $('[data-oa]', m.el); if (oa) oa.onclick = () => edit(null);
   $$('[data-oe]', m.el).forEach(b => b.onclick = () => edit(cur.operations.find(o => o.id == b.dataset.oe)));
   $$('[data-mv]', m.el).forEach(b => b.onclick = async () => { try { await POST(`/operations/${b.dataset.id}/move`, { direction: b.dataset.mv }); again(); } catch (e) { toast(errText(e), true); } });
-  $$('[data-od]', m.el).forEach(b => b.onclick = async () => { if (await confirmBox('Удалить операцию?')) { try { await DEL(`/operations/${b.dataset.od}`); again(); } catch (e) { toast(errText(e), true); } } });
+  $$('[data-od]', m.el).forEach(b => b.onclick = () => deleteOperation(+b.dataset.od, again));
 }
 
 /* ---------- распределение операций позиции заказа по участкам ---------- */
@@ -472,4 +472,20 @@ async function openTelegram(kind, id, name, after) {
     } catch (e) { toast(errText(e), true); }
   };
   if (un) un.onclick = async () => { if (!await confirmBox('Отвязать Telegram? Человек перестанет получать задания и вносить факт через бота.')) return; try { await DEL('/telegram/links/' + link.id); m.close(); toast('Отвязано'); if (after) after(); } catch (e) { toast(errText(e), true); } };
+}
+
+/* Удаление операции каталога. Если по ней уже внесён факт — спрашиваем, на какую операцию его перенести (факт не теряется). */
+async function deleteOperation(id, again) {
+  let info; try { info = await GET(`/operations/${id}/delete-info`); } catch (e) { return toast(errText(e), true); }
+  if (info.blocked) return toast(info.blocked, true);
+  if (!info.facts) { if (await confirmBox(`Удалить операцию «${info.name}»?`)) { try { await DEL(`/operations/${id}`); again(); } catch (e) { toast(errText(e), true); } } return; }
+  const m = modal(`<h2>Удалить операцию «${esc(info.name)}»</h2>
+    <p>По операции уже внесён факт: <b>${info.facts}</b> ${info.facts === 1 ? 'запись' : 'записей'} на ${num(info.qty)} ${esc(info.unit)}. Чтобы не потерять выполненную работу, выберите операцию, на которую перенести этот факт. Если на ней за тот же день уже есть факт — объёмы сложатся.</p>
+    <label class="f">Перенести факт на *<select id="od-to">${info.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.unit)})</option>`).join('')}</select></label>
+    <div class="err" data-err role="alert"></div><div class="row"><button class="danger" data-y>Перенести факт и удалить операцию</button><button class="secondary" data-n>Отмена</button></div>`);
+  $('[data-n]', m.el).onclick = m.close;
+  $('[data-y]', m.el).onclick = async () => {
+    try { await DEL(`/operations/${id}?move_facts_to=${$('#od-to', m.el).value}`); m.close(); toast('Операция удалена, факт перенесён. Перепланируйте, чтобы план учёл изменения'); again(); }
+    catch (e) { $('[data-err]', m.el).textContent = errText(e); }
+  };
 }

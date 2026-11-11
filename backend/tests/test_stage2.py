@@ -13,11 +13,11 @@ def test_routing_name_rename_and_named_new_version(full_org):
     o = full_org
     p, r = _used_routing(o)
     assert r["name"] == ""
-    # переименовать можно и версию, уже стоящую в заказах; технолог может, наблюдатель и бригадир — нет
+    # переименовать можно и версию, уже стоящую в заказах; технолог и бригадир могут, наблюдатель — нет
     x = o.patch(f"/routings/{r['id']}", "technologist", json={"name": "  Базовая  "})
     assert x.status_code == 200 and x.json()["name"] == "Базовая" and x.json()["used"] is True
     assert o.patch(f"/routings/{r['id']}", "viewer", json={"name": "x"}).status_code == 403
-    assert o.patch(f"/routings/{r['id']}", "foreman", json={"name": "x"}).status_code == 403
+    assert o.patch(f"/routings/{r['id']}", "worker", json={"name": "x"}).status_code == 403
     assert o.patch("/routings/999999", "technologist", json={"name": "x"}).status_code == 404
     # новая версия сразу с названием
     n = o.post(f"/products/{p['id']}/routings", "technologist", params={"name": "Усиленная"})

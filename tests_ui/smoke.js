@@ -63,7 +63,7 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   step('ссылка из письма подтверждает e-mail');
   const nav = $$('#drawer .drawer-nav > button').map(b => b.lastChild.textContent);
   console.log('   меню владельца:', nav.join(' | '));
-  for (const x of ['Дашборд', 'Выполнение', 'Работники', 'Статус заказов', 'Каталог изделий', 'Проекты и Заказы', 'Организация', 'Профиль']) if (!nav.includes(x)) throw new Error('нет вкладки ' + x);
+  for (const x of ['Дашборд', 'Выполнение', 'Работники', 'Факты', 'Статус заказов', 'Каталог изделий', 'Проекты и Заказы', 'Организация', 'Профиль']) if (!nav.includes(x)) throw new Error('нет вкладки ' + x);
   for (const x of ['Обзор', 'Данные', 'Настройки', 'Пользователи', 'Журнал', 'План на день', 'Загрузка', 'Участки']) if (nav.includes(x)) throw new Error('лишняя вкладка в меню: ' + x);
 
   // --- профиль: имя, e-mail, пароль ---
@@ -515,6 +515,15 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Журнал'), 'вкладки организации'); click(byText('#view nav.seg button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 
+  // --- «Факты»: единое окно контроля факта, ввод факта на заказ без работника ---
+  click(byText('#drawer button', 'Факты')); await until(() => byText('#ft-add', '+ Внести факт на заказ') && $('#ft-tbl table'), 'окно «Факты»');
+  { click($('#ft-add')); await until(() => $('.modal form [name=line]') && $('.modal form [name=op]').options.length, 'форма факта на заказ');
+    const f = $('.modal form'); setv(f.elements.qty, '1'); click($('.modal button[type=submit]'));
+    await until(() => !$('.modal') && byText('#ft-tbl td', 'на заказ'), 'факт на заказ в списке');
+    if (!/Записей/.test($('#ft-sum').textContent)) throw new Error('нет итогов по фактам');
+    setv($('#ft-w'), 'none'); await until(() => $$('#ft-tbl tbody tr').length >= 1 && !byText('#ft-tbl td', 'Пока пусто'), 'фильтр «без привязки»');
+    step('факты: внесён факт на заказ без работника, он виден в общем окне и в фильтре «без привязки»'); }
+
   // --- выход и вход бригадиром ---
   click(byText('header button', 'Выйти'));
   await until(() => $('#af'), 'экран входа после выхода'); step('выход');
@@ -523,7 +532,8 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   await until(() => $('header.top'), 'оболочка бригадира');
   const nav2 = $$('#drawer .drawer-nav > button').map(b => b.lastChild.textContent);
   console.log('   меню бригадира:', nav2.join(' | '));
-  if (['Проекты и Заказы', 'Организация', 'Каталог изделий'].some(x => nav2.includes(x))) throw new Error('бригадир видит лишние разделы');
+  if (['Проекты и Заказы', 'Организация'].some(x => nav2.includes(x))) throw new Error('бригадир видит лишние разделы');
+  for (const x of ['Каталог изделий', 'Факты']) if (!nav2.includes(x)) throw new Error('бригадиру должен быть доступен раздел «' + x + '»');
   await until(() => $$('.wcard').length, 'план бригадира');
   const names = $$('.wcard h3').map(h => h.textContent);
   step('бригадир: сразу «План на день», видит ' + names.length + ' исполнителей своего участка (меньше, чем у владельца: ' + cards + ')');
@@ -541,6 +551,12 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
     if ($('.modal form').elements.work_center_id) throw new Error('бригадир не выбирает участок — работник идёт на его участок');
     click(byText('.modal button', 'Отмена'));
     step('бригадир: «Работники» — ' + rows + ' чел. своего участка, с допусками и удалением, без выбора участка'); }
+  // --- бригадир: каталог изделий (правка) и окно «Факты» своего участка ---
+  click(byText('#drawer button', 'Каталог изделий')); await until(() => $('[data-add]'), 'каталог у бригадира');
+  step('бригадир: «Каталог изделий» открыт, есть кнопка добавления');
+  click(byText('#drawer button', 'Факты')); await until(() => $('#ft-add') && $('#ft-tbl table'), 'окно «Факты» бригадира');
+  if ($('#ft-wc')) throw new Error('бригадиру не нужен выбор участка в «Фактах»');
+  step('бригадир: «Факты» — только свой участок, есть ввод факта на заказ');
   click(byText('#drawer button', 'Выполнение')); await until(() => $$('.wcard').length, 'возврат к плану');
 
   // --- бригадир перепланирует только свой участок ---

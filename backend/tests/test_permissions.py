@@ -4,7 +4,7 @@ import pytest
 ROLES = ["owner", "manager", "technologist", "foreman", "worker", "viewer", "director"]
 O, M, T, F, W, V, D = ROLES
 MANAGERS, STAFF, READERS, ALL = {O, M}, {O, M, F}, {O, M, T, F, V, D}, set(ROLES)
-CATALOG = {O, M, T}          # каталог изделий: создание и редактирование
+CATALOG = {O, M, T, F}         # каталог изделий: создание и редактирование
 
 # (метод, путь, тело, кому разрешено). Для разрешённых допустим любой статус, кроме 401/403
 # (например 404 на несуществующий id или 409/422 по бизнес-правилам) — проверяется именно граница прав.
@@ -85,6 +85,10 @@ CASES = [
     ("POST", "/users/import", {"rows": [{"email": "bad", "first_name": "А", "last_name": "Б", "role": "viewer"}], "dry_run": True}, {O}),
     ("POST", "/products/import", {"rows": [{"product": "Imp-perm", "operation": "Оп", "norm_per_day": "5"}], "dry_run": True}, CATALOG),
     ("PATCH", "/auth/profile", {}, ALL),
+    ("GET", "/facts/journal", None, READERS),
+    ("GET", "/facts/order-options", None, STAFF),
+    ("POST", "/facts/order", {"fact_date": "2026-10-02", "order_line_id": 999999, "operation_id": 999999, "qty": 1}, STAFF),
+    ("GET", "/operations/999999/delete-info", None, CATALOG),
     ("GET", "/problem-routes", None, {O}),
     ("POST", "/problem-routes", {"name": "Матрица", "chat_ref": "-1001234567890"}, {O}),
     ("PATCH", "/problem-routes/999999", {"name": "x"}, {O}),

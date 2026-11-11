@@ -50,3 +50,42 @@ def purge_dead_for(db: Session, tenant_id: int, column, value: int, what: str) -
     if alive:
         raise HTTPException(409, f"Нельзя удалить {what}: по нему есть заказы ({len(alive)}). Сначала удалите эти заказы")
     purge(db, tenant_id, [i for i, _ in rows])
+
+
+def transfer_facts(db: Session, tenant_id: int, from_op, to_op) -> dict:
+    """Перед удалением операции: перенести внесённый по ней факт живых заказов на другую операцию той же версии маршрута.
+    Если на целевой операции за тот же день, позицию и исполнителя (участок) уже есть факт — количества складываются.
+    → {"moved": n, "merged": n, "qty": сумма, "fact_ids": [...]}. Удалённые («мягко») факты операции стираются."""
+    live = select(OrderLine.id).where(OrderLine.tenant_id == tenant_id, OrderLine.deleted_at.is_(None))
+    db.execute(delete(Fact).where(Fact.tenant_id == tenant_id, Fact.operation_id == from_op.id, Fact.deleted_at.is_not(None)))
+    moved = merged = 0
+    qty = 0.0
+    ids: list = []
+    for f in list(db.scalars(select(Fact).where(Fact.tenant_id == tenant_id, Fact.operation_id == from_op.id, Fact.order_line_id.in_(live))
+                             .order_by(Fact.fact_date, Fact.id))):
+        t = db.scalar(select(Fact).where(
+            Fact.tenant_id == tenant_id, Fact.fact_date == f.fact_date, Fact.order_line_id == f.order_line_id, Fact.operation_id == to_op.id,
+            Fact.worker_id.is_(None) if f.worker_id is None else Fact.worker_id == f.worker_id,
+            Fact.work_center_id.is_(None) if f.work_center_id is None else Fact.work_center_id == f.work_center_id))
+        qty += f.qty
+        ids.append(f.id)
+        if t is not None and t.deleted_at is not None:
+            db.delete(t)
+            db.flush()
+            t = None
+        if t is None:
+            f.operation_id = to_op.id
+            db.flush()
+            moved += 1
+            continue
+        t.qty += f.qty
+        mark = f"перенесено с «{from_op.name}»: {f.qty:g}"
+        t.note = (f"{t.note}; {mark}" if t.note else mark)[:400]
+        t.reason_id = t.reason_id or f.reason_id
+        if f.status == "submitted":
+            t.status, t.confirmed_by, t.confirmed_at = "submitted", None, None
+        db.delete(f)
+        db.flush()
+        merged += 1
+    return {"moved": moved, "merged": merged, "qty": qty, "fact_ids": ids[:200]}
+

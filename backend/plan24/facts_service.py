@@ -11,13 +11,13 @@ from typing import Optional
 
 import math
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import audit
 from .deps import get_or_404, scoped
-from .models import Fact, FactReason, Operation, OrderLine, Plan, PlanItem, PlannerSettings, Worker, utcnow
+from .models import Fact, FactReason, Operation, OrderLine, OrderLineOperation, Plan, PlanItem, PlannerSettings, WorkCenter, Worker, utcnow
 from fastapi import HTTPException
 
 
@@ -121,8 +121,70 @@ def enter(db: Session, actor, *, fact_date: date, order_line_id: int, operation_
     return f, old
 
 
+def enter_for_order(db: Session, actor, *, fact_date: date, order_line_id: int, operation_id: int, qty: float, today: date,
+                    work_center_id: Optional[int] = None, reason_id: Optional[int] = None, note: str = "", source: str = "web"):
+    """Факт «на заказ»: выполнено по операции позиции за день, без привязки к исполнителю (вносят бригадир, РП, администратор).
+    Повторный ввод за тот же день, позицию, операцию и участок заменяет значение. → (факт, прежнее значение или None)."""
+    if actor.role not in ("owner", "manager", "foreman"):
+        _deny(403, "Недостаточно прав")
+    if fact_date > today:
+        _deny(422, "Факт на будущую дату вносить нельзя")
+    ol = get_or_404(db, OrderLine, order_line_id, actor)
+    if ol.status in ("draft", "cancelled"):
+        _deny(422, "По этой позиции факт вносить нельзя (черновик или отменена)")
+    op = get_or_404(db, Operation, operation_id, actor)
+    if op.routing_id != ol.routing_id:
+        _deny(422, "Операция не входит в маршрут этой позиции")
+    dist = list(db.scalars(select(OrderLineOperation.work_center_id).where(
+        OrderLineOperation.tenant_id == actor.tenant_id, OrderLineOperation.order_line_id == ol.id, OrderLineOperation.operation_id == op.id)))
+    if actor.role == "foreman":
+        if actor.work_center_id is None or actor.work_center_id not in dist:
+            _deny(403, "Эта операция не относится к вашему участку")
+        wc = actor.work_center_id
+    elif work_center_id is not None:
+        wc = get_or_404(db, WorkCenter, work_center_id, actor).id
+    else:
+        wc = dist[0] if len(dist) == 1 else None             # участок один — подставляем; несколько — факт по операции целиком
+    if reason_id is not None:
+        check_reason_center(db, actor, reason_id, wc)
+    key = (Fact.tenant_id == actor.tenant_id, Fact.fact_date == fact_date, Fact.order_line_id == ol.id, Fact.operation_id == op.id,
+           Fact.worker_id.is_(None), Fact.work_center_id.is_(None) if wc is None else Fact.work_center_id == wc)
+    other = db.scalar(select(func.coalesce(func.sum(Fact.qty), 0.0)).where(
+        Fact.tenant_id == actor.tenant_id, Fact.order_line_id == ol.id, Fact.operation_id == op.id, Fact.deleted_at.is_(None), ~and_(*key))) or 0.0
+    required = math.ceil(ol.qty * op.per_item - 1e-9)
+    if reason_id is None and not (note or "").strip() and other + qty > required + 1e-9:
+        _deny(422, f"Выполнено больше, чем нужно по заказу (нужно {_g(required)}, с этим фактом будет {_g(other + qty)}) — "
+                   "укажите причину или комментарий")
+    f = db.scalar(select(Fact).where(*key))
+    old = None
+    if f is None:
+        try:
+            with db.begin_nested():
+                f = Fact(tenant_id=actor.tenant_id, fact_date=fact_date, order_line_id=ol.id, operation_id=op.id, worker_id=None,
+                         work_center_id=wc, qty=qty)
+                db.add(f)
+                db.flush()
+        except IntegrityError:
+            f = db.scalar(select(Fact).where(*key))
+            old = None if f.deleted_at else f.qty
+            f.qty, f.deleted_at = qty, None
+    else:
+        old = None if f.deleted_at else f.qty
+        f.qty, f.deleted_at = qty, None
+    f.reason_id, f.note, f.entered_by, f.source = reason_id, note, actor.id, source
+    f.status, f.confirmed_by, f.confirmed_at = "confirmed", actor.id, utcnow()
+    db.flush()
+    audit.log(db, actor, "fact", f.id, "update" if old is not None else "create",
+              {"qty": [old, qty], "worker_id": None, "work_center_id": wc, "date": fact_date, "source": source, "order_fact": True})
+    return f, old
+
+
 def own_fact(db: Session, actor, fact_id: int) -> Fact:
     f = get_or_404(db, Fact, fact_id, actor)
+    if f.worker_id is None:                                   # факт «на заказ»: бригадир — только своего участка, сборщик — никакой
+        if actor.role == "worker" or (actor.role == "foreman" and (actor.work_center_id is None or f.work_center_id != actor.work_center_id)):
+            _deny(403, "Это факт другого участка")
+        return f
     can_touch_worker(actor, get_or_404(db, Worker, f.worker_id, actor))
     return f
 
@@ -141,13 +203,18 @@ def remove(db: Session, actor, fact: Fact):
 
 def check_reason(db: Session, actor, reason_id: int, worker: Worker) -> FactReason:
     """Причина берётся из общих или из причин участка работника: у каждого участка свой список."""
+    return check_reason_center(db, actor, reason_id, worker.work_center_id)
+
+
+def check_reason_center(db: Session, actor, reason_id: int, center_id: Optional[int]) -> FactReason:
     r = get_or_404(db, FactReason, reason_id, actor)
-    if r.work_center_id is not None and r.work_center_id != worker.work_center_id:
+    if r.work_center_id is not None and r.work_center_id != center_id:
         _deny(422, "Эта причина относится к другому участку")
     return r
 
 
 def set_reason(db: Session, actor, fact: Fact, reason_id: int):
-    check_reason(db, actor, reason_id, db.get(Worker, fact.worker_id))
+    center = db.get(Worker, fact.worker_id).work_center_id if fact.worker_id is not None else fact.work_center_id
+    check_reason_center(db, actor, reason_id, center)
     fact.reason_id = reason_id
     audit.log(db, actor, "fact", fact.id, "reason", {"reason_id": reason_id})

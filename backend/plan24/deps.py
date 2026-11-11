@@ -16,7 +16,7 @@ ALL = ("owner", "manager", "technologist", "foreman", "worker", "viewer", "direc
 MANAGERS = ("owner", "manager")
 STAFF = ("owner", "manager", "foreman")
 READERS = ("owner", "manager", "technologist", "foreman", "viewer", "director")
-CATALOG = ("owner", "manager", "technologist")        # создание и редактирование каталога изделий
+CATALOG = ("owner", "manager", "technologist", "foreman")        # создание и редактирование каталога изделий
 
 
 def current_user(request: Request, db: Session = DB) -> User:

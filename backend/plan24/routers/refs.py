@@ -462,24 +462,50 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
     return row(o)
 
 
-@router.delete("/operations/{oid}", status_code=204)
-def delete_operation(oid: int, user: User = Depends(require(*CATALOG)), db: Session = DB):
+def _op_facts(db, user, o: Operation) -> tuple:
+    """(записей факта, сумма) по операции в живых заказах."""
+    live = select(OrderLine.id).where(OrderLine.tenant_id == user.tenant_id, OrderLine.deleted_at.is_(None))
+    n, q = db.execute(select(func.count(Fact.id), func.coalesce(func.sum(Fact.qty), 0.0)).where(
+        Fact.tenant_id == user.tenant_id, Fact.operation_id == o.id, Fact.deleted_at.is_(None), Fact.order_line_id.in_(live))).one()
+    return int(n), float(q)
+
+
+@router.get("/operations/{oid}/delete-info")
+def operation_delete_info(oid: int, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Что произойдёт при удалении операции: сколько факта по ней внесено и на какие операции его можно перенести."""
     o = get_or_404(db, Operation, oid, user)
+    used = _routing_used(db, user, o.routing_id)
+    others = list(db.scalars(select(Operation).where(Operation.routing_id == o.routing_id, Operation.id != o.id).order_by(Operation.sequence, Operation.id)))
+    n, q = _op_facts(db, user, o)
+    blocked = "Это единственная операция версии, которая используется в заказах: удалить её нельзя" if used and not others else None
+    return {"id": o.id, "name": o.name, "used": used, "facts": n, "qty": q, "unit": o.unit, "blocked": blocked,
+            "targets": [{"id": x.id, "name": x.name, "unit": x.unit, "sequence": x.sequence} for x in others]}
+
+
+@router.delete("/operations/{oid}", status_code=204)
+def delete_operation(oid: int, move_facts_to: Optional[int] = None, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Удалить операцию. Если по ней уже внесён факт — нужно указать операцию той же версии, на которую он переносится
+    (move_facts_to): выполненная работа не теряется. Без факта удаляется как раньше."""
+    o = get_or_404(db, Operation, oid, user)
+    moved = None
     if _routing_used(db, user, o.routing_id):
         if db.scalar(select(func.count()).select_from(Operation).where(Operation.routing_id == o.routing_id)) <= 1:
             raise HTTPException(409, "Это единственная операция версии, которая используется в заказах: удалить её нельзя")
-        facts = db.scalar(select(func.count()).select_from(Fact).where(
-            Fact.tenant_id == user.tenant_id, Fact.operation_id == o.id, Fact.deleted_at.is_(None),
-            Fact.order_line_id.in_(select(OrderLine.id).where(OrderLine.tenant_id == user.tenant_id, OrderLine.deleted_at.is_(None)))))
-        if facts:
-            raise HTTPException(409, f"По операции уже внесён факт ({facts}). Удалить её нельзя, чтобы не потерять выполненную работу")
+        n, _ = _op_facts(db, user, o)
+        if n:
+            if move_facts_to is None:
+                raise HTTPException(409, f"По операции внесён факт ({n}). Укажите операцию, на которую его перенести")
+            target = get_or_404(db, Operation, move_facts_to, user)
+            if target.id == o.id or target.routing_id != o.routing_id:
+                raise HTTPException(422, "Факт можно перенести только на другую операцию этой же версии маршрута")
+            moved = {"to": target.id, "to_name": target.name, **order_cleanup.transfer_facts(db, user.tenant_id, o, target)}
     order_cleanup.drop_operations(db, user.tenant_id, [o.id])
     for x in db.scalars(select(Operation).where(Operation.routing_id == o.routing_id, Operation.id != o.id)):
         if x.predecessors and o.name in x.predecessors:      # удалённый предшественник убирается из списка; если список опустел — снова «по порядку»
             left = [n for n in x.predecessors if n != o.name]
             x.predecessors = left or None
     db.delete(o)
-    audit.log(db, user, "operation", oid, "delete")
+    audit.log(db, user, "operation", oid, "delete", {"name": o.name, "facts_moved": moved} if moved else None)
 
 
 class MoveIn(BaseModel):

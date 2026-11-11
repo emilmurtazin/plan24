@@ -34,7 +34,8 @@ def test_manager_can_still_edit_catalog_viewer_cannot(full_org):
     o = full_org
     assert o.post("/products", "manager", json={"name": "Полка-тест"}).status_code == 201
     assert o.post("/products", "viewer", json={"name": "Полка-тест-2"}).status_code == 403
-    assert o.post("/products", "foreman", json={"name": "Полка-тест-3"}).status_code == 403
+    assert o.post("/products", "worker", json={"name": "Полка-тест-3"}).status_code == 403
+    assert o.post("/products", "foreman", json={"name": "Полка-тест-4"}).status_code == 201          # бригадир правит каталог (этап 14)
 
 
 def test_first_plan_covers_all_then_only_by_section(full_org):

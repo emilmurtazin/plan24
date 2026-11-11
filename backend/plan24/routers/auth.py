@@ -27,7 +27,7 @@ PERMISSIONS = {   # что может роль — для интерфейса (
     "director": ["reports"],
     "manager": ["refs.write", "catalog.write", "plan.run", "settings.write", "fact.any", "audit", "reports"],
     "technologist": ["catalog.write", "reports"],
-    "foreman": ["plan.run", "fact.center", "reports"],
+    "foreman": ["plan.run", "fact.center", "catalog.write", "reports"],
     "worker": ["fact.own"],
     "viewer": ["reports"],
 }

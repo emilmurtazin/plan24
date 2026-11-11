@@ -3,7 +3,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const MANAGERS = ['owner', 'manager'], STAFF = ['owner', 'manager', 'foreman'], READERS = ['owner', 'manager', 'technologist', 'foreman', 'viewer', 'director'], CATALOG = ['owner', 'manager', 'technologist'];
+const MANAGERS = ['owner', 'manager'], STAFF = ['owner', 'manager', 'foreman'], READERS = ['owner', 'manager', 'technologist', 'foreman', 'viewer', 'director'], CATALOG = ['owner', 'manager', 'technologist', 'foreman'];
 const EVERYONE = [...READERS, 'worker'];
 /* Порядок — как в списках выбора. Код роли owner в интерфейсе называется «Администратор», manager — «Руководитель проекта». */
 const ROLE_RU = { owner: 'Администратор', director: 'Директор', manager: 'Руководитель проекта', technologist: 'Технолог', foreman: 'Бригадир', worker: 'Сборщик', viewer: 'Наблюдатель' };
@@ -131,6 +131,7 @@ function renderTokenPage(kind, token) {
 const NAV = [
   { id: 'home', label: 'Дашборд', roles: READERS, ico: '▦' },
   { id: 'exec', label: 'Выполнение', roles: EVERYONE, alt: { worker: 'Мои задания' }, ico: '✔' },
+  { id: 'facts', label: 'Факты', roles: READERS, ico: '☰' },
   { id: 'people', label: 'Работники', roles: STAFF, ico: '☺' },       // бригадиру — только работники своего участка
   { id: 'status', label: 'Статус заказов', roles: READERS, ico: '≡' },
   { id: 'catalog', label: 'Каталог изделий', roles: CATALOG, ico: '▣' },

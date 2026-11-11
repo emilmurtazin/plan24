@@ -334,6 +334,11 @@ def _underperformance(db: Session, t: int, today: date, centers: dict, own) -> d
             "adherence": adherence}
 
 
+def _fact_center(f, wcenter: dict):
+    """Участок факта: участок исполнителя, а у факта «на заказ» (без исполнителя) — участок, указанный при вводе."""
+    return wcenter.get(f.worker_id) if f.worker_id is not None else f.work_center_id
+
+
 def _reasons(db: Session, t: int, today: date, wcenter: dict, cname: dict, own) -> list:
     start = today - timedelta(days=90)
     names = {r.id: r.name for r in db.scalars(select(FactReason).where(FactReason.tenant_id == t))}
@@ -343,16 +348,16 @@ def _reasons(db: Session, t: int, today: date, wcenter: dict, cname: dict, own) 
     for f in db.scalars(select(Fact).where(Fact.tenant_id == t, Fact.deleted_at.is_(None), Fact.fact_date >= start)):
         if f.order_line_id in dead or not (f.reason_id or (f.note or "").strip()):
             continue
-        if own is not None and wcenter.get(f.worker_id) != own:
+        if own is not None and _fact_center(f, wcenter) != own:
             continue
         groups[names.get(f.reason_id, "Без причины (комментарий)") if f.reason_id else "Без причины (комментарий)"].append(f)
     out = []
     for name, fs in groups.items():
         out.append({
-            "reason": name, "count": len(fs), "days": len({f.fact_date for f in fs}), "workers": len({f.worker_id for f in fs}),
+            "reason": name, "count": len(fs), "days": len({f.fact_date for f in fs}), "workers": len({f.worker_id for f in fs if f.worker_id is not None}),
             "last_date": max(f.fact_date for f in fs).isoformat(), "repeating": len(fs) >= 2,
             "operations": [{"name": ops.get(o, "?"), "count": c} for o, c in Counter(f.operation_id for f in fs).most_common(3)],
-            "sections": [{"name": cname.get(s, "Без участка"), "count": c} for s, c in Counter(wcenter.get(f.worker_id, NO_SECTION) for f in fs).most_common(3)],
+            "sections": [{"name": cname.get(s, "Без участка"), "count": c} for s, c in Counter(_fact_center(f, wcenter) or NO_SECTION for f in fs).most_common(3)],
             "notes": list(dict.fromkeys(f.note.strip() for f in sorted(fs, key=lambda f: f.fact_date, reverse=True) if (f.note or "").strip()))[:2],
         })
     out.sort(key=lambda r: (-r["count"], r["reason"]))

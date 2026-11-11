@@ -334,7 +334,8 @@ class Fact(Base):
     fact_date: Mapped[date] = mapped_column(Date, index=True)
     order_line_id: Mapped[int] = mapped_column(ForeignKey("order_lines.id"))
     operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id"))
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"))
+    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"))     # пусто — факт «на заказ», без привязки к исполнителю
+    work_center_id: Mapped[Optional[int]] = mapped_column(ForeignKey("work_centers.id"))   # участок факта без исполнителя (у факта с исполнителем не заполняется)
     qty: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(16), default="confirmed")   # submitted | confirmed
     reason_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fact_reasons.id"))
@@ -346,7 +347,10 @@ class Fact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     # итог дня по исполнителю: повторный ввод заменяет значение (FR-23)
-    __table_args__ = (UniqueConstraint("tenant_id", "fact_date", "order_line_id", "operation_id", "worker_id"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "fact_date", "order_line_id", "operation_id", "worker_id"),
+                      # факт без исполнителя: один итог дня на позицию × операцию × участок
+                      Index("ux_fact_unlinked", "tenant_id", "fact_date", "order_line_id", "operation_id", "work_center_id", unique=True,
+                            sqlite_where=text("worker_id IS NULL"), postgresql_where=text("worker_id IS NULL")))
 
 
 class IdempotencyKey(Base):
