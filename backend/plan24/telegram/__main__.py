@@ -19,6 +19,29 @@ def _session():
     return dbm.job_session()          # движок создаётся один раз при первом обращении, а не на каждое сообщение
 
 
+def _tick(now=None) -> list:
+    """Один проход планировщика. Три независимых шага: сбой одного (например, снимков плана) не мешает уведомлениям и отчётам."""
+    now = now or datetime.now(timezone.utc)
+    out: list = []
+    s = _session()
+    try:
+        out = notifications.run_due(s, now); s.commit()
+    except Exception as e:                                          # noqa: BLE001
+        s.rollback(); out = []; log.error("notifications failed: %s", type(e).__name__)
+    finally:
+        s.close()
+    client.deliver(out)
+    s = _session()
+    try:
+        snapshots.sync_all(s, now); s.commit()
+    except Exception as e:                                          # noqa: BLE001
+        s.rollback(); log.error("snapshots failed: %s", type(e).__name__)
+    finally:
+        s.close()
+    _reports(_session())
+    return out
+
+
 def _reports(s) -> int:
     """Регулярные отчёты в группы (раздел «Организация → Отчёты в Telegram»). Сбой не останавливает планировщик."""
     try:
@@ -69,7 +92,7 @@ def probe(c, cfg, with_webhook: bool = False) -> bool:
         print("✘ Telegram недоступен:", explain(e), flush=True)
         return False
     print(f"✔ Telegram доступен ({(time.monotonic() - t0) * 1000:.0f} мс), бот @{me.get('username')}", flush=True)
-    if cfg["bot_username"] and cfg["bot_username"].lstrip("@") != me.get("username"):
+    if cfg["bot_username"] and cfg["bot_username"].lstrip("@").lower() != (me.get("username") or "").lower():      # имена в Telegram без учёта регистра
         print(f"! PLAN24_TG_BOT_USERNAME={cfg['bot_username']}, а токен принадлежит @{me.get('username')}", flush=True)
     if with_webhook:
         try:
@@ -97,14 +120,12 @@ def main(argv):
     elif cmd == "delete-webhook":
         c.delete_webhook(); print("Вебхук удалён")
     elif cmd == "notify":
-        s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); client.deliver(out)
-        n = _reports(s)
-        print("Сообщений отправлено:", len(out), "| отчётов в группы:", n)
+        out = _tick()
+        print("Сообщений отправлено:", len(out))
     elif cmd == "scheduler":
         probe(c, cfg)
         while True:
-            s = _session(); out = notifications.run_due(s, datetime.now(timezone.utc)); snapshots.sync_all(s, datetime.now(timezone.utc)); s.commit(); s.close()
-            client.deliver(out); _reports(_session()); time.sleep(60)
+            _tick(); time.sleep(60)
     elif cmd == "poll":          # без публичного HTTPS: бот опрашивает Telegram сам (вебхук при этом должен быть удалён)
         offset, delay = 0, 1
         probe(c, cfg)                                                  # итог проверки связи — в лог при каждом старте

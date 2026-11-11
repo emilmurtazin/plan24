@@ -57,4 +57,6 @@ def sync_all(db: Session, now_utc: datetime) -> int:
         st = db.get(PlannerSettings, tid)
         if st is not None and st.snapshot_on != today and sync_active(db, tid, today):
             n += 1
+            db.flush()          # строки этой организации записываем, пока выставлен её контекст: иначе автосброс при переходе
+                                # к следующей организации пошлёт их под чужим контекстом, и RLS их отклонит
     return n

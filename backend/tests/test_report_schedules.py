@@ -250,3 +250,43 @@ def test_chatid_command_in_group(full_org, tg):
         assert out and out[0]["chat_id"] == -100555 and "-100555" in out[0]["text"]
     assert not group_update(900010, "supergroup", "привет")                    # прочее в группах игнорируется
     assert not any("Номер этой группы" in m.get("text", "") for m in group_update(900011, "private", "/chatid"))
+
+
+# ---------------------------------------------------------------- снимки плана при нескольких организациях (сбой из боевых логов)
+def test_sync_all_writes_rows_under_their_own_tenant(full_org, env, monkeypatch):
+    """В PostgreSQL строки записываются под контекстом текущей организации; если они «доезжают» после перехода к следующей,
+    RLS их отклоняет и планировщик падает (боевой сбой: new row violates row-level security policy for table day_plan_snapshots)."""
+    from sqlalchemy import event, text
+    from plan24 import snapshots
+    from plan24.models import DayPlanSnapshot
+    full_org.post("/plans/replan")
+    second = Org(env, "second@b.ru", "Цех Б"); second.seed("furniture"); second.post("/plans/replan")
+    ctx = {"tid": None}
+    real = dbm.set_tenant
+    monkeypatch.setattr(snapshots.dbm, "set_tenant", lambda session, tid: (ctx.update(tid=tid), real(session, tid))[1])
+    s = dbm.admin_session(); s.info["write"] = True
+    flushed = []
+
+    @event.listens_for(s, "before_flush")
+    def check(sess, fc, inst):
+        for o in sess.new:
+            if isinstance(o, DayPlanSnapshot):
+                flushed.append((o.tenant_id, ctx["tid"]))
+    try:
+        s.execute(text("UPDATE planner_settings SET snapshot_on = NULL"))
+        assert snapshots.sync_all(s, at_msk("08:00")) == 2
+        s.commit()
+    finally:
+        s.close()
+    assert flushed and all(row == ctx_ for row, ctx_ in flushed), {x for x in flushed if x[0] != x[1]}
+
+
+def test_scheduler_tick_survives_snapshot_failure(full_org, tg, monkeypatch):
+    from plan24 import snapshots
+    from plan24.telegram import __main__ as sched
+    make(full_org, metrics=["order_statuses"])
+    monkeypatch.setattr(snapshots, "sync_all", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rls")))
+    monkeypatch.setattr(sched, "_session", lambda: dbm.admin_session())
+    monkeypatch.setattr(sched.report_schedules, "due_date", lambda rs, now: TODAY)
+    sched._tick(at_msk("08:45"))
+    assert tg.sent                                                  # отчёт ушёл, несмотря на сбой снимков
