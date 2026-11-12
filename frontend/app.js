@@ -132,6 +132,7 @@ const NAV = [
   { id: 'home', label: 'Дашборд', roles: READERS, ico: '▦' },
   { id: 'exec', label: 'Выполнение', roles: EVERYONE, alt: { worker: 'Мои задания' }, ico: '✔' },
   { id: 'facts', label: 'Факты', roles: READERS, ico: '☰' },
+  { id: 'flow', label: 'Карта потока', roles: READERS, ico: '⇄' },
   { id: 'people', label: 'Работники', roles: STAFF, ico: '☺' },       // бригадиру — только работники своего участка
   { id: 'status', label: 'Статус заказов', roles: READERS, ico: '≡' },
   { id: 'catalog', label: 'Каталог изделий', roles: CATALOG, ico: '▣' },

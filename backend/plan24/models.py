@@ -223,6 +223,8 @@ class Operation(Base):
     start_after_pct: Mapped[Optional[float]] = mapped_column(Float)
     # предшественники: имена операций маршрута; пусто (NULL) — после всего предыдущего порядка, [] — без предшественников
     predecessors: Mapped[Optional[list]] = mapped_column(JSON)
+    map_x: Mapped[Optional[float]] = mapped_column(Float)        # положение карточки на «Карте потока» (пусто — раскладывается автоматически)
+    map_y: Mapped[Optional[float]] = mapped_column(Float)
     version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (UniqueConstraint("routing_id", "name"),)
 

@@ -515,6 +515,33 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Журнал'), 'вкладки организации'); click(byText('#view nav.seg button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 
+  // --- «Карта потока»: карточки операций, связи, цвет по выполнению, добавление и удаление карточек ---
+  click(byText('#drawer button', 'Карта потока')); await until(() => $$('.fm-card').length >= 2 && $('#fm-head .bar'), 'карточки на карте потока');
+  { const n0 = $$('.fm-card').length;
+    if (!$('#fm-add') || $('#fm-add').hidden) throw new Error('владельцу должна быть доступна кнопка «+ Карточка»');
+    click($('#fm-add')); await until(() => $('.modal form [name=norm]'), 'форма новой карточки');
+    { const f = $('.modal form'); setv(f.elements.name, 'Контроль качества'); setv(f.elements.norm, '12'); click($('.modal button[type=submit]')); }
+    await until(() => $$('.fm-card').length === n0 + 1 && !$('.modal'), 'новая карточка на доске');
+    const card = [...$$('.fm-card')].find(c => c.textContent.includes('Контроль качества'));
+    card.dispatchEvent(new win.MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 })); $('#fm-board').dispatchEvent(new win.MouseEvent('pointerup', { bubbles: true, clientX: 10, clientY: 10 }));
+    await until(() => $('#fm-side h3') && $('#fm-side h3').textContent.includes('Контроль качества'), 'панель карточки');
+    // перетаскивание карточки (сдвиг сохраняется) и связь «за точку» к другой карточке
+    const ev = (t, x, y, tgt) => (tgt || $('#fm-board')).dispatchEvent(new win.MouseEvent(t, { bubbles: true, clientX: x, clientY: y }));
+    const getCard = () => [...$$('.fm-card')].find(c => c.textContent.includes('Контроль качества')); const left0 = getCard().style.left; ev('pointerdown', 100, 100, getCard()); ev('pointermove', 220, 140); ev('pointerup', 220, 140);
+    if (getCard().style.left === left0) throw new Error('карточка не сдвинулась при перетаскивании');
+    const other = [...$$('.fm-card')].find(c => c !== getCard());
+    win.document.elementFromPoint = () => getCard(); ev('pointerdown', 5, 5, other.querySelector('.fm-out')); ev('pointermove', 50, 50); ev('pointerup', 50, 50);
+    await until(() => $$('#fm-side .fm-preds li').length === 1 && $('#fm-side h3').textContent.includes('Контроль качества'), 'связь, проведённая за точку к другой карточке');
+    click($('#fm-side [data-rm]')); await until(() => !$('#fm-side .fm-preds'), 'связь удалена');
+    const first = [...$$('#fm-padd option')].find(o => o.value); setv($('#fm-padd'), first.value);
+    await until(() => $$('#fm-side .fm-preds li').length === 1, 'связь добавлена через панель');
+    const edges = $$('.fm-edge:not(.imp)').length; if (!edges) throw new Error('на доске нет явной стрелки после добавления связи');
+    click($('#fm-side [data-rm]')); await until(() => !$('#fm-side .fm-preds'), 'связь удалена');
+    click($('#fm-delnode')); await until(() => byText('.modal button', 'Да') || byText('.modal button', 'Перенести'), 'подтверждение удаления карточки');
+    if (byText('.modal button', 'Да')) click(byText('.modal button', 'Да'));
+    await until(() => $$('.fm-card').length === n0 && !$('.modal'), 'карточка удалена');
+    step('карта потока: карточки с выполнением, добавлена карточка, связь добавлена и удалена, карточка удалена'); }
+
   // --- «Факты»: единое окно контроля факта, ввод факта на заказ без работника ---
   click(byText('#drawer button', 'Факты')); await until(() => byText('#ft-add', '+ Внести факт на заказ') && $('#ft-tbl table'), 'окно «Факты»');
   { click($('#ft-add')); await until(() => $('.modal form [name=line]') && $('.modal form [name=op]').options.length, 'форма факта на заказ');
