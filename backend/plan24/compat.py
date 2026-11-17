@@ -76,7 +76,8 @@ def _fmt_num(x: float):
     return int(x) if float(x).is_integer() else x
 
 
-def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), efficiency: float = 1.0, cap_load: bool = False) -> PlanInput:
+def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), efficiency: float = 1.0, cap_load: bool = False,
+                horizon_weeks: int = 8) -> PlanInput:
     """ds — словарь формата tools/emulate.js: orders, ops, workers, holidays, facts, settings."""
     s = ds.get("settings") or {}
 
@@ -140,7 +141,7 @@ def build_input(ds: dict, today: date, weekdays: tuple = (0, 1, 2, 3, 4), effici
                              op=str(f["op"]).strip(), worker=str(f["worker"]).strip(),
                              plan=to_num(f.get("plan"), 0), qty=qty, reason=reason))
 
-    cal = build_work_calendar(today, [o.due for o in orders], holidays, weekdays)
+    cal = build_work_calendar(today, [o.due for o in orders], holidays, weekdays, horizon_weeks=horizon_weeks)
     cfg = PlanConfig(
         today=cal[0] if cal else today, work_days=cal, efficiency=efficiency,
         max_workers_per_op=max(1, int(_js_round(to_num(s.get("maxWorkers"), 4)))),

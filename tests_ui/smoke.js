@@ -515,6 +515,21 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
   click(byText('#drawer button', 'Организация')); await until(() => byText('#view nav.seg button', 'Журнал'), 'вкладки организации'); click(byText('#view nav.seg button', 'Журнал'));
   await until(() => $$('#view tr').length > 5, 'журнал'); step('журнал: записей ' + ($$('#view tr').length - 1));
 
+  // --- «План-график»: заказы, план/факт по дням, фильтры по участку и заказам, раскрытие по операциям ---
+  click(byText('#drawer button', 'План-график')); await until(() => $$('.gt-ord').length >= 2 && $('#gt-chart .gt-head'), 'план-график');
+  { const n0 = $$('.gt-ord').length;
+    if (!$$('.gt-c.plan').length) throw new Error('в план-графике нет полос плана');
+    click($$('.gt-ord')[0]); await until(() => $$('.gt-sub').length >= 1 && !byText('.gt-sub', 'Загрузка'), 'операции заказа в план-графике');
+    click($$('.gt-ord')[0]); await until(() => !$$('.gt-sub').length, 'сворачивание операций');
+    const wc = $('#gt-wc'); setv(wc, [...wc.options].find(o => o.value).value);
+    await until(() => $$('.gt-ord').length >= 1 && !byText('#gt-sum', 'Заказов0'), 'фильтр по участку');
+    setv(wc, ''); await until(() => $$('.gt-ord').length === n0, 'сброс фильтра участка');
+    $('#gt-dd').open = true; const cb = $$('#gt-dd-l input')[0]; cb.checked = true; cb.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => $$('.gt-ord').length === 1, 'фильтр по заказу');
+    click($('#gt-all')); await until(() => $$('.gt-ord').length === n0, 'сброс фильтра заказов');
+    click(byText('[data-sc]', 'Недели')); await until(() => $$('.gt-days span').length > 0 && $$('.gt-ord').length === n0, 'масштаб «Недели»');
+    step('план-график: заказы с планом и фактом по дням, раскрытие по операциям, фильтры по участку и заказам, масштаб'); }
+
   // --- «Карта потока»: карточки операций, связи, цвет по выполнению, добавление и удаление карточек ---
   click(byText('#drawer button', 'Карта потока')); await until(() => $$('.fm-card').length >= 2 && $('#fm-head .bar'), 'карточки на карте потока');
   { const n0 = $$('.fm-card').length;

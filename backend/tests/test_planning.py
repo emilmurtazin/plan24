@@ -1,5 +1,5 @@
 """План из БД: паритет с эталоном, снапшоты, актуальность, заморозка, влияние факта и отсутствий."""
-from datetime import date, timedelta
+from datetime import datetime, date, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -45,7 +45,10 @@ def test_db_plan_equals_reference_plan(env, name):
     env.state["today"] = today
     assert o.patch("/settings", json={"realistic_mode": False}).status_code == 200      # эталон — поведение скрипта, без реалистичного режима
     assert o.replan_all().status_code == 201
-    ref = plan_rows_script_format(run_ref(build_input(ds, today, cap_load=True)))
+    # эталон считается на том же горизонте, который выбрал сервис (он расширяется, пока заказы не уместятся); на стандартных
+    # 8 неделях план обязан совпасть без оговорок
+    weeks = o.get("/plans/active").json()["plan"]["params"]["horizon_weeks"]
+    ref = plan_rows_script_format(run_ref(build_input(ds, today, cap_load=True, horizon_weeks=weeks)))
     mine = db_rows(o.data["user"]["tenant"]["id"])
     assert ref, "эталонный план пуст — тест бессмысленен"
     assert len(mine) == len(ref)

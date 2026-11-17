@@ -63,7 +63,7 @@ def _meta(db, user, p: Plan, today: date, with_warnings: bool) -> dict:
     ov = {"priority_strictness": p.params.get("strictness"), "fix_group_start": p.params.get("fix_group_start"), "efficiency": p.params.get("efficiency"),
           "scope_center_ids": p.params.get("scope_center_ids") or ([p.params["scope_center_id"]] if p.params.get("scope_center_id") else None)}
     ov = {k: v for k, v in ov.items() if v is not None}
-    inp, _ = planning.build_input(db, user.tenant_id, today, ov)
+    inp, _ = planning.build_input(db, user.tenant_id, today, ov, horizon_weeks=p.params.get("horizon_weeks") or 8)    # тот же горизонт, что при расчёте
     n = db.scalar(select(func.count()).select_from(PlanItem).where(PlanItem.plan_id == p.id))
     st = p.summary.get("status", [])
     by: dict = {}
@@ -116,7 +116,7 @@ def compare(body: RunIn = RunIn(), user: User = Depends(require(*STAFF)), db: Se
     scope = _scope(db, user, body)
     try:
         dbm.begin_snapshot(db)
-        inp, _ = planning.build_input(db, user.tenant_id, today, _overrides(body, scope))
+        inp, *_ = planning.solve(db, user.tenant_id, today, _overrides(body, scope))
     except planning.NoActivePlan:
         raise HTTPException(409, "Сначала нужен общий план организации — его строит руководитель")
     return compare_strictness(inp)

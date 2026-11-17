@@ -85,6 +85,8 @@ CASES = [
     ("POST", "/users/import", {"rows": [{"email": "bad", "first_name": "А", "last_name": "Б", "role": "viewer"}], "dry_run": True}, {O}),
     ("POST", "/products/import", {"rows": [{"product": "Imp-perm", "operation": "Оп", "norm_per_day": "5"}], "dry_run": True}, CATALOG),
     ("PATCH", "/auth/profile", {}, ALL),
+    ("GET", "/schedule", None, READERS),
+    ("GET", "/schedule/999999/operations?date_from=2026-10-01&date_to=2026-10-31", None, READERS),
     ("GET", "/flow-map/targets", None, READERS),
     ("GET", "/flow-map?order_line_id=999999", None, READERS),
     ("POST", "/flow-map/999999/links", {"from_id": 1, "to_id": 2}, CATALOG),

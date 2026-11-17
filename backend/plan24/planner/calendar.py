@@ -16,7 +16,8 @@ def build_work_calendar(
     work_weekdays: tuple = (0, 1, 2, 3, 4),   # Пн–Пт (date.weekday())
     horizon_weeks: int = HORIZON_WEEKS,
 ) -> tuple:
-    """Рабочие дни от `today` до max(последний срок + 14 дней, today + 8 недель).
+    """Рабочие дни от `today` до max(последний срок + 14 дней, today + horizon_weeks недель). Минимум — 8 недель; если работа не
+    умещается, planning.solve расширяет горизонт (план строится до завершения заказов).
 
     Если `today` — выходной или праздник, первым днём становится ближайший рабочий.
     """

@@ -49,7 +49,7 @@ def is_work_day(db: Session, tenant_id: int, d: date) -> bool:
     return db.scalar(select(Holiday.id).where(Holiday.tenant_id == tenant_id, Holiday.holiday_date == d).limit(1)) is None
 
 
-def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[dict] = None):
+def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[dict] = None, horizon_weeks: int = 8):
     st: PlannerSettings = db.get(PlannerSettings, tenant_id)
     ov = overrides or {}
     q = lambda m: select(m).where(m.tenant_id == tenant_id)
@@ -65,7 +65,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     # (попадёт в следующий расчёт); падать на чужих или частично записанных данных нельзя
     orders = [o for o in orders if o.product_id in products and o.project_id in projects and o.routing_id in routings
               and routings[o.routing_id].tenant_id == tenant_id and products[o.product_id].tenant_id == tenant_id]
-    cal = build_work_calendar(today, [o.due_date for o in orders], holidays, _weekdays(st.work_weekdays))
+    cal = build_work_calendar(today, [o.due_date for o in orders], holidays, _weekdays(st.work_weekdays), horizon_weeks=horizon_weeks)
     # Работа в нерабочие дни (выходные, праздники), добавленная вручную и закреплённая: эти даты добавляются в календарь движка,
     # чтобы такие строки не теряли своё место и вычитались из потребности; автопланирование на них ничего не ставит (см. pinned_days).
     extra_days: list = []
@@ -254,6 +254,23 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
     return inp, ctx
 
 
+HORIZON_STEPS = (8, 16, 32, 64, 156)        # недель: горизонт растёт, пока заказы не уместятся целиком, но не дальше трёх лет
+NEEDS_HORIZON = ("HORIZON_EXCEEDED", "PRIORITY_HORIZON")
+
+
+def solve(db: Session, tenant_id: int, today: date, overrides: Optional[dict] = None, weeks: Optional[int] = None):
+    """Расчёт без жёсткого горизонта в 2 месяца: если часть работы не уместилась (HORIZON_EXCEEDED / PRIORITY_HORIZON), календарь
+    расширяется (8 → 16 → 32 → 64 → 156 недель) и расчёт повторяется — план строится до завершения заказов. Дальше трёх лет
+    не считаем: если и там не помещается, предупреждение остаётся (не хватает людей или мощности). weeks — фиксированный горизонт
+    (для проверки «устарел ли план»: берётся тот, что использован при расчёте). → (вход, контекст, результат, недель)."""
+    steps = (weeks,) if weeks else HORIZON_STEPS
+    for i, w in enumerate(steps):
+        inp, ctx = build_input(db, tenant_id, today, overrides, horizon_weeks=w)
+        res = run_planner(inp)
+        if i == len(steps) - 1 or not any(x.code in NEEDS_HORIZON for x in res.warnings):
+            return inp, ctx, res, w
+
+
 def _prior_plan_items(db: Session, tenant_id: int, plan_today: date, freeze_window: set) -> list:
     """Строки плана, которые нужно учесть как «ранее запланированное»:
     — активный план на ближайшие дни (заморозка, BR-11), только на даты окна заморозки;
@@ -301,8 +318,7 @@ def _status_json(inp, res, ctx) -> list:
 
 
 def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict] = None) -> Plan:
-    inp, ctx = build_input(db, user.tenant_id, today, overrides)
-    res = run_planner(inp)
+    inp, ctx, res, weeks = solve(db, user.tenant_id, today, overrides)
     summary = {
         "status": _status_json(inp, res, ctx),
         "load": reports.load_matrix(inp, res),
@@ -331,7 +347,7 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
         db.flush()
     p = Plan(tenant_id=user.tenant_id, status="active", created_by=user.id, warnings=warnings, summary=summary,
              input_hash=input_hash(inp),
-             params={"today": inp.config.today.isoformat(), "strictness": inp.config.priority_strictness,
+             params={"today": inp.config.today.isoformat(), "horizon_weeks": weeks, "strictness": inp.config.priority_strictness,
                      "fix_group_start": inp.config.fix_group_start_after_deadline, "efficiency": inp.config.efficiency,
                      "realistic_mode": inp.config.focus, "min_chunk_share": inp.config.min_chunk_share,
                      "max_tasks_per_day": inp.config.max_tasks_per_day,
