@@ -223,6 +223,7 @@ class Operation(Base):
     start_after_pct: Mapped[Optional[float]] = mapped_column(Float)
     # предшественники: имена операций маршрута; пусто (NULL) — после всего предыдущего порядка, [] — без предшественников
     predecessors: Mapped[Optional[list]] = mapped_column(JSON)
+    predecessor_pcts: Mapped[Optional[dict]] = mapped_column(JSON)   # «Партия» по каждому предшественнику: {имя: %}; нет записи — берётся start_after_pct
     map_x: Mapped[Optional[float]] = mapped_column(Float)        # положение карточки на «Карте потока» (пусто — раскладывается автоматически)
     map_y: Mapped[Optional[float]] = mapped_column(Float)
     version: Mapped[int] = mapped_column(Integer, default=1)

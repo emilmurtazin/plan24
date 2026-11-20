@@ -226,7 +226,7 @@ const confirmBox = (text) => new Promise(res => {
   $('[data-y]', m.el).onclick = () => { m.close(); res(true); }; $('[data-n]', m.el).onclick = () => { m.close(); res(false); };
 });
 
-const WARN_RU = { NOT_DISTRIBUTED: 'Не распределено по участкам', NO_WORKERS: 'Нет подходящих работников', HORIZON_EXCEEDED: 'Не завершается даже за 3 года (не хватает людей или мощности)', PRIORITY_HORIZON: 'Горизонт для приоритета', NO_OPERATIONS: 'Нет операций', DATA_INVALID: 'Некорректные данные', WORKER_NO_SECTION: 'Работник без участка' };
+const WARN_RU = { NOT_DISTRIBUTED: 'Не распределено по участкам', PINNED_TRIMMED: 'Закреплено больше, чем нужно — лишнее убрано', NO_WORKERS: 'Нет подходящих работников', HORIZON_EXCEEDED: 'Не завершается даже за 3 года (не хватает людей или мощности)', PRIORITY_HORIZON: 'Горизонт для приоритета', NO_OPERATIONS: 'Нет операций', DATA_INVALID: 'Некорректные данные', WORKER_NO_SECTION: 'Работник без участка' };
 
 /* ---------------- Дашборд ---------------- */
 const ST = { 'Готово': ['b-done', '✔'], 'В работе': ['b-work', '▶'], 'Риск опоздания': ['b-risk', '⚠'], 'Нет плана': ['b-none', '…'], 'Нет операций': ['b-noop', '—'] };

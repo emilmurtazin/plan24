@@ -113,6 +113,11 @@ def group_batches(orders: list) -> dict:
     return m
 
 
+def pi_manual(pi) -> int:
+    """Порядок обработки закреплённых строк: ручные (MANUAL) — первыми, остальные следом."""
+    return 0 if pi.reason == "MANUAL" else 1
+
+
 def plan(inp: PlanInput) -> PlanResult:
     cfg: PlanConfig = inp.config
     work_days = cfg.work_days
@@ -145,6 +150,7 @@ def plan(inp: PlanInput) -> PlanResult:
     # --- факт ---
     fact_by_pio: dict = {}
     frozen_by_key: dict = {}      # (date, order_id, op, worker) -> plan qty
+    frozen_manual: dict = {}      # то же, только ручные задания
     existing_keys: set = set()
     today_fact_load: dict = defaultdict(float)
     worker_by_name = {w.name: w for w in workers}
@@ -170,6 +176,8 @@ def plan(inp: PlanInput) -> PlanResult:
                         today_fact_load[f.worker] += f.qty / day_cap
         if f.qty == 0 and f.plan > 0:
             frozen_by_key[row_key] = f.plan
+            if f.reason == "MANUAL":                     # ручное задание в окне заморозки: явное решение человека, не урезается
+                frozen_manual[row_key] = f.plan
 
     # --- закреплённые вручную: день работника закрыт для автопланирования, строки остаются на месте ---
     for wn, d in inp.pinned_days:
@@ -237,6 +245,7 @@ def plan(inp: PlanInput) -> PlanResult:
 
     new_fact_rows: list = []
     priority_last_day: dict = {}
+    trimmed: list = []          # строки, урезанные до потребности по заказу (закреплённое/замороженное не должно планировать лишнего)
 
     emitted: dict = {}          # (id позиции, операция) -> число операций по дням плана; нужно для старта партиями
     tasks_by: dict = {}         # (имя работника, день) -> {(id позиции, операция)}: что он делает в этот день (реалистичный режим)
@@ -381,7 +390,7 @@ def plan(inp: PlanInput) -> PlanResult:
             # Зависимости: у операции без predecessors (None) — весь предыдущий порядок, как в скрипте; с predecessors — только
             # перечисленные операции (пустой список — старт сразу). Партия: старт, когда они выполнены на start_after_pct %.
             def _progressive(o):
-                return o.start_after_pct is not None and o.start_after_pct < 100 - EPS
+                return (o.start_after_pct is not None and o.start_after_pct < 100 - EPS) or any(p < 100 - EPS for _, p in o.pred_pcts)
 
             legacy_gated = any(o.predecessors is None and gi > 0 and not _progressive(o) for o in group_ops)
             group_last_day = min_start_day if (gi == 0 or legacy_gated) else min_start_for_order
@@ -401,6 +410,9 @@ def plan(inp: PlanInput) -> PlanResult:
                 progressive = bool(prev_list) and _progressive(op)
                 op_ready_items, op_min_start = (order.qty, min_start_for_order) if progressive else (dep_ready, dep_start)
                 total_required = math.ceil(order.qty * op.per_item - EPS)
+                pinned_rk = {(work_days[di], order.id, op.name, pi.worker) for di, pi in pinned_by_pair.get((order.id, op.name), ())}
+                manual_rest = (sum(max(0, pi.qty - pi.fact) for _, pi in pinned_by_pair.get((order.id, op.name), ()) if pi.reason == "MANUAL")
+                               + sum(max(1, _js_round(q)) for k, q in frozen_manual.items() if k[1] == order.id and k[2] == op.name))
                 done_ops = done_map.get((order.id, op.name), 0)
                 done_items = math.floor(done_ops / op.per_item)
 
@@ -412,23 +424,32 @@ def plan(inp: PlanInput) -> PlanResult:
                     hold = 0     # BR-8: удержание снимается автоматически
                 blocked = min(hold, op_ready_items)
                 available_items = max(0, op_ready_items - blocked)
-                prev_cache: dict = {}
+                rel_cache: dict = {}
 
-                def prev_cum(day, _pl=prev_list, _order=order):
-                    """Сколько изделий уже прошло операции-предшественники (по умолчанию — весь предыдущий порядок) к концу дня day."""
-                    if day not in prev_cache:
+                # Партия по каждому предшественнику: он «открывает» изделия для этой операции, когда сам выполнен на свой %
+                # (своя запись в pred_pcts, иначе общий start_after_pct, иначе 100 — только после полного окончания).
+                own_pct = dict(op.pred_pcts)
+                dflt = op.start_after_pct if op.start_after_pct is not None else 100
+
+                def pred_thr(po, _own=own_pct, _d=dflt, _q=order.qty):
+                    return max(1, math.ceil(_q * _own.get(po.name, _d) / 100 - EPS))
+
+                def released(day, _pl=prev_list, _order=order, _c=rel_cache):
+                    """Сколько изделий уже можно брать в работу к концу дня day: минимум по предшественникам; предшественник, не достигший
+                    своего порога партии, не пускает ничего."""
+                    if day not in _c:
                         m = _order.qty
                         for po in _pl:
                             arr = emitted.get((_order.id, po.name))
                             cum = done_map.get((_order.id, po.name), 0) + (sum(arr[: day + 1]) if arr else 0)
-                            m = min(m, math.floor(cum / po.per_item + EPS))
-                        prev_cache[day] = m
-                    return prev_cache[day]
+                            items = math.floor(cum / po.per_item + EPS)
+                            m = min(m, items if items >= pred_thr(po) else 0)
+                        _c[day] = m
+                    return _c[day]
 
-                thr_items = max(1, math.ceil(order.qty * (op.start_after_pct or 100) / 100 - EPS))
                 if progressive:
-                    final_ready = prev_cum(total_days - 1)
-                    available_items = max(0, min(order.qty, final_ready) - blocked) if final_ready >= thr_items else 0
+                    final_ready = released(total_days - 1)
+                    available_items = max(0, min(order.qty, final_ready) - blocked)
 
                 candidates = [w for w in workers if w.skill >= op.min_skill and _allowed(w, order) and _op_allowed(w, order, op)]
                 sched_pool = [w for w in candidates if w.name not in inp.fixed_workers] if inp.fixed_workers else candidates
@@ -440,8 +461,19 @@ def plan(inp: PlanInput) -> PlanResult:
                         for w in candidates:
                             rk = (work_days[day], order.id, op.name, w.name)
                             planned = frozen_by_key.get(rk)
+                            if planned and cfg.trim_frozen and rk in pinned_rk:
+                                continue                    # эта же строка закреплена вручную/днём: её учтёт блок закреплённых (иначе считалась бы дважды)
                             if planned:
                                 pl = max(1, _js_round(planned))
+                                is_manual = rk in frozen_manual
+                                need_left = max(0, total_required - done_ops - already_ops - (0 if is_manual else manual_rest))       # ручные задания не урезаются: они берут потребность первыми
+                                if cfg.trim_frozen and not is_manual and pl > need_left and not (inp.fixed_workers and w.name in inp.fixed_workers):    # строки других участков не трогаем
+                                    # потребность уменьшилась (факт другого работника, меньше заказ) — лишнего не держим
+                                    trimmed.append((work_days[day], order.id, op.name, w.name, pl, need_left))
+                                    pl = need_left
+                                    if pl <= 0:
+                                        frozen_by_key[rk] = 0
+                                        continue
                                 already_ops += pl
                                 emit(day, order, op, pl, w, "FROZEN", True)
                                 spend_time(w, day, pl * op_days(op, w))
@@ -453,14 +485,23 @@ def plan(inp: PlanInput) -> PlanResult:
                                 if day > order_max_day:
                                     order_max_day = day
                                 frozen_by_key[rk] = 0
-                for di, pi in pinned_by_pair.get((order.id, op.name), ()):
-                    already_ops += pi.qty
-                    mark(order.id, op.name, di, pi.qty)
+                for di, pi in sorted(pinned_by_pair.get((order.id, op.name), ()), key=lambda x: (pi_manual(x[1]), x[0])):
+                    # потребность по операции: нужно − уже сделано − уже поставлено; строка с внесённым фактом закрывает только остаток.
+                    # Ручные задания (MANUAL) — явное решение человека: они не урезаются и берут потребность первыми; закреплённое системное — урезается.
+                    need_left = max(0, total_required - done_ops - already_ops)
+                    rest = max(0, pi.qty - pi.fact)
+                    counted = rest if pi.reason == "MANUAL" else min(rest, need_left)
+                    out_qty = int(round(pi.fact + counted)) if counted < rest else pi.qty
+                    if out_qty != pi.qty:
+                        trimmed.append((work_days[di], order.id, op.name, pi.worker, pi.qty, out_qty))
+                    if out_qty <= 0:
+                        continue
+                    already_ops += counted
+                    mark(order.id, op.name, di, counted)
                     tasks_by.setdefault((pi.worker, di), set()).add((order.id, op.name))
                     result_items.append(PlanItem(work_days[di], order.id, order.project, order.product, op.name,
-                                                 pi.qty, pi.worker, pi.reason, False))
-                    spend = pi.qty / op.norm_per_day
-                    add_prio_load(order.priority, di, spend)
+                                                 out_qty, pi.worker, pi.reason, False))
+                    add_prio_load(order.priority, di, counted / op.norm_per_day)
                     already_last_day = max(already_last_day, di)
                     order_max_day = max(order_max_day, di)
                     st.last_day_idx = max(st.last_day_idx, di)
@@ -475,9 +516,8 @@ def plan(inp: PlanInput) -> PlanResult:
                 last_planned_day = already_last_day
                 cap = None
                 if progressive:
-                    def cap_fn(day, _op=op, _ai=available_items, _thr=thr_items, _pc=prev_cum):
-                        items = _pc(day)
-                        return math.ceil((min(items, _ai) if items >= _thr else 0) * _op.per_item - EPS)
+                    def cap_fn(day, _op=op, _ai=available_items, _rel=released):
+                        return math.ceil(min(_rel(day), _ai) * _op.per_item - EPS)
                     cap = {"fn": cap_fn, "base": done_ops + already_ops, "placed": 0}
 
                 def on_day_used(d):
@@ -536,4 +576,9 @@ def plan(inp: PlanInput) -> PlanResult:
         elif order_max_day > priority_last_day[order.priority]:
             priority_last_day[order.priority] = order_max_day
 
-    return PlanResult(result_items, warnings, status_map, loaded_today, new_fact_rows, work_days)
+    for d, oid, opn, wn, was, now in trimmed:
+        if now <= 0 or was != now:
+            o = order_by_id[oid]
+            warnings.append(PlanWarning("PINNED_TRIMMED", f"{o.product} (ID {oid}) / {opn}: закреплено больше, чем нужно по заказу — "
+                                                      f"лишнее убрано ({_fmt(was - now)} из {_fmt(was)}, {d.strftime('%d.%m')}, {wn})", oid, opn))
+    return PlanResult(result_items, warnings, status_map, loaded_today, new_fact_rows, work_days, trimmed)

@@ -31,6 +31,8 @@ class Operation:
     # Предшественники: имена операций этого же маршрута (с меньшим порядком), от которых зависит старт. None — как раньше: после всего
     # предыдущего порядка; () — не зависит ни от чего, стартует сразу; иначе ждёт только перечисленные.
     predecessors: Optional[tuple] = None
+    # Партия по каждому предшественнику: ((имя, %), …). Для предшественника без записи берётся start_after_pct (или 100 — после полного окончания).
+    pred_pcts: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class PinnedItem:
     worker: str
     qty: int
     reason: str = "MANUAL"
+    fact: float = 0.0                        # уже внесённый по этой строке факт: строка остаётся как есть, но потребность закрывает только остаток
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,8 @@ class PlanConfig:
     focus: bool = False
     min_chunk_share: float = 0.5
     max_tasks_per_day: int = 2
+    # Замороженные строки ближайших дней урезаются до потребности по заказу (False — поведение скрипта: замороженное не трогается).
+    trim_frozen: bool = False
 
 
 @dataclass(frozen=True)
@@ -169,3 +174,4 @@ class PlanResult:
     loaded_today: list            # исполнители, не получающие заданий на сегодня (BR-12)
     new_fact_rows: list           # план-строки на сегодня/завтра, которые нужно записать в «Факт»
     work_days: tuple
+    trimmed: list = field(default_factory=list)     # закреплённые/замороженные строки, урезанные до потребности: (дата, позиция, операция, работник, было, стало)

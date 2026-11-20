@@ -92,6 +92,7 @@ CASES = [
     ("POST", "/flow-map/999999/links", {"from_id": 1, "to_id": 2}, CATALOG),
     ("DELETE", "/flow-map/999999/links?from_id=1&to_id=2", None, CATALOG),
     ("PUT", "/flow-map/999999/layout", {"positions": []}, CATALOG),
+    ("PUT", "/flow-map/999999/links/pct", {"from_id": 1, "to_id": 2, "pct": 30}, CATALOG),
     ("GET", "/facts/journal", None, READERS),
     ("GET", "/facts/order-options", None, STAFF),
     ("POST", "/facts/order", {"fact_date": "2026-10-02", "order_line_id": 999999, "operation_id": 999999, "qty": 1}, STAFF),

@@ -326,7 +326,8 @@ def new_routing_version(pid: int, copy: bool = True, name: str = "", user: User 
             db.add(Operation(tenant_id=user.tenant_id, routing_id=r.id, name=o.name, norm_per_day=o.norm_per_day,
                              unit=o.unit, min_skill=o.min_skill, sequence=o.sequence, per_item=o.per_item,
                              hold_qty=o.hold_qty, hold_reason=o.hold_reason, hold_until=o.hold_until, start_after_pct=o.start_after_pct,
-                             predecessors=list(o.predecessors) if o.predecessors is not None else None))
+                             predecessors=list(o.predecessors) if o.predecessors is not None else None,
+                             predecessor_pcts=dict(o.predecessor_pcts) if o.predecessor_pcts else None))
         db.flush()
         db.refresh(r)
     audit.log(db, user, "routing", r.id, "create", {"product_id": pid, "version_no": r.version_no, "name": r.name})
@@ -345,6 +346,7 @@ class OperationIn(BaseModel):
     hold_until: Optional[date] = None
     start_after_pct: Optional[float] = Field(None, ge=1, le=100)      # партия: старт после выполнения предыдущей операции на N %
     predecessors: Optional[list[str]] = Field(None, max_length=50)    # None — после всего предыдущего порядка; [] — без предшественников
+    predecessor_pcts: Optional[dict[str, float]] = None                # партия по каждому предшественнику: {имя: %}; нет записи — start_after_pct
 
 
 class OperationPatch(BaseModel):
@@ -359,11 +361,12 @@ class OperationPatch(BaseModel):
     hold_until: Optional[date] = None
     start_after_pct: Optional[float] = Field(None, ge=1, le=100)
     predecessors: Optional[list[str]] = Field(None, max_length=50)
+    predecessor_pcts: Optional[dict[str, float]] = None
     version: Optional[int] = None
 
 
 HOLD_FIELDS = {"hold_qty", "hold_reason", "hold_until"}
-SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors", "sequence"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
+SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors", "predecessor_pcts", "sequence"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
 
 
 def levels_count(db, user) -> int:
@@ -406,6 +409,27 @@ def _clean_predecessors(db, routing_id: int, name: str, sequence: float, preds, 
     return names
 
 
+def _clean_pcts(preds, pcts, strict: bool):
+    """Партия по каждому предшественнику: только для выбранных предшественников, 1–100. strict — лишние имена это ошибка
+    (при явной передаче); иначе молча отбрасываются (предшественника убрали из списка)."""
+    if not pcts:
+        return None
+    if preds is None:
+        if strict:
+            raise HTTPException(422, "Партию по предшественникам можно задать, когда выбраны конкретные предшественники")
+        return None
+    out = {}
+    for n, v in pcts.items():
+        if n not in preds:
+            if strict:
+                raise HTTPException(422, f"«{n}» не входит в предшественники этой операции")
+            continue
+        if v is None or not (1 <= float(v) <= 100):
+            raise HTTPException(422, f"Партия по предшественнику «{n}» — от 1 до 100 %")
+        out[n] = float(v)
+    return out or None
+
+
 @router.post("/routings/{rid}/operations", status_code=201)
 def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
     r = get_or_404(db, Routing, rid, user)
@@ -414,6 +438,7 @@ def add_operation(rid: int, body: OperationIn, user: User = Depends(require(*CAT
     check_level(db, user, body.min_skill, "Требуемая квалификация")
     data = body.model_dump()
     data["predecessors"] = _clean_predecessors(db, rid, body.name, body.sequence, body.predecessors)
+    data["predecessor_pcts"] = _clean_pcts(data["predecessors"], body.predecessor_pcts, True)
     o = Operation(tenant_id=user.tenant_id, routing_id=rid, **data)
     db.add(o); db.flush()
     done = missing = 0
@@ -444,6 +469,9 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
         data["predecessors"] = new_preds
     elif new_preds is not None and (new_seq != o.sequence or new_name != o.name):
         data["predecessors"] = new_preds
+    if "predecessor_pcts" in data or "predecessors" in data:        # партия по предшественникам следует за списком предшественников
+        explicit = "predecessor_pcts" in data
+        data["predecessor_pcts"] = _clean_pcts(new_preds, data["predecessor_pcts"] if explicit else o.predecessor_pcts, explicit)
     if "sequence" in data:                       # порядок изменился: у тех, кто ссылается на эту операцию, он должен остаться больше
         for x in others:
             if x.predecessors and o.name in x.predecessors and x.sequence < new_seq:
@@ -456,6 +484,8 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
         for x in others:
             if x.predecessors and old_name in x.predecessors:
                 x.predecessors = [new_name if n == old_name else n for n in x.predecessors]
+                if x.predecessor_pcts and old_name in x.predecessor_pcts:
+                    x.predecessor_pcts = {(new_name if n == old_name else n): v for n, v in x.predecessor_pcts.items()}
     if changes:
         o.version += 1
         audit.log(db, user, "operation", o.id, "update", changes)
@@ -504,6 +534,8 @@ def delete_operation(oid: int, move_facts_to: Optional[int] = None, user: User =
         if x.predecessors and o.name in x.predecessors:      # удалённый предшественник убирается из списка; если список опустел — снова «по порядку»
             left = [n for n in x.predecessors if n != o.name]
             x.predecessors = left or None
+            if x.predecessor_pcts:
+                x.predecessor_pcts = {n: v for n, v in x.predecessor_pcts.items() if n != o.name} or None
     db.delete(o)
     audit.log(db, user, "operation", oid, "delete", {"name": o.name, "facts_moved": moved} if moved else None)
 

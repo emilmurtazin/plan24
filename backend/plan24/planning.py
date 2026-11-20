@@ -124,7 +124,8 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
                                       sequence=op.sequence, per_item=op.per_item, hold_qty=op.hold_qty,
                                       hold_until=op.hold_until, hold_reason=op.hold_reason,
                                       start_after_pct=op.start_after_pct,
-                                      predecessors=tuple(op.predecessors) if op.predecessors is not None else None)
+                                      predecessors=tuple(op.predecessors) if op.predecessors is not None else None,
+                                      pred_pcts=tuple(sorted((n, float(v)) for n, v in (op.predecessor_pcts or {}).items())))
                                   for op in routings[o.routing_id].operations)
         for op in routings[o.routing_id].operations:
             ctx.op_id[(key, op.name)] = op.id
@@ -187,6 +188,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
             continue
         r = rows.setdefault((f.fact_date, key, op_names[f.operation_id], wname.get(f.worker_id, "")), [0, 0])
         r[1] += f.qty
+    manual_keys: set = set()
     for it in _prior_plan_items(db, tenant_id, plan_today, freeze_window):
         key = ctx.key_by_order_id.get(it.order_line_id)
         if key is None or it.operation_id not in op_names:
@@ -195,8 +197,11 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
             continue                                   # будущее фиксированных исполнителей добавляется ниже, без окна
         r = rows.setdefault((it.plan_date, key, op_names[it.operation_id], wname.get(it.worker_id, "")), [0, 0])
         r[0] += it.qty
+        if it.reason_code == "MANUAL":
+            manual_keys.add((it.plan_date, key, op_names[it.operation_id], wname.get(it.worker_id, "")))
     fact_rows = [FactRow(date=d, order_id=k, project=projects[ctx.project_id[k]].name, product=prod_key_of[k],
-                         op=op, worker=w, plan=p, qty=qty) for (d, k, op, w), (p, qty) in sorted(rows.items(), key=lambda x: str(x[0]))]
+                         op=op, worker=w, plan=p, qty=qty, reason="MANUAL" if (d, k, op, w) in manual_keys else "")
+                 for (d, k, op, w), (p, qty) in sorted(rows.items(), key=lambda x: str(x[0]))]
     if fixed_names:
         # Всё, что уже назначено исполнителям вне участка, остаётся как есть: остаток плана (план − уже сделанное).
         fixed_ids = {w.id for w in avail if w.name in fixed_names}
@@ -234,9 +239,10 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
             key, opn, wn = ctx.key_by_order_id.get(it.order_line_id), op_names.get(it.operation_id), wname.get(it.worker_id)
             if key is None or opn is None or wn is None:
                 continue
-            if rows.get((it.plan_date, key, opn, wn), [0, 0])[1] > 0:     # по строке уже внесён факт — дальше как при заморозке
+            fq = rows.get((it.plan_date, key, opn, wn), [0, 0])[1]
+            if fq >= it.qty > 0:                                          # строка выполнена полностью — остаётся как есть
                 continue
-            pinned_list.append(PinnedItem(it.plan_date, key, opn, wn, it.qty, it.reason_code))
+            pinned_list.append(PinnedItem(it.plan_date, key, opn, wn, it.qty, it.reason_code, fact=fq))   # с фактом: потребность закрывает остаток
 
     cfg = PlanConfig(
         today=plan_today, work_days=engine_cal, efficiency=ov.get("efficiency", st.efficiency),
@@ -244,7 +250,7 @@ def build_input(db: Session, tenant_id: int, today: date, overrides: Optional[di
         today_load_threshold=ov.get("today_load_threshold", st.today_load_threshold),
         min_start_share=ov.get("min_start_share", st.min_start_share),
         priority_strictness=float(ov.get("priority_strictness", st.priority_strictness)),
-        freeze_days=freeze_days, cap_load=True,
+        freeze_days=freeze_days, cap_load=True, trim_frozen=True,
         fix_group_start_after_deadline=ov.get("fix_group_start", st.fix_group_start),
         focus=ov.get("realistic_mode", st.realistic_mode), min_chunk_share=ov.get("min_chunk_share", st.min_chunk_share),
         max_tasks_per_day=ov.get("max_tasks_per_day", st.max_tasks_per_day))
@@ -365,9 +371,10 @@ def run_and_save(db: Session, user: User, today: date, overrides: Optional[dict]
         db.add(PlanItem(tenant_id=user.tenant_id, plan_id=p.id, plan_date=it.date, order_line_id=o.id, operation_id=opid_,
                         worker_id=wid_, qty=it.qty, is_frozen=frozen, is_locked=locked, reason_code=reason))
         saved.add(k4)
+    gone = {(d, ctx.order_by_key[o].id, ctx.op_id[(o, opn)], ctx.worker_by_name[w].id) for d, o, opn, w, was, now in res.trimmed if now <= 0}
     for it in ctx.carry:             # закреплённое, что планировщик не вывел (факт уже внесён, позиция закрыта и т. п.), всё равно остаётся
         k4 = (it.plan_date, it.order_line_id, it.operation_id, it.worker_id)
-        if k4 not in saved:
+        if k4 not in saved and k4 not in gone:                  # кроме строк, урезанных до нуля: работа по заказу уже закрыта
             db.add(PlanItem(tenant_id=user.tenant_id, plan_id=p.id, plan_date=it.plan_date, order_line_id=it.order_line_id,
                             operation_id=it.operation_id, worker_id=it.worker_id, qty=it.qty, is_frozen=it.is_frozen,
                             is_locked=True, reason_code=it.reason_code))

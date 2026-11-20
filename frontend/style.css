@@ -375,3 +375,8 @@ main:has(.rt-page){max-width:1680px}
 .gt-c{position:absolute;top:0;height:100%;border-radius:3px;margin-left:1px}.gt-c.plan{background:var(--blue)}.gt-c.fact{background:var(--green)}.gt-c.low{background:var(--amber)}
 .gt-due{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:3;margin-left:-1px}.gt-fc{position:absolute;top:2px;width:10px;height:10px;margin-left:-5px;background:var(--green);transform:rotate(45deg);z-index:3}.gt-fc.late{background:var(--red)}
 .gt-sw{display:inline-block;width:14px;height:9px;border-radius:2px;margin-right:6px}.gt-sw.plan{background:var(--blue)}.gt-sw.fact{background:var(--green)}.gt-sw.low{background:var(--amber)}.gt-due-l{color:var(--red)}.gt-todayl{color:var(--blue);font-weight:700}
+/* Партия по предшественникам */
+.qpp{display:flex;flex-direction:column;gap:3px;margin-top:6px}.qppi{display:flex;align-items:center;gap:6px;font-size:13px}.qppi input{width:64px}.qppi span:first-child{color:var(--muted)}
+.predrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.predpct{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}.predpct input{width:80px}
+.fm-pct{font-size:11px;font-weight:700;fill:currentColor;pointer-events:none}.fm-pctbg{fill:var(--card);stroke:var(--line);pointer-events:none}.fm-pps{display:flex;align-items:center;gap:4px}.fm-pps input{width:58px}.fm-pp{font-size:12px}
+

@@ -48,7 +48,12 @@ SCREENS.flow = async v => {
     for (const e of M.edges) {
       const a = P[e.from], b = P[e.to]; if (!a || !b) continue; const d = pathOf(a, b), on = pick && pick.type === 'edge' && pick.from === e.from && pick.to === e.to;
       const g = el('g', { class: 'fm-edge' + (e.implicit ? ' imp' : '') + (on ? ' on' : ''), 'data-from': e.from, 'data-to': e.to });
-      g.appendChild(el('path', { d, class: 'fm-hit' })); g.appendChild(el('path', { d, class: 'fm-line', 'marker-end': 'url(#fm-arr)' })); svg.appendChild(g);
+      g.appendChild(el('path', { d, class: 'fm-hit' })); g.appendChild(el('path', { d, class: 'fm-line', 'marker-end': 'url(#fm-arr)' }));
+      if (e.pct != null) {                                                  // партия по связи: «после N % предшественника»
+        const mx = (a.x + FM.W + b.x) / 2, my = (a.y + b.y) / 2 + FM.H / 2, t = el('text', { x: mx, y: my + 4, class: 'fm-pct', 'text-anchor': 'middle' }); t.textContent = num(e.pct) + '%';
+        g.appendChild(el('rect', { x: mx - 20, y: my - 9, width: 40, height: 18, rx: 9, class: 'fm-pctbg' })); g.appendChild(t);
+      }
+      svg.appendChild(g);
     }
   }
   const stateOf = n => n.foreign ? 'foreign' : n.pct == null ? 'plain' : n.pct >= 99.95 ? 'done' : n.pct > 0 ? 'part' : 'none';
@@ -75,8 +80,11 @@ SCREENS.flow = async v => {
     const warn = M.routing.used && canEdit() ? '<p class="muted fm-note">Изменения касаются всех заказов на этой версии маршрута.</p>' : '';
     if (pick && pick.type === 'edge') {
       const a = M.nodes.find(n => n.id === pick.from), b = M.nodes.find(n => n.id === pick.to);
-      side.innerHTML = `<h3>Связь</h3><p><b>${esc(a.name)}</b> → <b>${esc(b.name)}</b></p><p class="muted">«${esc(b.name)}» начинается после «${esc(a.name)}».</p>${canEdit() ? `<button class="danger" id="fm-deledge">Удалить связь</button>${warn}` : ''}`;
-      const d = $('#fm-deledge', side); if (d) d.onclick = () => delLink(pick.from, pick.to); return;
+      const ed = M.edges.find(x => x.from === pick.from && x.to === pick.to), dflt = b.default_pct != null && b.default_pct < 100 ? b.default_pct : 100;
+      side.innerHTML = `<h3>Связь</h3><p><b>${esc(a.name)}</b> → <b>${esc(b.name)}</b></p><p class="muted">«${esc(b.name)}» начинается, когда «${esc(a.name)}» выполнена на указанный процент партии.</p>
+        ${canEdit() ? `<label class="f">Партия: «${esc(b.name)}» стартует после, %<input type="number" id="fm-pct" min="1" max="100" step="any" value="${ed && ed.pct_own ? ed.pct : ''}" placeholder="${dflt}"></label><p class="muted fm-note">Пусто — общая партия операции (${dflt}%). 100 — только после полного окончания.</p><button class="danger" id="fm-deledge">Удалить связь</button>${warn}` : `<p>Партия: <b>${ed && ed.pct != null ? num(ed.pct) : dflt}%</b></p>`}`;
+      const d = $('#fm-deledge', side); if (d) d.onclick = () => delLink(pick.from, pick.to);
+      const pc = $('#fm-pct', side); if (pc) pc.onchange = () => setPct(pick.from, pick.to, pc.value.trim() === '' ? null : Number(pc.value)); return;
     }
     const n = pick && pick.type === 'node' ? M.nodes.find(x => x.id === pick.id) : null;
     if (!n) { side.innerHTML = `<h3>Как пользоваться</h3><ul class="fm-help"><li>Карточка — операция маршрута. Заливка показывает, какая часть объёма по заказу уже выполнена.</li>${canEdit() ? '<li>Потяните карточку, чтобы переставить. Потяните точку справа на карточке к другой — получится связь «после».</li><li>Нажмите на стрелку, чтобы удалить связь.</li><li>«+ Карточка» добавляет операцию.</li>' : '<li>Нажмите на карточку или стрелку, чтобы увидеть подробности.</li>'}<li>Колесо мыши — масштаб, перетаскивание фона — сдвиг.</li></ul>`; return; }
@@ -84,10 +92,11 @@ SCREENS.flow = async v => {
     side.innerHTML = `<h3>${esc(n.name)}</h3>
       <dl class="fm-dl">${M.line ? (n.foreign ? '<dt>Выполнение</dt><dd class="muted">другой участок</dd>' : `<dt>Выполнено</dt><dd><b>${num(n.done)}</b> из ${num(n.required)} ${esc(n.unit)} (${num(n.pct)}%)</dd>${n.sections.length ? `<dt>Участки</dt><dd>${esc(n.sections.join(', '))}</dd>` : ''}`) : ''}
         <dt>Норма в день</dt><dd>${num(n.norm_per_day)} ${esc(n.unit)}</dd><dt>На изделие</dt><dd>${num(n.per_item)}</dd><dt>Порядок</dt><dd>${num(n.sequence)}</dd></dl>
-      <h4>Идёт после</h4>${n.predecessors.length ? `<ul class="fm-preds">${n.predecessors.map(p => `<li>${esc(p)}${canEdit() ? ` <button class="small secondary" data-rm="${esc(p)}" aria-label="Убрать связь с ${esc(p)}">×</button>` : ''}</li>`).join('')}</ul>` : '<p class="muted">Нет — операция может начинаться сразу.</p>'}
+      <h4>Идёт после</h4>${n.predecessors.length ? `<ul class="fm-preds">${n.predecessors.map(p => `<li><span>${esc(p)}<span class="muted fm-pp">${(n.predecessor_pcts || {})[p] != null ? ' · после ' + num(n.predecessor_pcts[p]) + '%' : (n.default_pct != null && n.default_pct < 100 ? ' · после ' + num(n.default_pct) + '%' : '')}</span></span>${canEdit() ? ` <span class="fm-pps"><input type="number" min="1" max="100" step="any" data-pp="${esc(p)}" value="${(n.predecessor_pcts || {})[p] ?? ''}" placeholder="${n.default_pct != null && n.default_pct < 100 ? n.default_pct : 100}" aria-label="Партия по предшественнику ${esc(p)}, %" title="Партия, %: когда ${esc(p)} выполнена на столько, ${esc(n.name)} может стартовать"><button class="small secondary" data-rm="${esc(p)}" aria-label="Убрать связь с ${esc(p)}">×</button></span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">Нет — операция может начинаться сразу.</p>'}
       ${n.implicit && n.predecessors.length ? '<p class="muted fm-note">Связи заданы порядком операций (пунктир). При изменении они станут явными.</p>' : ''}
       ${canEdit() ? `<label class="f">Добавить предшественника<select id="fm-padd"><option value="">— выбрать —</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></label><button class="danger" id="fm-delnode">Удалить карточку</button>${warn}` : ''}`;
     $$('[data-rm]', side).forEach(b => b.onclick = () => delLink(M.nodes.find(x => x.name === b.dataset.rm).id, n.id));
+    $$('[data-pp]', side).forEach(i => i.onchange = () => setPct(M.nodes.find(x => x.name === i.dataset.pp).id, n.id, i.value.trim() === '' ? null : Number(i.value)));
     const pa = $('#fm-padd', side); if (pa) pa.onchange = () => pa.value && addLink(+pa.value, n.id);
     const dn = $('#fm-delnode', side); if (dn) dn.onclick = () => deleteOperation(n.id, async () => { pick = null; await load(true); });
   }
@@ -103,6 +112,7 @@ SCREENS.flow = async v => {
     } catch (e) { toast(errText(e), true); side.innerHTML = `<div class="err">${esc(errText(e))}</div>`; }
   }
   async function addLink(from, to) { try { const r = await POST(`/flow-map/${M.routing.id}/links`, { from_id: from, to_id: to }); if (r.shifted && r.shifted.length) toast('Связь добавлена; порядок операций обновлён'); pick = { type: 'node', id: to }; await load(true); } catch (e) { toast(errText(e), true); } }
+  async function setPct(from, to, pct) { try { await PUT(`/flow-map/${M.routing.id}/links/pct`, { from_id: from, to_id: to, pct }); } catch (e) { toast(errText(e), true); } await load(true); }
   async function delLink(from, to) { try { await DEL(`/flow-map/${M.routing.id}/links?from_id=${from}&to_id=${to}`); pick = { type: 'node', id: to }; await load(true); } catch (e) { toast(errText(e), true); } }
   const saveLayout = () => { clearTimeout(saveTimer); saveTimer = setTimeout(async () => { const ids = [...dirty]; dirty.clear(); if (!ids.length || !canEdit()) return;
     try { await PUT(`/flow-map/${M.routing.id}/layout`, { positions: ids.map(id => ({ id, x: P[id].x, y: P[id].y })) }); } catch (e) { toast(errText(e), true); } }, 400); };

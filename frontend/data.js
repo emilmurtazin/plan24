@@ -233,7 +233,7 @@ async function openRouting(product, selId, onClose) {
   const predCell = o => {
     const cand = candidates(o, o.sequence), listMode = o.predecessors != null, sel = new Set(o.predecessors || []);
     return `<div class="qp" data-qp="${o.id}"><select class="inl" data-pm aria-label="Предшественники: ${esc(o.name)}"><option value="seq" ${listMode ? '' : 'selected'}>весь предыдущий порядок</option><option value="list" ${listMode ? 'selected' : ''}>только выбранные</option></select>${listMode
-      ? (cand.length ? `<div class="qpl">${cand.map(x => `<label class="chip"><input type="checkbox" data-pc value="${esc(x.name)}" ${sel.has(x.name) ? 'checked' : ''}><span>${esc(x.name)}</span></label>`).join('')}</div>${sel.size ? '' : '<div class="muted qpn">ничего не выбрано — стартует сразу</div>'}` : '<div class="muted qpn">нет операций с меньшим порядком — стартует сразу</div>') : ''}</div>`;
+      ? (cand.length ? `<div class="qpl">${cand.map(x => `<label class="chip"><input type="checkbox" data-pc value="${esc(x.name)}" ${sel.has(x.name) ? 'checked' : ''}><span>${esc(x.name)}</span></label>`).join('')}</div>${sel.size ? `<div class="qpp">${[...sel].map(nm => `<label class="qppi"><span>${esc(nm)}: после</span><input class="inl" type="number" min="1" max="100" step="any" placeholder="${o.start_after_pct ?? 100}" value="${(o.predecessor_pcts || {})[nm] ?? ''}" data-pp="${esc(nm)}" aria-label="Партия по предшественнику ${esc(nm)}, %"><span>%</span></label>`).join('')}</div>` : '<div class="muted qpn">ничего не выбрано — стартует сразу</div>'}` : '<div class="muted qpn">нет операций с меньшим порядком — стартует сразу</div>') : ''}</div>`;
   };
   const pctCell = o => `<span class="qpct"><input class="inl" type="number" min="1" max="100" step="any" placeholder="100" value="${o.start_after_pct ?? ''}" data-pct="${o.id}" aria-label="Партия, %: ${esc(o.name)}"> %</span>`;
   const v = $('#view'); S.nav++;                            // маршрут открывается на весь экран, а не окном поверх каталога
@@ -243,7 +243,7 @@ async function openRouting(product, selId, onClose) {
     <p class="muted">${cur.used ? 'Версия используется в заказах. Можно добавлять и удалять операции (удалить нельзя операцию с внесённым фактом), менять порядок стрелками, предшественников, партию, блокировку и названия. Норму, квалификацию и количество на изделие менять нельзя, чтобы не искажать идущие заказы: для этого создайте новую версию.' : 'Операции можно добавлять, удалять и переставлять стрелками ↑↓. Предшественников и «Партию, %» можно менять прямо в таблице — сохраняется сразу. Одинаковый «Порядок» — операции идут параллельно. По умолчанию операция ждёт весь предыдущий порядок; в «Предшественниках» можно указать, от каких именно операций она зависит (в том числе из того же порядка), и тогда простоев не будет. Норма — сколько изделий делает работник с производительностью 1 за полный рабочий день. «На изделие» — сколько раз операцию выполняют на одно изделие.'}</p>
     <div class="scroll rt-scroll">${table([{ label: 'Порядок', cls: 'num', get: o => num(o.sequence) }, { label: 'Операция', get: o => o.name }, { label: 'Норма/день', cls: 'num', get: o => num(o.norm_per_day) }, { label: 'Требуемая квалификация', get: o => qn(quals, o.min_skill) }, { label: 'На изделие', cls: 'num', get: o => num(o.per_item) },
     { label: 'Предшественники', html: o => predCell(o) },
-    { label: 'Партия, %', html: o => pctCell(o) },
+    { label: 'Партия, % (общая)', html: o => pctCell(o) },
     { label: 'Блок', html: o => o.hold_qty ? `<span class="warn">${num(o.hold_qty)}${o.hold_until ? ' до ' + fmtDY(o.hold_until) : ''}</span> ${esc(o.hold_reason)}` : '—' }], cur.operations,
       o => { const i = cur.operations.indexOf(o), last = cur.operations.length - 1; return `<span class="rt-act"><button class="small secondary" data-mv="up" data-id="${o.id}" title="Поднять выше" aria-label="Поднять выше: ${esc(o.name)}" ${i === 0 ? 'disabled' : ''}>↑</button><button class="small secondary" data-mv="down" data-id="${o.id}" title="Опустить ниже" aria-label="Опустить ниже: ${esc(o.name)}" ${i === last ? 'disabled' : ''}>↓</button> <button class="small secondary" data-oe="${o.id}">Изменить</button> <button class="small danger" data-od="${o.id}">Удалить</button></span>`; })}</div>
     <div class="row" style="margin-top:12px"><button data-oa>+ Операция</button></div></div>`;
@@ -269,7 +269,7 @@ async function openRouting(product, selId, onClose) {
   ...(full ? [{ name: 'norm_per_day', label: 'Норма за день', type: 'number', required: true, min: 0, step: 'any' },
     { name: 'min_skill', label: 'Требуемая квалификация', type: 'select', options: qOpts(quals), required: true, num: true, help: 'Работник допускается, если его уровень не ниже' },
     { name: 'per_item', label: 'Операций на изделие', type: 'number', required: true, min: 0, step: 'any' }] : []),
-  { name: 'start_after_pct', label: 'Партия: начинать, когда предыдущая операция выполнена на, %', type: 'number', min: 1, max: 100, step: 'any', help: 'Например, 30 — операция стартует, когда предыдущая сделала 30% изделий, и дальше берёт их по мере готовности. Пусто или 100 — только после полного окончания предыдущей. Для операции первого порядка не действует.' },
+  { name: 'start_after_pct', label: 'Партия по умолчанию: начинать, когда предшественник выполнен на, %', type: 'number', min: 1, max: 100, step: 'any', help: 'Например, 30 — операция стартует, когда предыдущая сделала 30% изделий, и дальше берёт их по мере готовности. Пусто или 100 — только после полного окончания предыдущей. Это значение — для всех предшественников операции; для каждого предшественника можно указать свой процент («после __ %» в списке предшественников). Процент задаётся у той операции, которая ждёт, и относится к её предшественникам; у операции без предшественников он не действует.' },
   { name: 'hold_qty', label: 'Блок: изделий, по которым операция не идёт', type: 'number', min: 0, step: 'any' }, { name: 'hold_until', label: 'Блок снимается автоматически с даты', type: 'date' }, { name: 'hold_reason', label: 'Причина блокировки' }];
   const predExtra = `<fieldset class="predset"><legend>Предшественники</legend>
     <label class="f">Старт зависит от<select name="pred_mode"><option value="seq">всего предыдущего порядка (как раньше)</option><option value="list">только выбранных операций</option></select>
@@ -282,14 +282,16 @@ async function openRouting(product, selId, onClose) {
       const seq = form.elements.sequence ? Number(form.elements.sequence.value) : (o ? o.sequence : Infinity);
       const cand = candidates(o, seq);
       box.hidden = mode.value !== 'list';
-      box.innerHTML = cand.length ? cand.map(x => `<label class="chk"><input type="checkbox" name="pred" value="${esc(x.name)}" ${keep.has(x.name) ? 'checked' : ''}> <span>${esc(x.name)} <span class="muted">(порядок ${num(x.sequence)})</span></span></label>`).join('') : '<span class="muted">Нет подходящих операций — операция стартует сразу.</span>';
+      const keepPct = {}; $$('[data-ppf]', form).forEach(i => { keepPct[i.dataset.ppf] = i.value; });
+      box.innerHTML = cand.length ? cand.map(x => `<div class="predrow"><label class="chk"><input type="checkbox" name="pred" value="${esc(x.name)}" ${keep.has(x.name) ? 'checked' : ''}> <span>${esc(x.name)} <span class="muted">(порядок ${num(x.sequence)})</span></span></label><label class="predpct">после <input type="number" min="1" max="100" step="any" data-ppf="${esc(x.name)}" value="${esc(x.name in keepPct ? keepPct[x.name] : ((o && o.predecessor_pcts || {})[x.name] ?? ''))}" placeholder="общая"> %</label></div>`).join('') : '<span class="muted">Нет подходящих операций — операция стартует сразу.</span>';
     };
     mode.value = o && o.predecessors != null ? 'list' : 'seq'; mode.onchange = draw; if (form.elements.sequence) form.elements.sequence.addEventListener('input', draw); draw();
   };
   const edit = (o) => formModal({
     extra: predExtra, onOpen: form => wirePreds(form, o),
     title: o ? o.name : 'Новая операция', fields: opFields(!o || canEdit), values: o || { sequence: (cur.operations.at(-1)?.sequence || 0) + 1, norm_per_day: 10, min_skill: 1, per_item: 1, hold_qty: 0 },
-    onSubmit: async (vals, f) => { const form = $('form', f.el), body = { ...vals, hold_qty: vals.hold_qty || 0, hold_reason: vals.hold_reason || '', start_after_pct: vals.start_after_pct ?? null, predecessors: form.elements.pred_mode.value === 'list' ? $$('[name=pred]:checked', form).map(i => i.value) : null }; if (o) await PATCH(`/operations/${o.id}`, { ...body, version: o.version }); else { const r = await POST(`/routings/${cur.id}/operations`, body); if (cur.used) toast(r.orders_undistributed ? `Операция добавлена в ${r.orders_distributed + r.orders_undistributed} заказов; в ${r.orders_undistributed} её нужно распределить по участкам` : `Операция добавлена и распределена по участкам в ${r.orders_distributed} заказах. Перепланируйте участки`, !!r.orders_undistributed); } f.close(); again(); }
+    onSubmit: async (vals, f) => { const form = $('form', f.el), body = { ...vals, hold_qty: vals.hold_qty || 0, hold_reason: vals.hold_reason || '', start_after_pct: vals.start_after_pct ?? null, predecessors: form.elements.pred_mode.value === 'list' ? $$('[name=pred]:checked', form).map(i => i.value) : null,
+          predecessor_pcts: form.elements.pred_mode.value === 'list' ? Object.fromEntries($$('[name=pred]:checked', form).map(i => [i.value, $$('[data-ppf]', form).find(x => x.dataset.ppf === i.value)?.value]).filter(([, v]) => v !== undefined && String(v).trim() !== '').map(([k, v]) => [k, Number(v)])) : null }; if (o) await PATCH(`/operations/${o.id}`, { ...body, version: o.version }); else { const r = await POST(`/routings/${cur.id}/operations`, body); if (cur.used) toast(r.orders_undistributed ? `Операция добавлена в ${r.orders_distributed + r.orders_undistributed} заказов; в ${r.orders_undistributed} её нужно распределить по участкам` : `Операция добавлена и распределена по участкам в ${r.orders_distributed} заказах. Перепланируйте участки`, !!r.orders_undistributed); } f.close(); again(); }
   });
   const opById = id => cur.operations.find(o => o.id == id);
   const saving = new Map();                                 // сохранения одной операции идут по очереди: версия записи берётся актуальная
@@ -309,6 +311,10 @@ async function openRouting(product, selId, onClose) {
       const cell = t.closest('[data-qp]'), o = opById(cell.dataset.qp);
       const preds = t.matches('[data-pm]') ? (t.value === 'seq' ? null : (o.predecessors || [])) : $$('[data-pc]:checked', cell).map(i => i.value);
       quickSave(o, { predecessors: preds }, () => { cell.outerHTML = predCell(o); });
+    } else if (t.matches('[data-pp]')) {
+      const cell = t.closest('[data-qp]'), o = opById(cell.dataset.qp), pcts = {};
+      $$('[data-pp]', cell).forEach(i => { if (i.value.trim() !== '') pcts[i.dataset.pp] = Number(i.value); });
+      quickSave(o, { predecessor_pcts: Object.keys(pcts).length ? pcts : null }, () => { cell.outerHTML = predCell(o); });
     } else if (t.matches('[data-pct]')) {
       const o = opById(t.dataset.pct), v = t.value.trim() === '' ? null : Number(t.value);
       quickSave(o, { start_after_pct: v }, () => { t.value = o.start_after_pct ?? ''; });

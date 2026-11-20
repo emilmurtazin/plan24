@@ -550,6 +550,8 @@ const goExec = async tab => { click(byText('#drawer button', 'Выполнени
     click($('#fm-side [data-rm]')); await until(() => !$('#fm-side .fm-preds'), 'связь удалена');
     const first = [...$$('#fm-padd option')].find(o => o.value); setv($('#fm-padd'), first.value);
     await until(() => $$('#fm-side .fm-preds li').length === 1, 'связь добавлена через панель');
+    { const pp = $('#fm-side [data-pp]'); setv(pp, '40'); await until(() => $('#fm-side .fm-pp') && $('#fm-side .fm-pp').textContent.includes('после 40%'), 'партия по предшественнику сохранена');
+      if (!$$('.fm-pctbg').length) throw new Error('на стрелке нет подписи с процентом партии'); }
     const edges = $$('.fm-edge:not(.imp)').length; if (!edges) throw new Error('на доске нет явной стрелки после добавления связи');
     click($('#fm-side [data-rm]')); await until(() => !$('#fm-side .fm-preds'), 'связь удалена');
     click($('#fm-delnode')); await until(() => byText('.modal button', 'Да') || byText('.modal button', 'Перенести'), 'подтверждение удаления карточки');

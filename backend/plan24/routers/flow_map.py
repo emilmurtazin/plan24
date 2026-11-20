@@ -91,12 +91,14 @@ def flow_map(order_line_id: Optional[int] = None, routing_id: Optional[int] = No
     nodes, edges = [], []
     for o in ops:
         names, implicit = _effective(o, ops)
+        own = o.predecessor_pcts or {}
         for n in names:
             if n in by_name:
-                edges.append({"from": by_name[n].id, "to": o.id, "implicit": implicit})
+                pct = own.get(n, o.start_after_pct if (o.start_after_pct and o.start_after_pct < 100) else None)
+                edges.append({"from": by_name[n].id, "to": o.id, "implicit": implicit, "pct": pct, "pct_own": n in own})
         node = {"id": o.id, "name": o.name, "unit": o.unit, "sequence": o.sequence, "norm_per_day": o.norm_per_day, "per_item": o.per_item,
                 "min_skill": o.min_skill, "start_after_pct": o.start_after_pct, "x": o.map_x, "y": o.map_y, "version": o.version,
-                "predecessors": names, "implicit": implicit}
+                "predecessors": names, "implicit": implicit, "predecessor_pcts": dict(own), "default_pct": o.start_after_pct}
         if ol is not None:
             req = progress.required(ol.qty, o)
             own = [centers.get(c, "") for c in assign.get(o.id, [])]
@@ -189,8 +191,41 @@ def delete_link(rid: int, from_id: int, to_id: int, user: User = Depends(require
         raise HTTPException(404, "Такой связи нет")
     old = list(b.predecessors) if b.predecessors is not None else None
     b.predecessors = [n for n in cur if n != a.name]            # пустой список — «без предшественников»: операция может начинаться сразу
+    if b.predecessor_pcts:
+        b.predecessor_pcts = {n: v for n, v in b.predecessor_pcts.items() if n != a.name} or None
     b.version += 1
     audit.log(db, user, "operation", b.id, "update", {"predecessors": [old, b.predecessors]})
+    return {"ok": True}
+
+
+class PctIn(BaseModel):
+    from_id: int
+    to_id: int
+    pct: Optional[float] = Field(None, ge=1, le=100)        # None — вернуть общую партию операции
+
+
+@router.put("/{rid}/links/pct")
+def set_link_pct(rid: int, body: PctIn, user: User = Depends(require(*CATALOG)), db: Session = DB):
+    """Партия по одной связи: предшественник «из» открывает изделия для «в», когда выполнен на pct % (а не на общий % операции)."""
+    r, ops = _routing_ops(db, user, rid)
+    by_id = {o.id: o for o in ops}
+    if body.from_id not in by_id or body.to_id not in by_id:
+        raise HTTPException(404, "Операция не найдена в этой версии маршрута")
+    a, b = by_id[body.from_id], by_id[body.to_id]
+    cur, _ = _effective(b, ops)
+    if a.name not in cur:
+        raise HTTPException(404, "Такой связи нет")
+    if b.predecessors is None:                                   # партия по связи требует явного списка предшественников
+        b.predecessors = cur
+    old = dict(b.predecessor_pcts or {})
+    new = dict(old)
+    if body.pct is None:
+        new.pop(a.name, None)
+    else:
+        new[a.name] = float(body.pct)
+    b.predecessor_pcts = new or None
+    b.version += 1
+    audit.log(db, user, "operation", b.id, "update", {"predecessor_pcts": [old or None, b.predecessor_pcts]})
     return {"ok": True}
 
 
