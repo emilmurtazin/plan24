@@ -75,8 +75,6 @@ def enter(db: Session, actor, *, fact_date: date, order_line_id: int, operation_
     """Записывает итог дня по исполнителю; повторный ввод заменяет значение. → (факт, прежнее значение или None)."""
     if fact_date > today:
         _deny(422, "Факт на будущую дату вносить нельзя")
-    if actor.role == "worker" and fact_date != today:
-        _deny(403, "Сборщик вносит факт только за сегодня. За прошлые дни — обратитесь к бригадиру")
     worker = get_or_404(db, Worker, worker_id, actor)
     can_touch_worker(actor, worker)
     ol = get_or_404(db, OrderLine, order_line_id, actor)

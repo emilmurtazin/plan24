@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from .. import audit, distribution, progress
 from ..db import DB
-from ..deps import CATALOG, READERS, get_or_404, require
-from ..models import Fact, Operation, OrderLine, OrderLineOperation, Product, Project, Routing, User, WorkCenter
+from ..deps import CATALOG, READERS, STAFF, get_or_404, get_today, require
+from ..models import Fact, Operation, OperationAssignee, OrderLine, OrderLineOperation, Product, Project, Routing, User, Worker, WorkCenter
 
 router = APIRouter(prefix="/flow-map", tags=["flow-map"])
 LIMIT_LINES = 600
@@ -63,7 +64,8 @@ def targets(user: User = Depends(require(*READERS)), db: Session = DB):
 
 
 @router.get("")
-def flow_map(order_line_id: Optional[int] = None, routing_id: Optional[int] = None, user: User = Depends(require(*READERS)), db: Session = DB):
+def flow_map(order_line_id: Optional[int] = None, routing_id: Optional[int] = None, user: User = Depends(require(*READERS)), db: Session = DB,
+             today: date = Depends(get_today)):
     """Карточки и связи версии маршрута. С order_line_id — ещё и выполнение по этой позиции заказа."""
     if (order_line_id is None) == (routing_id is None):
         raise HTTPException(422, "Укажите позицию заказа или версию маршрута")
@@ -81,7 +83,19 @@ def flow_map(order_line_id: Optional[int] = None, routing_id: Optional[int] = No
     assign: dict = defaultdict(list)
     done: dict = {}
     prog = None
+    exec_: dict = defaultdict(list)                  # исполнители, назначенные вручную: операция → [работники]
+    strict: dict = {}
+    recent: dict = defaultdict(list)                 # последние факты по операции этого заказа
+    wnames: dict = {}
     if ol is not None:
+        for a in db.scalars(select(OperationAssignee).where(OperationAssignee.tenant_id == t, OperationAssignee.order_line_id == ol.id)):
+            exec_[a.operation_id].append(a.worker_id)
+            strict[a.operation_id] = bool(a.strict)
+        wnames = {w.id: w.name for w in db.scalars(select(Worker).where(Worker.tenant_id == t))}
+        for f in db.scalars(select(Fact).where(Fact.tenant_id == t, Fact.order_line_id == ol.id, Fact.deleted_at.is_(None))
+                            .order_by(Fact.fact_date.desc(), Fact.id.desc()).limit(400)):
+            if len(recent[f.operation_id]) < 8:
+                recent[f.operation_id].append({"date": f.fact_date.isoformat(), "qty": f.qty, "worker": wnames.get(f.worker_id) if f.worker_id else None})
         for a in db.scalars(select(OrderLineOperation).where(OrderLineOperation.order_line_id == ol.id)):
             assign[a.operation_id].append(a.work_center_id)
         done = {op: q for op, q in db.execute(select(Fact.operation_id, func.sum(Fact.qty)).where(
@@ -105,10 +119,20 @@ def flow_map(order_line_id: Optional[int] = None, routing_id: Optional[int] = No
             foreign = user.role == "foreman" and user.work_center_id not in assign.get(o.id, [])
             node.update({"required": req, "sections": own,
                          "foreign": foreign,                                       # бригадир не видит выполнение чужих участков
+                         "center_ids": [] if foreign else list(assign.get(o.id, [])),
+                         "assignees": [] if foreign else exec_.get(o.id, []), "assign_strict": strict.get(o.id, True),
+                         "facts": [] if foreign else recent.get(o.id, []),
                          "done": None if foreign else min(done.get(o.id, 0.0), req) if req else 0,
                          "pct": None if foreign else (prog["per_op"].get(o.id, 0.0) if req else 100.0)})
         nodes.append(node)
-    return {"routing": {"id": r.id, "product": product.name if product else "", "version_no": r.version_no, "name": r.name, "used": used},
+    extra: dict = {}
+    if ol is not None:
+        ws = [w for w in db.scalars(select(Worker).where(Worker.tenant_id == t).order_by(Worker.name))
+              if w.status == "available" and w.auto_plan and (user.role != "foreman" or w.work_center_id == user.work_center_id)]
+        extra = {"workers": [{"id": w.id, "name": w.name, "skill": w.skill, "work_center_id": w.work_center_id} for w in ws],
+                 "sections": [{"id": k, "name": v} for k, v in centers.items() if user.role != "foreman" or k == user.work_center_id],
+                 "can_fact": user.role in STAFF, "can_assign": user.role in STAFF, "today": today.isoformat()}
+    return {**extra, "routing": {"id": r.id, "product": product.name if product else "", "version_no": r.version_no, "name": r.name, "used": used},
             "line": ({"id": ol.id, "order": ol.ext_id or f"№{ol.id}", "qty": ol.qty, "percent": prog["percent"],
                       "due": ol.due_date.isoformat() if ol.due_date else None} if ol else None),
             "nodes": nodes, "edges": edges, "can_edit": user.role in CATALOG}

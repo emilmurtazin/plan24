@@ -1,5 +1,5 @@
 """Ввод факта (FR-21…FR-25)."""
-from datetime import timedelta
+from datetime import date, timedelta
 
 from conftest import TODAY
 from test_planning import first_task
@@ -54,7 +54,9 @@ def test_worker_rights(full_org):
     assert o.post("/facts", "worker", json=body(o)).status_code == 200                           # свой, сегодня
     assert o.post("/facts", "worker", json=body(o, worker_id=other["id"])).status_code == 403    # чужой
     y = (TODAY - timedelta(days=1)).isoformat()
-    assert o.post("/facts", "worker", json=body(o, fact_date=y)).status_code == 403              # прошлый день
+    assert o.post("/facts", "worker", json=body(o, fact_date=y)).status_code == 200              # прошлый день — теперь можно и сборщику
+    fut = (date.fromisoformat(y) + timedelta(days=3)).isoformat()
+    assert o.post("/facts", "worker", json=body(o, fact_date=fut)).status_code == 422             # будущее — по-прежнему нельзя
     assert o.post("/facts", "foreman", json=body(o, fact_date=y)).status_code == 200            # бригадир может за прошлые дни
     mine = o.get("/facts", "worker").json()["items"]
     assert {f["worker_id"] for f in mine} == {o.w1["id"]}                                        # видит только свои
@@ -133,7 +135,7 @@ def test_day_report_shows_plan_vs_fact_and_role_scoping(full_org):
     assert {x["worker_id"] for x in wk["workers"]} <= {o.w1["id"]}
     assert o.get("/reports/day", "viewer").json()["can_enter"] is False
     past = (TODAY - timedelta(days=1)).isoformat()
-    assert o.get("/reports/day", "worker", params={"day": past}).json()["can_enter"] is False
+    assert o.get("/reports/day", "worker", params={"day": past}).json()["can_enter"] is True
     # нагрузка бригадира — только его участок
     ld = o.get("/reports/load", "foreman").json()
     assert all(ld["worker_info"][n]["work_center_id"] == o.wcs[0]["id"] for n in ld["workers"])

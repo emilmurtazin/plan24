@@ -83,20 +83,30 @@ def task_key(t: dict) -> str:
     return f"{t['order_line_id']}:{t['operation_id']}:{t['worker_id']}"
 
 
-def find_task(db: Session, actor, key: str):
+def check_day(db: Session, actor, day: Optional[date]) -> date:
+    """День, за который вносят факт: пусто — сегодня; будущее нельзя. Прошедшие дни доступны и сборщику (даже без плана на них)."""
+    today = tenant_today(db, actor.tenant_id)
+    if day is None:
+        return today
+    if day > today:
+        raise HTTPException(422, "Факт на будущую дату вносить нельзя")
+    return day
+
+
+def find_task(db: Session, actor, key: str, day: Optional[date] = None):
     """Задание строго из отчёта актора: подделанные идентификаторы чужих задач не пройдут."""
     try:
         ol, op, wk = (int(x) for x in key.split(":"))
     except ValueError:
         return None
-    for t in rows(db, actor):
+    for t in rows(db, actor, day=check_day(db, actor, day)):
         if (t["order_line_id"], t["operation_id"], t["worker_id"]) == (ol, op, wk):
             return t
     return None
 
 
-def find_task_ids(db: Session, actor, ol: int, op: int, wk: int):
-    return find_task(db, actor, f"{ol}:{op}:{wk}")
+def find_task_ids(db: Session, actor, ol: int, op: int, wk: int, day: Optional[date] = None):
+    return find_task(db, actor, f"{ol}:{op}:{wk}", day)
 
 
 def task_label(t: dict) -> str:
@@ -118,19 +128,20 @@ def reasons_for(db: Session, tenant_id: int, worker_id: int) -> list:
 
 
 # ------------------------------------------------------------------ запись факта
-def write_fact(db: Session, actor, task: dict, qty: float):
+def write_fact(db: Session, actor, task: dict, qty: float, day: Optional[date] = None):
     today = tenant_today(db, actor.tenant_id)
-    return facts_service.enter(db, actor, fact_date=today, order_line_id=task["order_line_id"], operation_id=task["operation_id"],
+    return facts_service.enter(db, actor, fact_date=check_day(db, actor, day), order_line_id=task["order_line_id"], operation_id=task["operation_id"],
                                worker_id=task["worker_id"], qty=qty, today=today, source="telegram")
 
 
-def close_day(db: Session, actor, wid: int = 0) -> dict:
+def close_day(db: Session, actor, wid: int = 0, day: Optional[date] = None) -> dict:
     """Внести плановое по заданиям без факта (исполнитель — себе; бригадир — работнику или всему участку)."""
-    r = rows(db, actor, wid or None) if role_of(actor) == "foreman" else rows(db, actor)
+    day = check_day(db, actor, day)
+    r = rows(db, actor, wid or None, day) if role_of(actor) == "foreman" else rows(db, actor, day=day)
     ok, fails = 0, []
     for t in pending(r):
         try:
-            write_fact(db, actor, t, t["plan_qty"])
+            write_fact(db, actor, t, t["plan_qty"], day)
             ok += 1
         except FactError as e:
             fails.append(f"{t['operation']}: {e.detail}")
@@ -303,13 +314,14 @@ def order_operations(db: Session, actor, order_line_id: int) -> list:
     return out
 
 
-def write_fact_any(db: Session, actor, worker_id: int, order_line_id: int, operation_id: int, qty: float):
+def write_fact_any(db: Session, actor, worker_id: int, order_line_id: int, operation_id: int, qty: float, day: Optional[date] = None):
     """Факт по любой операции любой позиции (не обязательно из плана): работника могли переключить на другую работу.
-    Права и проверки — те же, что у обычного ввода: сборщик — только за себя и за сегодня, бригадир — за работников своего участка."""
+    Права и проверки — те же, что у обычного ввода: сборщик — только за себя (за сегодня и за прошедшие дни, плана на день может не быть),
+    бригадир — за работников своего участка."""
     if role_of(actor) == "worker":
         worker_id = actor.worker_id
     today = tenant_today(db, actor.tenant_id)
-    return facts_service.enter(db, actor, fact_date=today, order_line_id=order_line_id, operation_id=operation_id,
+    return facts_service.enter(db, actor, fact_date=check_day(db, actor, day), order_line_id=order_line_id, operation_id=operation_id,
                                worker_id=worker_id, qty=qty, today=today, source="telegram")
 
 
@@ -324,8 +336,10 @@ def _extra_worker(db: Session, actor, worker_id: Optional[int], existing: bool =
     return w
 
 
-def add_extra(db: Session, actor, worker_id: Optional[int], title: str, hours: float, order_line_id: Optional[int] = None) -> ExtraTask:
-    """Сегодняшняя работа вне перечня, уже выполненная: работник сразу вносит часы (план = факт). Не относится к заказу — order_line_id=None."""
+def add_extra(db: Session, actor, worker_id: Optional[int], title: str, hours: float, order_line_id: Optional[int] = None,
+              day: Optional[date] = None) -> ExtraTask:
+    """Работа вне перечня за сегодня (или за прошедший день), уже выполненная: работник сразу вносит часы (план = факт).
+    Не относится к заказу — order_line_id=None."""
     title = (title or "").strip()
     if not title or len(title) > 200:
         raise HTTPException(422, "Опишите работу коротко (до 200 символов)")
@@ -336,7 +350,7 @@ def add_extra(db: Session, actor, worker_id: Optional[int], title: str, hours: f
         ol = get_or_404(db, OrderLine, order_line_id, actor)
         if ol.status == "cancelled" or ol.deleted_at is not None:
             raise HTTPException(422, "Позиция отменена")
-    today = tenant_today(db, actor.tenant_id)
+    today = check_day(db, actor, day)
     x = ExtraTask(tenant_id=actor.tenant_id, plan_date=today, worker_id=w.id, order_line_id=order_line_id, title=title,
                   hours=hours, fact_hours=hours, created_by=getattr(actor, "id", None) if role_of(actor) == "foreman" else None)
     db.add(x)
@@ -349,8 +363,8 @@ def add_extra(db: Session, actor, worker_id: Optional[int], title: str, hours: f
 def _own_extra(db: Session, actor, extra_id: int) -> ExtraTask:
     x = get_or_404(db, ExtraTask, extra_id, actor)
     _extra_worker(db, actor, x.worker_id, existing=True)
-    if x.plan_date != tenant_today(db, actor.tenant_id):
-        raise HTTPException(403, "Работу вне перечня можно менять только в день, на который она внесена")
+    if x.plan_date > tenant_today(db, actor.tenant_id):
+        raise HTTPException(403, "Работу вне перечня на будущий день менять нельзя")
     return x
 
 

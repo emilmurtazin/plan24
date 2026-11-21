@@ -48,7 +48,7 @@ def order_progress(qty: float, ops: list, done: dict) -> dict:
 
 def for_orders(db: Session, t: int, ol_ids: list) -> dict:
     """Доля выполнения по позициям заказов и итог по ним. per_order: id → процент."""
-    empty = {"percent": 0.0, "done": 0.0, "required": 0.0, "done_work": 0.0, "total_work": 0.0, "per_order": {}}
+    empty = {"percent": 0.0, "done": 0.0, "required": 0.0, "done_work": 0.0, "total_work": 0.0, "per_order": {}, "work": {}}
     if not ol_ids:
         return empty
     ols = list(db.scalars(select(OrderLine).where(OrderLine.id.in_(ol_ids))))
@@ -60,13 +60,14 @@ def for_orders(db: Session, t: int, ol_ids: list) -> dict:
                                 .where(Fact.tenant_id == t, Fact.deleted_at.is_(None), Fact.order_line_id.in_(ol_ids))
                                 .group_by(Fact.order_line_id, Fact.operation_id)):
         done[ol][op] = q
-    per, tw, dw, di, ri = {}, 0.0, 0.0, 0.0, 0.0
+    per, work, tw, dw, di, ri = {}, {}, 0.0, 0.0, 0.0, 0.0
     for o in ols:
         p = order_progress(o.qty, routing_ops.get(o.routing_id, []), done.get(o.id, {}))
         per[o.id] = p["percent"]
+        work[o.id] = (p["done_work"], p["total_work"])          # трудодни (нормо-дни): сделано / всего по заказу
         tw, dw, di, ri = tw + p["total_work"], dw + p["done_work"], di + p["done"], ri + p["required"]
     pct = 100.0 if tw > 0 and dw >= tw - EPS else min(99.9, round(dw / tw * 100, 1)) if tw > EPS else 0.0
-    return {"percent": pct, "done": di, "required": ri, "done_work": dw, "total_work": tw, "per_order": per}
+    return {"percent": pct, "done": di, "required": ri, "done_work": dw, "total_work": tw, "per_order": per, "work": work}
 
 
 def refresh_rows(db: Session, t: int, rows: list) -> tuple:

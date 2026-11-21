@@ -27,8 +27,12 @@ def test_routing_is_immutable_once_used_but_hold_is_editable(org):
     pid, rid = mk_product(org)
     assert mk_order(org, pid).status_code == 201
     op = org.get(f"/products/{pid}/routings").json()[0]["operations"][0]
-    assert org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99}).status_code == 409      # норма, квалификация, объём — только новой версией
-    assert org.patch(f"/operations/{op['id']}", json={"per_item": 2}).status_code == 409
+    assert org.patch(f"/operations/{op['id']}", json={"min_skill": 3}).status_code == 409           # квалификация и единица — только новой версией
+    assert org.patch(f"/operations/{op['id']}", json={"unit": "м"}).status_code == 409
+    r1 = org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99})                          # норма и «на изделие» правятся и в действующей версии
+    assert r1.status_code == 200 and r1.json()["norm_per_day"] == 99 and r1.json()["orders_affected"] == 1
+    r2 = org.patch(f"/operations/{op['id']}", json={"per_item": 2})
+    assert r2.status_code == 200 and r2.json()["per_item"] == 2
     added = org.post(f"/routings/{rid}/operations", json={"name": "Покраска", "norm_per_day": 5, "sequence": 3})   # операции добавлять можно
     assert added.status_code == 201 and "orders_distributed" in added.json()
     assert org.delete(f"/operations/{added.json()['id']}").status_code == 204                      # и удалять, если по ним нет факта

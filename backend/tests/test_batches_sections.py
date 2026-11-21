@@ -102,9 +102,10 @@ def test_api_section_settings_and_batch_field(org):
     assert org.patch(f"/operations/{op['id']}", json={"start_after_pct": 0}).status_code == 422
     assert org.patch(f"/operations/{op['id']}", json={"start_after_pct": 30}).json()["start_after_pct"] == 30
     assert mk_order(org, pid).status_code == 201
-    # маршрут уже в заказах: партию менять можно (состав работ не меняется), норму — нельзя
+    # маршрут уже в заказах: партию и норму менять можно, квалификацию — нельзя
     assert org.patch(f"/operations/{op['id']}", json={"start_after_pct": 50}).status_code == 200
-    assert org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99}).status_code == 409
+    assert org.patch(f"/operations/{op['id']}", json={"norm_per_day": 99}).status_code == 200
+    assert org.patch(f"/operations/{op['id']}", json={"min_skill": 4}).status_code == 409
     v2 = org.post(f"/products/{pid}/routings").json()
     assert [o["start_after_pct"] for o in v2["operations"]] == [None, 50]                   # новая версия копирует партию
 

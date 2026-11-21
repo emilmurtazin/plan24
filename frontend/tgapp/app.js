@@ -5,7 +5,7 @@
 
 const API = '/api/v1/tgapp';
 const $ = id => document.getElementById(id);
-const S = { token: null, me: null, data: null, tab: null, wid: null, undo: null, tm: null, catalog: null };
+const S = { token: null, me: null, data: null, tab: null, wid: null, undo: null, tm: null, catalog: null, day: null };   // day: ISO-дата просматриваемого дня; null — сегодня
 
 /* ---------------- построение DOM ---------------- */
 function h(tag, attrs, ...kids) {
@@ -122,7 +122,7 @@ function taskCard(w, t, canEnter, onChange) {
     if (busy) { dirty = true; return; }
     busy = true; dirty = false; say('сохраняю…');
     try {
-      const r = await api('POST', '/fact', { order_line_id: t.order_line_id, operation_id: t.operation_id, worker_id: w.worker_id, qty: t.fact_qty });
+      const r = await api('POST', '/fact', { order_line_id: t.order_line_id, operation_id: t.operation_id, worker_id: w.worker_id, qty: t.fact_qty, date: S.day || undefined });
       if (!burstTouched) { burstPrev = r.previous; burstTouched = true; }
       t.fact_id = r.fact_id; t.reason_id = null; t.fact_status = r.status;
       say(r.status === 'submitted' ? '✓ записано, бригадир подтвердит' : '✓ записано', 'ok');
@@ -228,7 +228,7 @@ async function otherWork(worker, refresh) {
     input.addEventListener('change', () => { const v = parseFloat(String(input.value).replace(',', '.')); qty = isFinite(v) && v >= 0 ? v : qty; input.value = String(qty); });
     const save = h('button', { class: 'wide', disabled: !(project && order && op), onclick: e => act(e.currentTarget, async () => {
       qty = parseFloat(String(input.value).replace(',', '.')); if (!isFinite(qty) || qty < 0) throw new Error('Введите количество');
-      await api('POST', '/fact/other', { order_line_id: order, operation_id: op, worker_id: worker.worker_id, qty });
+      await api('POST', '/fact/other', { order_line_id: order, operation_id: op, worker_id: worker.worker_id, qty, date: S.day || undefined });
       added++; toast(`Записано: ${fnum(qty)}. Можно добавить следующую операцию`); op = null; qty = 1; ops = ops.map(x => x); drawOp(); }) }, 'Записать');
     body.replaceChildren(head(), h('label', { text: 'Проект' }), pSel, h('label', { text: 'Заказ и изделие' }), oSel, h('label', { text: 'Операция' }), opSel,
       h('label', { text: 'Сколько сделано' }), h('div', { class: 'counter' }, h('button', { class: 'sq ghost', onclick: () => { qty = Math.max(0, (parseFloat(input.value.replace(',', '.')) || 0) - 1); input.value = String(qty); } }, '−'), input,
@@ -247,11 +247,11 @@ async function otherWork(worker, refresh) {
       h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'ghost grow', onclick: () => close() }, added ? 'Готово' : 'Закрыть'),
         h('button', { class: 'grow', onclick: e => act(e.currentTarget, async () => {
           if (!title.value.trim()) throw new Error('Опишите, что делали'); if (!(val() > 0)) throw new Error('Укажите часы');
-          await api('POST', '/extra', { title: title.value.trim(), hours: val(), order_line_id: +oSel.value || null, worker_id: worker.worker_id });
+          await api('POST', '/extra', { title: title.value.trim(), hours: val(), order_line_id: +oSel.value || null, worker_id: worker.worker_id, date: S.day || undefined });
           added++; toast('Работа добавлена'); title.value = ''; }) }, 'Добавить')));
   };
   function head() {
-    return h('div', null, h('h3', { text: 'Другая работа' + (S.me.role === 'foreman' ? ` — ${worker.worker}` : '') }),
+    return h('div', null, h('h3', { text: 'Другая работа' + (S.me.role === 'foreman' ? ` — ${worker.worker}` : '') + (S.day ? ` · за ${fday(S.day)}` : '') }),
       h('div', { class: 'row', style: 'margin:8px 0' },
         h('button', { class: 'chip grow' + (tab === 'op' ? ' on' : ''), onclick: () => { tab = 'op'; draw(); } }, 'Операция заказа'),
         h('button', { class: 'chip grow' + (tab === 'extra' ? ' on' : ''), onclick: () => { tab = 'extra'; draw(); } }, 'Вне перечня')));
@@ -263,9 +263,28 @@ function workBlocks(w, canEnter, onChange, refresh) {
   const cards = w.tasks.filter(t => t.plan_qty || t.fact_qty != null).map(t => taskCard(w, t, canEnter, onChange));
   const extras = (w.extras || []).map(x => extraCard(w, x, canEnter, ch => { ch ? refresh() : onChange && onChange(); }));
   const out = [...cards, ...extras];
-  if (!out.length) out.push(h('div', { class: 'empty', text: 'На сегодня заданий нет' }));
+  if (!out.length) out.push(h('div', { class: 'empty', text: S.day ? 'На этот день в плане заданий не было. Внесите работу кнопкой ниже' : 'На сегодня заданий нет' }));
   if (canEnter) out.push(h('button', { class: 'wide ghost', onclick: () => otherWork(w, refresh) }, '➕ Другая работа (другой проект, операция, вне перечня)'));
   return out;
+}
+
+
+/* ---------------- выбор дня: прошлые периоды и дни без плана ---------------- */
+const isoOf = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+function dateBar(d) {
+  const cur = d.date, today = d.today, isToday = cur === today;
+  const shift = n => { const x = new Date(cur + 'T00:00:00'); x.setDate(x.getDate() + n); return isoOf(x); };
+  const setDay = iso => { if (iso > today) return toast('Факт на будущую дату вносить нельзя', { err: true }); S.day = iso === today ? null : iso; return go(S.tab, S.wid); };
+  const pick = h('input', { type: 'date', max: today, value: cur, 'aria-label': 'Выбрать дату', class: 'dpick', onchange: e => e.target.value && setDay(e.target.value) });
+  const missing = (d.missing || []).slice(-8).reverse();
+  return h('div', { class: 'card daybar' },
+    h('div', { class: 'row' },
+      h('button', { class: 'sq ghost', 'aria-label': 'Предыдущий день', onclick: () => setDay(shift(-1)) }, '◀'),
+      h('div', { class: 'grow center' }, h('b', { text: fday(cur) }), h('div', { class: 'meta', text: isToday ? 'сегодня' : 'прошедший день' })),
+      h('button', { class: 'sq ghost', 'aria-label': 'Следующий день', disabled: isToday, onclick: () => setDay(shift(1)) }, '▶')),
+    h('div', { class: 'row wrap', style: 'margin-top:8px' }, pick, isToday ? null : h('button', { class: 'chip on', onclick: () => setDay(today) }, 'Сегодня')),
+    missing.length ? h('div', { style: 'margin-top:8px' }, h('div', { class: 'meta', text: 'Не внесён факт за дни:' }),
+      h('div', { class: 'row wrap' }, missing.map(m => h('button', { class: 'chip' + (m.date === cur ? ' on' : ''), onclick: () => setDay(m.date) }, `${fday(m.date)} · ${m.count}`)))) : null);
 }
 
 /* ---------------- экраны ---------------- */
@@ -284,7 +303,7 @@ function drawTabs() {
   $('tabs').replaceChildren(...tabsFor(S.me.role).map(([id, ic, label]) => h('button', { class: S.tab === id ? 'on' : '', onclick: () => go(id) },
     h('span', { class: 'ic', text: ic }), label, id === 'queue' && S.data && S.data.queue ? h('span', { class: 'badge', text: String(S.data.queue) }) : null)));
 }
-async function loadDay() { S.data = await api('GET', '/day'); }
+async function loadDay() { S.data = await api('GET', '/day' + (S.day ? '?date=' + S.day : '')); if (S.data.date === S.data.today) S.day = null; }
 async function go(tab, wid) {
   S.tab = tab; S.wid = wid || null; drawTabs();
   main().replaceChildren(h('p', { class: 'muted center', text: 'Загрузка…' }));
@@ -303,50 +322,54 @@ function fatal(msg, status) {
 
 function tasksList(workers, w, canEnter, onChange) {
   const ts = w.tasks.filter(t => t.plan_qty || t.fact_qty != null);
-  return ts.length ? ts.map(t => taskCard(w, t, canEnter, onChange)) : [h('div', { class: 'empty', text: 'На сегодня заданий нет' })];
+  return ts.length ? ts.map(t => taskCard(w, t, canEnter, onChange)) : [h('div', { class: 'empty', text: S.day ? 'На этот день в плане заданий не было' : 'На сегодня заданий нет' })];
 }
 async function closeDay(wid, label) {
   const pend = S.data.workers.flatMap(w => w.tasks.filter(t => t.plan_qty && t.fact_qty == null && (!wid || w.worker_id === wid)));
   if (!pend.length) return toast('Заданий без факта нет ✔');
   if (!await ask(`Внести по плану ${pend.length} ${pend.length === 1 ? 'задание' : 'заданий'}${label ? ' — ' + label : ''}?\nВнесётся ровно плановое количество.`, 'Внести')) return;
-  const r = await api('POST', '/closeday', { worker_id: wid || 0 });
+  const r = await api('POST', '/closeday', { worker_id: wid || 0, date: S.day || undefined });
   toast(`Внесено по плану: ${r.ok}` + (r.fails.length ? `. Не внесено: ${r.fails.length}` : ''), { err: r.fails.length > 0 });
   await go(S.tab, S.wid);
 }
 
 async function tasksScreen() {                                 // сборщик
   const d = S.data, w = d.workers[0] || { worker_id: d.worker_id, worker: d.name, tasks: [] };
-  const upd = () => header('Мои задания', fday(d.date), progress(d.workers));
+  const upd = () => header(S.day ? 'Задания за прошлый день' : 'Мои задания', fday(d.date), progress(d.workers));
   upd();
   const pend = w.tasks.some(t => t.plan_qty && t.fact_qty == null);
-  main().replaceChildren(...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
+  main().replaceChildren(dateBar(d), ...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
     pend && d.can_enter ? h('button', { class: 'wide okb', onclick: e => act(e.currentTarget, () => closeDay(0)) }, '✅ Закрыть день по плану') : null);
 }
 
 async function peopleScreen() {                                // бригадир
   const d = S.data;
   if (S.wid) {
-    const w = d.workers.find(x => x.worker_id === S.wid);
+    const tm = (d.team || []).find(x => x.worker_id === S.wid);
+    const w = d.workers.find(x => x.worker_id === S.wid) || (tm ? { worker_id: tm.worker_id, worker: tm.worker, tasks: [], extras: [] } : null);   // работник без заданий в этот день: факт всё равно можно внести
     if (!w) { S.wid = null; return peopleScreen(); }
     const upd = () => header(w.worker, 'Задания на ' + fday(d.date), progress([w]));
     upd();
-    main().replaceChildren(h('button', { class: 'ghost wide', onclick: () => go('people') }, '◀ К участку'), ...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
+    main().replaceChildren(dateBar(d), h('button', { class: 'ghost wide', onclick: () => go('people') }, '◀ К участку'), ...workBlocks(w, d.can_enter, upd, () => go(S.tab, S.wid)),
       w.tasks.some(t => t.plan_qty && t.fact_qty == null) ? h('button', { class: 'wide okb', onclick: e => act(e.currentTarget, () => closeDay(w.worker_id, w.worker)) }, `✅ Закрыть день: ${w.worker}`) : null);
     return;
   }
-  header('Участок', fday(d.date), progress(d.workers));
+  header(S.day ? 'Участок за прошлый день' : 'Участок', fday(d.date), progress(d.workers));
   const list = d.workers.filter(w => w.tasks.some(t => t.plan_qty || t.fact_qty != null));
   const pend = list.some(w => w.tasks.some(t => t.plan_qty && t.fact_qty == null));
+  const rest = (d.team || []).filter(m => !list.some(w => w.worker_id === m.worker_id));
   main().replaceChildren(
+    dateBar(d),
     ...(list.length ? list.map(w => {
       const ts = w.tasks.filter(t => t.plan_qty), done = ts.filter(t => t.fact_qty != null).length;
       return h('button', { class: 'person', onclick: () => go('people', w.worker_id) },
         h('div', { class: 'row' }, h('b', { class: 'grow', text: w.worker }), h('span', { class: 'pill ' + (done === ts.length && ts.length ? 'ok' : done ? 'warn' : ''), text: `${done}/${ts.length}` })),
         h('div', { class: 'bar' }, h('i', { style: `width:${ts.length ? Math.round(done / ts.length * 100) : 0}%` })));
-    }) : [h('div', { class: 'empty', text: 'На сегодня заданий на участке нет' })]),
+    }) : [h('div', { class: 'empty', text: S.day ? 'На этот день заданий на участке не было' : 'На сегодня заданий на участке нет' })]),
     pend ? h('button', { class: 'wide okb', onclick: e => act(e.currentTarget, () => closeDay(0, 'весь участок')) }, '✅ Закрыть день по плану за всех') : null,
-    pend ? h('button', { class: 'wide ghost', onclick: e => act(e.currentTarget, remind) }, '🔔 Напомнить тем, кто не внёс') : null,
-    h('button', { class: 'wide ghost', onclick: e => act(e.currentTarget, replan) }, '🔄 Перепланировать участок'));
+    rest.length ? h('div', null, h('div', { class: 'meta', text: 'Без заданий в этот день (можно внести другую работу):' }), h('div', { class: 'row wrap' }, rest.map(m => h('button', { class: 'chip', onclick: () => go('people', m.worker_id) }, m.worker)))) : null,
+    !S.day && pend ? h('button', { class: 'wide ghost', onclick: e => act(e.currentTarget, remind) }, '🔔 Напомнить тем, кто не внёс') : null,
+    !S.day ? h('button', { class: 'wide ghost', onclick: e => act(e.currentTarget, replan) }, '🔄 Перепланировать участок') : null);
 }
 async function remind() {
   const r = await api('POST', '/remind');

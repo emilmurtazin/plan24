@@ -366,7 +366,10 @@ class OperationPatch(BaseModel):
 
 
 HOLD_FIELDS = {"hold_qty", "hold_reason", "hold_until"}
-SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors", "predecessor_pcts", "sequence"}       # партия не меняет состав работ, поэтому правится и в маршруте, стоящем в заказах          # то, что можно менять в маршруте, уже стоящем в заказах (название операции не влияет на расчёт)
+# то, что можно менять в маршруте, уже стоящем в заказах: название, порядок, связи, партия, блокировка, а также норма и количество операций
+# на изделие (они пересчитывают объём и трудоёмкость во всех заказах на этой версии — после правки план помечается «устарел»)
+SAFE_FIELDS = HOLD_FIELDS | {"name", "start_after_pct", "predecessors", "predecessor_pcts", "sequence", "norm_per_day", "per_item"}
+RECALC_FIELDS = {"norm_per_day", "per_item"}
 
 
 def levels_count(db, user) -> int:
@@ -378,7 +381,7 @@ def check_level(db, user, value, what: str):
     n = levels_count(db, user)
     if value is not None and value > n:
         raise HTTPException(422, f"{what}: в организации {n} ур. квалификации. Число уровней настраивается в «Организация → Об организации»")
-_IMMUTABLE = "Маршрут используется в позициях заказов: норму, квалификацию и объём на изделие менять нельзя — создайте новую версию маршрута (название, порядок, предшественников, партию и блокировку менять можно, операции — добавлять и удалять)"
+_IMMUTABLE = "Маршрут используется в позициях заказов: квалификацию и единицу измерения менять нельзя — создайте новую версию маршрута (название, порядок, предшественников, партию, блокировку, норму и количество на изделие менять можно, операции — добавлять и удалять)"
 
 
 def _clean_predecessors(db, routing_id: int, name: str, sequence: float, preds, exclude_id: int | None = None):
@@ -486,10 +489,14 @@ def patch_operation(oid: int, body: OperationPatch, user: User = Depends(require
                 x.predecessors = [new_name if n == old_name else n for n in x.predecessors]
                 if x.predecessor_pcts and old_name in x.predecessor_pcts:
                     x.predecessor_pcts = {(new_name if n == old_name else n): v for n, v in x.predecessor_pcts.items()}
+    affected = 0
     if changes:
         o.version += 1
-        audit.log(db, user, "operation", o.id, "update", changes)
-    return row(o)
+        if RECALC_FIELDS & set(changes):          # норма или «на изделие» изменились: затронуты все живые заказы этой версии
+            affected = db.scalar(select(func.count()).select_from(OrderLine).where(
+                OrderLine.tenant_id == user.tenant_id, OrderLine.routing_id == o.routing_id, OrderLine.deleted_at.is_(None))) or 0
+        audit.log(db, user, "operation", o.id, "update", {**changes, **({"orders_affected": affected} if affected else {})})
+    return {**row(o), "orders_affected": affected}
 
 
 def _op_facts(db, user, o: Operation) -> tuple:

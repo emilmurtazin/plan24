@@ -105,7 +105,7 @@ def _chat_id(upd: dict) -> Optional[int]:
 # ------------------------------------------------------------------ сообщения
 SLASH = {"/start": "help", "/help": "help", "/tasks": "tasks", "/zadaniya": "tasks", "/people": "tasks", "/undo": "undo",
          "/cancel": "cancel", "/queue": "queue", "/closeday": "closeday", "/problem": "problem", "/absent": "absent",
-         "/tomorrow": "tomorrow", "/settings": "settings", "/other": "other"}
+         "/tomorrow": "tomorrow", "/settings": "settings", "/other": "other", "/day": "day"}
 
 
 def _on_message(db: Session, msg: dict, chat_id: int, out: list, link: Optional[TelegramLink]):
@@ -129,6 +129,7 @@ def _on_message(db: Session, msg: dict, chat_id: int, out: list, link: Optional[
     action = SLASH.get(cmd) if cmd else menu_action(text)
     if action:
         _clear_pending(db, chat_id)                               # нажали меню — незаконченный ввод сбрасывается
+        _reset_day(db, chat_id)                                   # команды меню работают с сегодняшним днём; другой день — «📆 Другой день»
         return _dispatch(db, chat_id, actor, name, link, action, out)
 
     st = get_state(db, chat_id)
@@ -147,8 +148,10 @@ def _dispatch(db, chat_id, actor, name, link, action: str, out: list):
     role = _role(actor)
     if action == "help":
         return _help(db, chat_id, actor, name, out)
+    if action == "day":
+        return _day_pick(db, chat_id, None, actor, out)
     if action == "tasks":
-        return _open(db, chat_id, None, actor, name, {"s": "people" if role == "foreman" else "list", "page": 0, "wid": None}, out)
+        return _open(db, chat_id, None, actor, name, {"s": "people" if role == "foreman" else "list", "page": 0, "wid": None, "day": None}, out)
     if action == "undo":
         return _undo(db, chat_id, actor, out)
     if action == "cancel":
@@ -181,7 +184,8 @@ def _help(db, chat_id, actor, name, out):
         lines += ["", "📋 Задания — задания на сегодня; «+1», «+5», «Всё» — быстро внести сделанное",
                   "✅ Закрыть день — внести плановое по всем заданиям одним нажатием",
                   "⚠ Проблема — сообщить бригадиру (можно с фото)", "🤒 Не выйду — предупредить, что не сможете выйти"]
-    lines += ["📅 Завтра — что планируется завтра", "↩ /undo — отменить последний ввод", "⚙ Настройки — время и вид уведомлений"]
+    lines += ["📅 Завтра — что планируется завтра", "📆 /day — внести факт за другой (прошедший) день, даже если плана на него не было",
+              "↩ /undo — отменить последний ввод", "⚙ Настройки — время и вид уведомлений"]
     url = config.tgapp_url()
     if url:
         lines += ["", "📱 Приложение — те же задания с крупными кнопками (кнопка «Приложение» слева от поля ввода)"]
@@ -238,6 +242,37 @@ def _link(db: Session, chat_id: int, raw: str, out: list):
 
 
 # ------------------------------------------------------------------ задания: экраны
+# ------------------------------------------------------------------ другой день (прошедшие периоды, дни без плана)
+def _vday(db, chat_id) -> Optional[date]:
+    """День, открытый на экране сейчас (пусто — сегодня)."""
+    v = (get_state(db, chat_id).get("view") or {}).get("day")
+    try:
+        return date.fromisoformat(v) if v else None
+    except ValueError:
+        return None
+
+
+def _reset_day(db, chat_id):
+    st = get_state(db, chat_id)
+    if (st.get("view") or {}).get("day"):
+        st["view"] = {k: v for k, v in st["view"].items() if k != "day"}
+        put_state(db, chat_id, st)
+
+
+def _day_pick(db, chat_id, mid, actor, out: list):
+    """Выбор дня для внесения факта: последние 14 дней; дни, где по плану есть задания без факта, помечены ⚠."""
+    today = tenant_today(db, actor.tenant_id)
+    miss = {m["date"] for m in reports_service.missing_fact_days(db, actor, today)}
+    days = [today - timedelta(days=n) for n in range(1, 15)]
+    btns = [(("⚠ " if d.isoformat() in miss else "") + fday(d), f"dy:{d.isoformat()}") for d in days]
+    rows_b = [btns[i:i + 2] for i in range(0, len(btns), 2)] + [[("◀ Сегодня", "dy:0")]]
+    text = "За какой день внести факт? Выберите дату."
+    if miss:
+        text += "\n⚠ — на этот день были задания, а факт не внесён."
+    text += "\nФакт можно внести и за день, когда плана не было: откройте день и нажмите «➕ Другая работа». Более ранний день — в приложении."
+    show(out, chat_id, mid, text, kb(rows_b))
+
+
 def _footer(st: dict, rows: list, role: str, wid: int) -> list:
     out = []
     if _pending(rows, wid):
@@ -252,27 +287,36 @@ def _footer(st: dict, rows: list, role: str, wid: int) -> list:
 def _screen(db, actor, name, view: dict, st: dict):
     """(текст, кнопки) экрана по описанию view: people — участок по людям; list — список заданий; card — одно задание."""
     role = _role(actor)
-    today = tenant_today(db, actor.tenant_id)
+    real_today = tenant_today(db, actor.tenant_id)
+    try:
+        day = date.fromisoformat(view["day"]) if view.get("day") else None
+    except ValueError:
+        day = None
+    today = day or real_today                                # «today» ниже — показываемый день
+    when = f"на {fday(today)} (прошедший день)" if day else f"на сегодня, {fday(today)}"
     s, wid = view.get("s", "list"), int(view.get("wid") or 0)
     if s == "card":
-        t = _find_task(db, actor, view["key"])
+        t = _find_task(db, actor, view["key"], day)
         if t is not None:
             return _card(t, st, role)
         s, wid = ("list", 0) if role == "worker" else ("people", 0)
-    rows = _rows(db, actor, wid or None)
-    extras = _extras_lines(db, actor, wid) if (role == "worker" or wid) else []
+    rows = _rows(db, actor, wid or None, day)
+    extras = _extras_lines(db, actor, wid, day) if (role == "worker" or wid) else []
+    day_row = [("📆 Другой день", "dyp")] + ([("◀ Сегодня", "dy:0")] if day else [])
     if not rows:
         if wid:
-            return f"У этого работника на сегодня, {fday(today)}, заданий нет." + ("\n" + "\n".join(extras) if extras else ""), kb([[("◀ К участку", "l")]])
-        return f"На сегодня, {fday(today)}, заданий нет." + ("\n" + "\n".join(extras) if extras else ""), \
-            (kb([[("➕ Другая работа", "ow:0")]]) if role == "worker" else None)
+            return f"У этого работника {when} заданий нет." + ("\n" + "\n".join(extras) if extras else ""), kb([[("◀ К участку", "l")], day_row])
+        if role == "worker":
+            return f"{when[0].upper() + when[1:]} заданий нет." + ("\n" + "\n".join(extras) if extras else ""), kb([[("➕ Другая работа", "ow:0")], day_row])
+        return f"{when[0].upper() + when[1:]} заданий нет." + ("\n" + "\n".join(extras) if extras else ""), kb([day_row])
     if s == "people":
-        return _people(rows, today, st, role)
+        return _people(rows, today, st, role, day_row)
     page = int(view.get("page") or 0)
     pages = (len(rows) + PAGE - 1) // PAGE
     page = max(0, min(page, pages - 1))
-    head = f"{rows[0]['worker']} · задания на {fday(today)}" if (role == "foreman" and wid) else \
-        (f"Задания на {fday(today)}" + (f" — {name}" if role == "worker" else ""))
+    mark = " (прошедший день)" if day else ""
+    head = f"{rows[0]['worker']} · задания на {fday(today)}{mark}" if (role == "foreman" and wid) else \
+        (f"Задания на {fday(today)}{mark}" + (f" — {name}" if role == "worker" else ""))
     lines, buttons = [head], []
     for i, t in enumerate(rows[page * PAGE:(page + 1) * PAGE], start=page * PAGE + 1):
         done = f", сделано {fnum(t['fact_qty'])}" if t["fact_qty"] is not None else ""
@@ -296,17 +340,18 @@ def _screen(db, actor, name, view: dict, st: dict):
         lines += ["", "Вне перечня:"] + extras
     if role == "worker":
         buttons.append([("➕ Другая работа", "ow:0")])
+    buttons.append(day_row)
     return "\n".join(lines), kb(buttons + _footer(st, rows, role, wid))
 
 
-def _people(rows: list, today: date, st: dict, role: str):
+def _people(rows: list, today: date, st: dict, role: str, day_row: Optional[list] = None):
     by: dict = {}
     for t in rows:
         w = by.setdefault(t["worker_id"], {"name": t["worker"], "n": 0, "done": 0, "planned": 0})
         w["n"] += 1
         w["done"] += 1 if t["fact_qty"] is not None else 0
         w["planned"] += 1 if t["plan_qty"] else 0
-    lines = [f"Участок · {fday(today)}"]
+    lines = [f"Участок · {fday(today)}" + (" (прошедший день)" if day_row and len(day_row) > 1 else "")]
     btns = []
     for wid, w in list(by.items())[:24]:
         mark = "✔" if w["done"] == w["n"] else ("…" if w["done"] else "•")
@@ -314,8 +359,10 @@ def _people(rows: list, today: date, st: dict, role: str):
         btns.append((f"{mark} {w['name'][:22]} {w['done']}/{w['n']}", f"w:{wid}"))
     rows_b = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     pend = _pending(rows)
-    if pend:
+    if pend and not (day_row and len(day_row) > 1):          # напоминание — только про сегодня
         rows_b.append([("🔔 Напомнить тем, кто не внёс", "rem")])
+    if day_row:
+        rows_b.append(day_row)
     return "\n".join(lines), kb(rows_b + _footer(st, rows, role, 0))
 
 
@@ -349,9 +396,17 @@ def _card(t: dict, st: dict, role: str):
 def _open(db, chat_id, mid, actor, name, view: dict, out: list):
     """Открыть/перерисовать экран и запомнить его как текущий."""
     st = get_state(db, chat_id)
+    if "day" not in view and (st.get("view") or {}).get("day"):
+        view = {**view, "day": st["view"]["day"]}            # открытый день сохраняется при переходах по экранам
+    if not view.get("day"):
+        view = {k: v for k, v in view.items() if k != "day"}
     st["view"] = view
     if view.get("s") == "card":                              # причины отклонения — участка работника и общие
-        t = _find_task(db, actor, view["key"])
+        try:
+            vd = date.fromisoformat(view["day"]) if view.get("day") else None
+        except ValueError:
+            vd = None
+        t = _find_task(db, actor, view["key"], vd)
         if t is not None:
             st["reasons"] = _reasons_for(db, actor.tenant_id, t["worker_id"])
     put_state(db, chat_id, st)
@@ -366,7 +421,7 @@ def _rerender(db, chat_id, mid, actor, name, out):
 
 # ------------------------------------------------------------------ запись факта
 def _write(db, chat_id, actor, task: dict, qty: float):
-    f, old = core.write_fact(db, actor, task, qty)
+    f, old = core.write_fact(db, actor, task, qty, _vday(db, chat_id))
     st = get_state(db, chat_id)
     st.pop("await", None); st.pop("confirm", None)
     st["last"] = {"fact_id": f.id, "previous": old, "label": _label(task)}
@@ -409,13 +464,22 @@ def _route(db, chat_id, mid, actor, name, link, kind: str, rest: str, out: list)
         return _open(db, chat_id, mid, actor, name, {"s": "list", "page": int(page or 0), "wid": int(wid or 0) or None}, out)
     if kind == "w" and role == "foreman":
         return _open(db, chat_id, mid, actor, name, {"s": "list", "page": 0, "wid": int(rest)}, out)
+    if kind == "dyp":
+        return _day_pick(db, chat_id, mid, actor, out)
+    if kind == "dy":
+        d = date.fromisoformat(rest) if rest not in ("", "0") else None
+        if d is not None:
+            core.check_day(db, actor, d)                                   # будущее нельзя
+        return _open(db, chat_id, mid, actor, name, {"s": "people" if role == "foreman" else "list", "page": 0, "wid": None,
+                                                     "day": d.isoformat() if d else None}, out)
+    vday = _vday(db, chat_id)
     if kind == "k":
-        if _find_task(db, actor, rest) is None:
+        if _find_task(db, actor, rest, vday) is None:
             return say(out, chat_id, gone)
         return _open(db, chat_id, mid, actor, name, {"s": "card", "key": rest}, out)
     if kind in ("d", "a", "z"):
         key, _, delta = rest.rpartition(":") if kind == "a" else (rest, "", "")
-        t = _find_task(db, actor, key)
+        t = _find_task(db, actor, key, vday)
         if t is None:
             return say(out, chat_id, gone)
         qty = t["plan_qty"] if kind == "d" else (0 if kind == "z" else min((t["fact_qty"] or 0) + float(delta or 0), MAX_QTY))
@@ -423,7 +487,7 @@ def _route(db, chat_id, mid, actor, name, link, kind: str, rest: str, out: list)
         _rerender(db, chat_id, mid, actor, name, out)
         return f"Записано: {fnum(qty)}" + (". Бригадир подтвердит" if f.status == "submitted" else "")
     if kind == "n":
-        t = _find_task(db, actor, rest)
+        t = _find_task(db, actor, rest, vday)
         if t is None:
             return say(out, chat_id, gone)
         st = get_state(db, chat_id)
@@ -436,7 +500,7 @@ def _route(db, chat_id, mid, actor, name, link, kind: str, rest: str, out: list)
             return say(out, chat_id, "Нечего подтверждать.")
         if c.get("other"):
             return _other_write(db, chat_id, mid, actor, name, c, out)
-        t = _find_task(db, actor, c["key"])
+        t = _find_task(db, actor, c["key"], vday)
         if t is None:
             return say(out, chat_id, gone)
         f, _ = _write(db, chat_id, actor, t, c["qty"])
@@ -539,12 +603,13 @@ def _undo(db, chat_id, actor, out: list, expect: Optional[int] = None, quiet: bo
 # ------------------------------------------------------------------ закрыть день по плану
 def _closeday_ask(db, chat_id, mid, actor, wid: int, out: list):
     role = _role(actor)
-    rows = _rows(db, actor, wid or None) if role == "foreman" else _rows(db, actor)
+    day = _vday(db, chat_id)
+    rows = _rows(db, actor, wid or None, day) if role == "foreman" else _rows(db, actor, day=day)
     pend = _pending(rows)
     if not pend:
-        return show(out, chat_id, mid, "Заданий без факта нет — на сегодня всё внесено ✔", kb([[("📋 Задания", "l")]]))
+        return show(out, chat_id, mid, "Заданий без факта нет — " + (f"за {fday(day)} всё внесено ✔" if day else "на сегодня всё внесено ✔"), kb([[("📋 Задания", "l")]]))
     who = f" у работника {pend[0]['worker']}" if (role == "foreman" and wid) else ""
-    lines = [f"Внести по плану {len(pend)} {'задание' if len(pend) == 1 else 'заданий'}{who}?"]
+    lines = [f"Внести по плану {len(pend)} {'задание' if len(pend) == 1 else 'заданий'}{who}" + (f" за {fday(day)}" if day else "") + "?"]
     for t in pend[:10]:
         lines.append(f"• {(t['worker'] + ' · ') if role == 'foreman' and not wid else ''}{t['operation']} · {t['product']} · {t['order']} — {fnum(t['plan_qty'])}")
     if len(pend) > 10:
@@ -554,7 +619,7 @@ def _closeday_ask(db, chat_id, mid, actor, wid: int, out: list):
 
 
 def _closeday_do(db, chat_id, mid, actor, name, wid: int, out: list):
-    r = core.close_day(db, actor, wid)
+    r = core.close_day(db, actor, wid, _vday(db, chat_id))
     st = get_state(db, chat_id); st.pop("last", None); st.pop("await", None); st.pop("confirm", None); put_state(db, chat_id, st)   # групповую запись не откатить
     text = f"✔ Внесено по плану: {r['ok']}." + ("" if not r["fails"] else "\nНе внесено:\n" + "\n".join(r["fails"][:5]))
     show(out, chat_id, mid, text, kb([[("📋 Задания", "l")]]))
@@ -770,9 +835,9 @@ def _confirm(db, chat_id, actor, rest: str, out: list):
 OTHER_PAGE = 8
 
 
-def _extras_lines(db, actor, wid: int = 0) -> list:
+def _extras_lines(db, actor, wid: int = 0, day: Optional[date] = None) -> list:
     today = tenant_today(db, actor.tenant_id)
-    rep = reports_service.day_report(db, actor, today, today)
+    rep = reports_service.day_report(db, actor, day or today, today)
     return [f"🛠 {x['title']} — {fnum(x['fact_hours'] if x['fact_hours'] is not None else x['hours'])} ч"
             for w in rep["workers"] if not wid or w["worker_id"] == wid for x in w["extras"]]
 
@@ -794,7 +859,8 @@ def _other_start(db, chat_id, mid, actor, out: list, page: int = 0):
         return show(out, chat_id, mid, "Сейчас нет заказов в работе.", None)
     projects = list(dict.fromkeys((o["project_id"], o["project"]) for o in orders))
     btns = [(name[:40], f"op:{pid}:0") for pid, name in projects]
-    show(out, chat_id, mid, "Вы переключились на другую работу? Выберите проект:",
+    day = _vday(db, chat_id)
+    show(out, chat_id, mid, (f"📆 Факт за {fday(day)}.\n" if day else "") + "Вы переключились на другую работу? Выберите проект:",
          kb(_paged(btns, page, "ow") + [[("🛠 Вне перечня операций", "oe")], [("✖ Отмена", "pc")]]))
 
 
@@ -831,7 +897,7 @@ def _other_route(db, chat_id, mid, actor, kind: str, rest: str, out: list):
 
 
 def _other_write(db, chat_id, mid, actor, name, c: dict, out: list):
-    f, old = core.write_fact_any(db, actor, actor.worker_id, c["other"]["ol"], c["other"]["op"], c["qty"])
+    f, old = core.write_fact_any(db, actor, actor.worker_id, c["other"]["ol"], c["other"]["op"], c["qty"], _vday(db, chat_id))
     st = get_state(db, chat_id)
     key = f"{c['other']['ol']}:{c['other']['op']}:{actor.worker_id}"
     st["last"] = {"fact_id": f.id, "previous": old, "label": c["label"]}
@@ -854,5 +920,6 @@ def _extra_text(db, chat_id, actor, st: dict, text: str, out: list):
         return say(out, chat_id, "Нужно число часов от 0,1 до 24, например 1,5. Отмена: /cancel")
     st.pop("extra", None)
     put_state(db, chat_id, st)
-    core.add_extra(db, actor, None, ex["title"], h)
-    say(out, chat_id, f"✔ Записано: {ex['title']} — {fnum(h)} ч.", menu_keyboard("worker"))
+    day = _vday(db, chat_id)
+    core.add_extra(db, actor, None, ex["title"], h, None, day)
+    say(out, chat_id, f"✔ Записано: {ex['title']} — {fnum(h)} ч." + (f" (за {fday(day)})" if day else ""), menu_keyboard("worker"))

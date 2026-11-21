@@ -64,6 +64,7 @@ def build(db: Session, user: User, today: date) -> dict:
     # ---------- ключевые показатели и заказы ближайшего месяца ----------
     kpi = _kpi(db, t, rows, prog["per_order"], plan, today, workers, own)
     orders_month = _orders_month(rows, today)
+    orders_workdays = _orders_workdays(db, rows, prog, plan)
 
     # ---------- загрузка участков на 3 месяца вперёд ----------
     load = _load_forecast(plan, today, sections, own)
@@ -80,7 +81,7 @@ def build(db: Session, user: User, today: date) -> dict:
         "plan_id": plan.id if plan else None, "today": today.isoformat(), "summary": summary,
         "progress": {"percent": prog["percent"], "done": prog["done"], "required": prog["required"], "orders": len(rows),
                      "done_work": round(prog["done_work"], 1), "total_work": round(prog["total_work"], 1)},
-        "kpi": kpi, "orders_month": orders_month,
+        "kpi": kpi, "orders_month": orders_month, "orders_workdays": orders_workdays,
         "missing_fact": missing,
         "by_status": dict(by_status), "risk": risk[:8], "soonest": soon,
         "workers": _workers(workers, sections, quals, cname),
@@ -212,6 +213,38 @@ def _kpi(db: Session, t: int, rows: list, per_order: dict, plan: Optional[Plan],
         horizon = days[-1]
     return {"projects_in_work": len(started), "projects_queued": len(queued), "projects_at_risk": len(risky),
             "workers_with_tasks": len(busy), "workers_total": len(wids), "load_3m": load_pct, "load_horizon_end": horizon}
+
+
+def _orders_workdays(db: Session, rows: list, prog: dict, plan: Optional[Plan]) -> dict:
+    """Список заказов с трудоёмкостью в трудоднях (нормо-днях: объём ÷ норма операции за день, сумма по операциям заказа):
+    всего, выполнено, остаток до завершения (в днях и в %), плановая дата завершения (последний день заданий в активном плане,
+    а если плана на заказ нет — прогноз из статуса заказа)."""
+    last: dict = {}
+    if plan is not None and rows:
+        ids = [r["order_line_id"] for r in rows if r.get("order_line_id")]
+        for oid, d in db.execute(select(PlanItem.order_line_id, func.max(PlanItem.plan_date)).where(
+                PlanItem.plan_id == plan.id, PlanItem.order_line_id.in_(ids or [0])).group_by(PlanItem.order_line_id)):
+            last[oid] = d.isoformat() if d else None
+    out = []
+    for r in rows:
+        done_w, total_w = prog.get("work", {}).get(r.get("order_line_id"), (0.0, 0.0))
+        if total_w <= 1e-9:
+            continue
+        done_w = min(done_w, total_w)
+        left = max(total_w - done_w, 0.0)
+        finished = r.get("status") == "Готово" or left <= 1e-9
+        out.append({"order_line_id": r["order_line_id"], "id": r.get("id"), "project": r.get("project"), "product": r.get("product"),
+                    "qty": r.get("qty"), "due": r.get("due"), "status": r.get("status"),
+                    "total_days": round(total_w, 1), "done_days": round(done_w, 1), "left_days": round(left, 1),
+                    "done_pct": round(done_w / total_w * 100, 1), "left_pct": round(left / total_w * 100, 1),
+                    "plan_end": None if finished else (last.get(r["order_line_id"]) or r.get("forecast")),
+                    "plan_end_from": None if finished else ("plan" if last.get(r["order_line_id"]) else ("forecast" if r.get("forecast") else None)),
+                    "finished": finished})
+    out.sort(key=lambda x: (x["finished"], x["due"] or "9999", str(x["id"])))
+    tot, dn = sum(x["total_days"] for x in out), sum(x["done_days"] for x in out)
+    return {"items": out[:300], "count": len(out), "truncated": len(out) > 300,
+            "total_days": round(tot, 1), "done_days": round(dn, 1), "left_days": round(max(tot - dn, 0.0), 1),
+            "done_pct": round(dn / tot * 100, 1) if tot else 0.0}
 
 
 def _orders_month(rows: list, today: date) -> list:

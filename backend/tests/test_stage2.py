@@ -27,14 +27,16 @@ def test_routing_name_rename_and_named_new_version(full_org):
     assert any(a["entity"] == "routing" and a["action"] == "update" for a in o.get("/audit").json()["items"])
 
 
-def test_operation_rename_allowed_but_norm_locked_when_used(full_org):
+def test_operation_rename_and_norm_allowed_but_skill_locked_when_used(full_org):
     o = full_org
     _, r = _used_routing(o)
     op = r["operations"][0]
     ok = o.patch(f"/operations/{op['id']}", "technologist", json={"name": "Новое название"})
     assert ok.status_code == 200 and ok.json()["name"] == "Новое название"
-    locked = o.patch(f"/operations/{op['id']}", "technologist", json={"norm_per_day": op["norm_per_day"] + 1})
-    assert locked.status_code == 409 and "название" in locked.json()["title"]
+    norm = o.patch(f"/operations/{op['id']}", "technologist", json={"norm_per_day": op["norm_per_day"] + 1})
+    assert norm.status_code == 200 and norm.json()["norm_per_day"] == op["norm_per_day"] + 1      # норма правится и в действующей версии
+    locked = o.patch(f"/operations/{op['id']}", "technologist", json={"min_skill": op["min_skill"] + 1})
+    assert locked.status_code == 409 and "название" in locked.json()["title"]                      # квалификация — только новой версией
     other = r["operations"][1]
     dup = o.patch(f"/operations/{other['id']}", "technologist", json={"name": "Новое название"})
     assert dup.status_code == 409           # повтор названия внутри версии

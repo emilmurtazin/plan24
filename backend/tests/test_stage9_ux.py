@@ -56,7 +56,7 @@ def test_past_day_shows_what_was_planned_and_accepts_missing_fact(full_org):
     assert t2["fact_qty"] == 5 and t2["state"] == "done"
 
 
-def test_zero_fact_counts_as_entered_and_worker_sees_only_today(full_org):
+def test_zero_fact_counts_as_entered_and_worker_can_backfill(full_org):
     o = full_org
     o.replan_all()
     ol, op, w = _first_task(o)
@@ -65,10 +65,12 @@ def test_zero_fact_counts_as_entered_and_worker_sees_only_today(full_org):
     assert o.post("/facts", json={"fact_date": day.isoformat(), "order_line_id": ol, "operation_id": op, "worker_id": w["worker_id"],
                                   "qty": 0, "note": "не было материала"}).status_code == 200
     assert day.isoformat() not in {m["date"] for m in o.get("/reports/day", params={"day": day.isoformat()}).json()["missing"]}
-    # сборщик за прошлые дни факт не вносит — обращается к бригадиру
+    # сборщик вносит факт и за прошлые дни (за себя); чужой работник по-прежнему недоступен
     assert o.post("/facts", "worker", json={"fact_date": day.isoformat(), "order_line_id": ol, "operation_id": op,
-                                            "worker_id": o.w1["id"], "qty": 1}).status_code == 403
-    assert o.get("/reports/day", "worker", params={"day": day.isoformat()}).json()["missing"] == []
+                                            "worker_id": o.w1["id"], "qty": 1}).status_code == 200
+    other = next(w for w in o.workers if w["id"] != o.w1["id"])
+    assert o.post("/facts", "worker", json={"fact_date": day.isoformat(), "order_line_id": ol, "operation_id": op,
+                                            "worker_id": other["id"], "qty": 1}).status_code == 403
 
 
 def test_foreman_sees_missing_fact_only_of_own_section(full_org):

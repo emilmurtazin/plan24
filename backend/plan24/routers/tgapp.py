@@ -7,10 +7,11 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -108,11 +109,15 @@ def _workers_out(rep: dict, only_planned: bool = False) -> list:
 
 
 @router.get("/day")
-def day(c: Ctx = Depends(tg_ctx)):
-    """Сегодняшние задания: сборщику — его, бригадиру — работников его участка. Плюс причины отклонений по работникам."""
-    rep = reports_service.day_report(c.db, c.actor, c.today, c.today)
+def day(date_: Optional[_dt.date] = Query(None, alias="date"), c: Ctx = Depends(tg_ctx)):
+    """Задания дня (по умолчанию сегодня): сборщику — его, бригадиру — работников его участка. Плюс причины отклонений по работникам.
+    Можно открыть и прошедший день: что было в плане (по снимкам) и что уже внесено; плана на день может не быть — факт вносится всё равно.
+    `missing` — прошедшие дни, на которые по плану были задания, а факт не внесён."""
+    d = core.check_day(c.db, c.actor, date_)
+    rep = reports_service.day_report(c.db, c.actor, d, c.today)
     workers = _workers_out(rep)
-    out = {"date": c.today.isoformat(), "today": c.today.isoformat(), "role": c.role, "name": c.name,
+    out = {"date": d.isoformat(), "today": c.today.isoformat(), "role": c.role, "name": c.name, "missing": rep.get("missing", []),
+           "has_plan": any(t["plan_qty"] for w in workers for t in w["tasks"]),
            "worker_id": getattr(c.actor, "worker_id", None), "can_enter": bool(rep["can_enter"]), "is_workday": rep["is_workday"],
            "workers": workers, "reasons": {w["worker_id"]: core.reasons_for(c.db, c.actor.tenant_id, w["worker_id"]) for w in workers}}
     if c.role == "foreman":
@@ -141,15 +146,16 @@ class FactIn(BaseModel):
     operation_id: int
     worker_id: int
     qty: float = Field(ge=0, le=1_000_000)
+    date: Optional[_dt.date] = None                # пусто — сегодня; прошедшие дни доступны и сборщику
 
 
 @router.post("/fact")
 def put_fact(body: FactIn, c: Ctx = Depends(tg_ctx)):
-    """Записать итог дня по заданию (повторный ввод заменяет значение). Только сегодня; задание должно быть в отчёте актора."""
-    t = core.find_task(c.db, c.actor, f"{body.order_line_id}:{body.operation_id}:{body.worker_id}")
+    """Записать итог дня по заданию (повторный ввод заменяет значение). Сегодня или прошедший день (не будущий); задание должно быть в отчёте актора."""
+    t = core.find_task(c.db, c.actor, f"{body.order_line_id}:{body.operation_id}:{body.worker_id}", body.date)
     if t is None:
         raise HTTPException(404, "Задание недоступно. Обновите список")
-    f, old = core.write_fact(c.db, c.actor, t, body.qty)
+    f, old = core.write_fact(c.db, c.actor, t, body.qty, body.date)
     return {"fact_id": f.id, "qty": f.qty, "previous": old, "status": f.status, "plan_qty": t["plan_qty"]}
 
 
@@ -164,10 +170,10 @@ def undo_fact(fid: int, body: UndoIn, c: Ctx = Depends(tg_ctx)):
     if body.previous is None:
         facts_service.remove(c.db, c.actor, f)
         return {"removed": True}
-    t = core.find_task(c.db, c.actor, f"{f.order_line_id}:{f.operation_id}:{f.worker_id}")
+    t = core.find_task(c.db, c.actor, f"{f.order_line_id}:{f.operation_id}:{f.worker_id}", f.fact_date)
     if t is None:
         raise HTTPException(404, "Задание недоступно. Обновите список")
-    f2, _ = core.write_fact(c.db, c.actor, t, body.previous)
+    f2, _ = core.write_fact(c.db, c.actor, t, body.previous, f.fact_date)
     return {"removed": False, "fact_id": f2.id, "qty": f2.qty}
 
 
@@ -189,11 +195,12 @@ def fact_reason(fid: int, body: ReasonIn, bg: BackgroundTasks, c: Ctx = Depends(
 
 class WorkerIn(BaseModel):
     worker_id: int = 0                         # бригадир: 0 — весь участок
+    date: Optional[_dt.date] = None                # пусто — сегодня
 
 
 @router.post("/closeday")
 def close_day(body: WorkerIn, c: Ctx = Depends(tg_ctx)):
-    return core.close_day(c.db, c.actor, body.worker_id)
+    return core.close_day(c.db, c.actor, body.worker_id, body.date)
 
 
 # ------------------------------------------------------------------ проблема и отсутствие
@@ -298,6 +305,7 @@ class OtherFactIn(BaseModel):
     operation_id: int
     worker_id: Optional[int] = None            # сборщик — себе (поле игнорируется); бригадир — работнику своего участка
     qty: float = Field(ge=0, le=1_000_000)
+    date: Optional[_dt.date] = None                # пусто — сегодня; можно прошедший день, даже если плана на него не было
 
 
 @router.post("/fact/other")
@@ -305,7 +313,7 @@ def other_fact(body: OtherFactIn, c: Ctx = Depends(tg_ctx)):
     """Факт по любой операции любой позиции — в том числе не из плана. Можно вносить несколько операций подряд."""
     if c.role == "foreman" and not body.worker_id:
         raise HTTPException(422, "Выберите работника")
-    f, old = core.write_fact_any(c.db, c.actor, body.worker_id or 0, body.order_line_id, body.operation_id, body.qty)
+    f, old = core.write_fact_any(c.db, c.actor, body.worker_id or 0, body.order_line_id, body.operation_id, body.qty, body.date)
     return {"fact_id": f.id, "qty": f.qty, "previous": old, "status": f.status, "worker_id": f.worker_id}
 
 
@@ -314,6 +322,7 @@ class ExtraIn(BaseModel):
     hours: float = Field(gt=0, le=24)
     order_line_id: Optional[int] = None        # None — работа не относится к заказу
     worker_id: Optional[int] = None
+    date: Optional[_dt.date] = None                # пусто — сегодня
 
 
 class ExtraHoursIn(BaseModel):
@@ -326,7 +335,7 @@ def _extra_json(x) -> dict:
 
 @router.post("/extra", status_code=201)
 def add_extra(body: ExtraIn, c: Ctx = Depends(tg_ctx)):
-    return _extra_json(core.add_extra(c.db, c.actor, body.worker_id, body.title, body.hours, body.order_line_id))
+    return _extra_json(core.add_extra(c.db, c.actor, body.worker_id, body.title, body.hours, body.order_line_id, body.date))
 
 
 @router.put("/extra/{xid}")

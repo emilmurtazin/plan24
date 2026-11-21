@@ -109,6 +109,22 @@ function soonHtml(d) {
     <div class="soon-d"><span class="${r.overdue ? 'err' : ''}">до ${dd(r.due)}</span><span class="badge ${ST_BADGE[r.status] || 'b-grey'}">${esc(r.status)}</span></div></li>`).join('')}</ul>${more > 0 ? `<p class="muted" style="margin:8px 0 0">и ещё ${more} — в разделе «Статус заказов»</p>` : ''}` : '<p class="muted">Нет заказов со сроком в ближайший месяц.</p>'}</div>`;
 }
 
+/* заказы и трудодни: всего, выполнено, остаток (дни и %), плановая дата завершения */
+function workdaysHtml(w) {
+  const rows = (w && w.items) || [];
+  if (!rows.length) return '<div class="card"><h2>Заказы и трудодни</h2><p class="muted">Нет заказов в плане.</p></div>';
+  const fmt = v => num(v);
+  return `<div class="card"><h2>Заказы и трудодни <small class="muted">нормо-дни: объём ÷ норма операции за день</small></h2>
+    <div class="scroll"><table><tr><th>Заказ</th><th class="num">Всего, дн.</th><th class="num">Выполнено, дн.</th><th class="num">Остаток, дн.</th><th class="num">Выполнено, %</th><th class="num">Остаток, %</th><th>Завершение по плану</th><th>Срок</th></tr>
+    ${rows.map(r => `<tr data-ord="${r.order_line_id}" tabindex="0" style="cursor:pointer"><td><b>${esc(r.id)}</b> ${esc(r.product || '')}<br><small class="muted">${esc(r.project || '')}</small></td>
+      <td class="num">${fmt(r.total_days)}</td><td class="num">${fmt(r.done_days)}</td><td class="num">${fmt(r.left_days)}</td>
+      <td class="num"><div class="bar"><i style="width:${Math.min(100, r.done_pct)}%"></i></div><small>${fmt(r.done_pct)}%</small></td><td class="num">${fmt(r.left_pct)}%</td>
+      <td>${r.finished ? '<span class="badge b-done">Готово</span>' : (r.plan_end ? `${dd(r.plan_end)}${r.plan_end_from === 'forecast' ? ' <small class="muted">(прогноз)</small>' : ''}${r.due && r.plan_end > r.due ? ' <span class="err">⚠ позже срока</span>' : ''}` : '—')}</td>
+      <td>${r.due ? dd(r.due) : '—'}</td></tr>`).join('')}
+    <tr><td><b>Итого (${w.count})</b></td><td class="num"><b>${fmt(w.total_days)}</b></td><td class="num"><b>${fmt(w.done_days)}</b></td><td class="num"><b>${fmt(w.left_days)}</b></td><td class="num"><b>${fmt(w.done_pct)}%</b></td><td class="num"><b>${fmt(100 - w.done_pct)}%</b></td><td></td><td></td></tr></table></div>
+    ${w.truncated ? '<p class="muted" style="margin:8px 0 0">Показаны первые 300 заказов.</p>' : ''}</div>`;
+}
+
 /* загрузка участков по неделям: строка на участок, ячейка на неделю, цвет по уровню загрузки */
 function heatHtml(L) {
   const has = L.series.length && L.series.some(s => s.values.some(v => v != null));
@@ -146,6 +162,7 @@ async function dashboardView(plan) {
   const R = d.resources, L = d.load, U = d.underperformance;
   let h = `<div class="dash"><div class="dash-h"><h1>Обзор производства</h1><span class="muted">${fmtDY(d.today)}${plan && plan.created_at ? ' · план от ' + fmtDY(plan.created_at) : ''}</span></div>${tilesHtml(sm)}${peopleHtml(d.people_today)}
     <div class="dash-2">${attentionHtml(sm)}${soonHtml(d)}</div>
+    ${workdaysHtml(d.orders_workdays)}
     <div class="dash-2">${heatHtml(L)}${adherenceHtml(U, d.reasons)}</div>
     <details class="more" id="more"><summary>Подробнее: ресурсы, причины, работники, графики по участкам</summary><div class="more-body">`;
     /* потребность в ресурсах */

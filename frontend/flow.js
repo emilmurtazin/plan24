@@ -92,13 +92,74 @@ SCREENS.flow = async v => {
     side.innerHTML = `<h3>${esc(n.name)}</h3>
       <dl class="fm-dl">${M.line ? (n.foreign ? '<dt>Выполнение</dt><dd class="muted">другой участок</dd>' : `<dt>Выполнено</dt><dd><b>${num(n.done)}</b> из ${num(n.required)} ${esc(n.unit)} (${num(n.pct)}%)</dd>${n.sections.length ? `<dt>Участки</dt><dd>${esc(n.sections.join(', '))}</dd>` : ''}`) : ''}
         <dt>Норма в день</dt><dd>${num(n.norm_per_day)} ${esc(n.unit)}</dd><dt>На изделие</dt><dd>${num(n.per_item)}</dd><dt>Порядок</dt><dd>${num(n.sequence)}</dd></dl>
+      ${workBlock(n)}
       <h4>Идёт после</h4>${n.predecessors.length ? `<ul class="fm-preds">${n.predecessors.map(p => `<li><span>${esc(p)}<span class="muted fm-pp">${(n.predecessor_pcts || {})[p] != null ? ' · после ' + num(n.predecessor_pcts[p]) + '%' : (n.default_pct != null && n.default_pct < 100 ? ' · после ' + num(n.default_pct) + '%' : '')}</span></span>${canEdit() ? ` <span class="fm-pps"><input type="number" min="1" max="100" step="any" data-pp="${esc(p)}" value="${(n.predecessor_pcts || {})[p] ?? ''}" placeholder="${n.default_pct != null && n.default_pct < 100 ? n.default_pct : 100}" aria-label="Партия по предшественнику ${esc(p)}, %" title="Партия, %: когда ${esc(p)} выполнена на столько, ${esc(n.name)} может стартовать"><button class="small secondary" data-rm="${esc(p)}" aria-label="Убрать связь с ${esc(p)}">×</button></span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">Нет — операция может начинаться сразу.</p>'}
       ${n.implicit && n.predecessors.length ? '<p class="muted fm-note">Связи заданы порядком операций (пунктир). При изменении они станут явными.</p>' : ''}
       ${canEdit() ? `<label class="f">Добавить предшественника<select id="fm-padd"><option value="">— выбрать —</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></label><button class="danger" id="fm-delnode">Удалить карточку</button>${warn}` : ''}`;
+    wireWork(n);
     $$('[data-rm]', side).forEach(b => b.onclick = () => delLink(M.nodes.find(x => x.name === b.dataset.rm).id, n.id));
     $$('[data-pp]', side).forEach(i => i.onchange = () => setPct(M.nodes.find(x => x.name === i.dataset.pp).id, n.id, i.value.trim() === '' ? null : Number(i.value)));
     const pa = $('#fm-padd', side); if (pa) pa.onchange = () => pa.value && addLink(+pa.value, n.id);
     const dn = $('#fm-delnode', side); if (dn) dn.onclick = () => deleteOperation(n.id, async () => { pick = null; await load(true); });
+  }
+
+  /* ---------- работа по заказу из карточки: факт, норма, исполнители ---------- */
+  function workBlock(n) {
+    if (n.foreign) return '';
+    let h = '';
+    if (M.line && M.can_fact) {
+      const secs = (n.center_ids || []).map(id => (M.sections || []).find(s => s.id === id)).filter(Boolean);
+      h += `<h4>Внести факт</h4><p class="muted fm-note">За любую прошедшую дату. Повторный ввод за ту же дату заменяет значение.</p>
+        <label class="f">Дата<input type="date" id="fm-fd" value="${M.today}" max="${M.today}"></label>
+        <label class="f">Выполнено за день, ${esc(n.unit)}<input type="number" id="fm-fq" min="0" step="any" inputmode="decimal" placeholder="осталось ${num(Math.max((n.required || 0) - (n.done || 0), 0))}"></label>
+        ${secs.length > 1 ? `<label class="f">Участок<select id="fm-fs">${secs.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>` : ''}
+        <button class="small" id="fm-fact">Внести факт</button>
+        ${(n.facts || []).length ? `<ul class="fm-preds">${n.facts.map(f => `<li><span>${dd(f.date)} — <b>${num(f.qty)}</b> ${esc(n.unit)}<span class="muted fm-pp">${f.worker ? ' · ' + esc(f.worker) : ' · на заказ'}</span></span></li>`).join('')}</ul>` : ''}`;
+    }
+    if (canEdit()) {
+      h += `<h4>Норма и количество</h4>
+        <label class="f">Норма в день, ${esc(n.unit)}<input type="number" id="fm-norm" min="0" step="any" value="${n.norm_per_day}"></label>
+        <label class="f">Операций на изделие<input type="number" id="fm-per" min="0" step="any" value="${n.per_item}"></label>
+        <button class="small secondary" id="fm-saveop">Сохранить норму</button>
+        ${M.routing.used ? '<p class="muted fm-note">Изменится во всех заказах на этой версии маршрута. После сохранения перепланируйте участки.</p>' : ''}`;
+    }
+    if (M.line && M.can_assign) {
+      const ok = (M.workers || []).filter(w => (!(n.center_ids || []).length || n.center_ids.includes(w.work_center_id)) && w.skill >= n.min_skill);
+      const sname = id => ((M.sections || []).find(s => s.id === id) || {}).name || '';
+      h += `<h4>Исполнители</h4>${ok.length ? `<div class="fm-execs">${ok.map(w => `<label class="chk"><input type="checkbox" data-ex="${w.id}" ${(n.assignees || []).includes(w.id) ? 'checked' : ''}> <span>${esc(w.name)}${sname(w.work_center_id) ? `<span class="muted"> · ${esc(sname(w.work_center_id))}</span>` : ''}</span></label>`).join('')}</div>
+        <label class="chk"><input type="checkbox" id="fm-strict" ${n.assign_strict !== false ? 'checked' : ''}> <span>Только они (иначе — они в первую очередь, остальных добавит планировщик)</span></label>
+        <button class="small secondary" id="fm-saveex">Сохранить исполнителей</button><p class="muted fm-note">Планировщик учтёт назначение при следующем перепланировании.</p>` : '<p class="muted">Нет подходящих работников (участок, квалификация, доступность).</p>'}`;
+    }
+    return h;
+  }
+  function wireWork(n) {
+    const run = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (e) { toast(errText(e), true); } finally { btn.disabled = false; } };
+    const f = $('#fm-fact', side);
+    if (f) f.onclick = () => run(f, async () => {
+      const qty = $('#fm-fq', side).value.trim(), date = $('#fm-fd', side).value, sec = $('#fm-fs', side);
+      if (qty === '' || isNaN(+qty) || +qty < 0) return toast('Введите количество', true);
+      if (!date || date > M.today) return toast('Выберите сегодняшнюю или прошедшую дату', true);
+      const wc = sec ? +sec.value : ((n.center_ids || []).length === 1 ? n.center_ids[0] : null);
+      const r = await POST('/facts/order', { fact_date: date, order_line_id: M.line.id, operation_id: n.id, qty: +qty, work_center_id: wc });
+      toast(r.replaced ? `Факт за ${dd(date)} заменён (было ${num(r.previous_qty)})` : 'Факт внесён');
+      await load(true);
+    });
+    const so = $('#fm-saveop', side);
+    if (so) so.onclick = () => run(so, async () => {
+      const norm = +$('#fm-norm', side).value, per = +$('#fm-per', side).value;
+      if (!(norm > 0) || !(per >= 0)) return toast('Норма должна быть больше нуля, количество — не меньше нуля', true);
+      if (norm === n.norm_per_day && per === n.per_item) return toast('Значения не изменились');
+      const r = await PATCH(`/operations/${n.id}`, { norm_per_day: norm, per_item: per, version: n.version });
+      toast(r.orders_affected ? `Сохранено. Затронуто заказов: ${r.orders_affected}. Перепланируйте участки` : 'Сохранено');
+      await load(true);
+    });
+    const se = $('#fm-saveex', side);
+    if (se) se.onclick = () => run(se, async () => {
+      const ids = $$('[data-ex]', side).filter(i => i.checked).map(i => +i.dataset.ex);
+      await PUT('/plan-grid/executors', { order_line_id: M.line.id, operation_id: n.id, worker_ids: ids, strict: $('#fm-strict', side).checked });
+      toast(ids.length ? 'Исполнители сохранены. Перепланируйте участок' : 'Назначение снято');
+      await load(true);
+    });
   }
   const redraw = () => { drawEdges(); drawCards(); drawSide(); };
 
